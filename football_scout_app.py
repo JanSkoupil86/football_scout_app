@@ -84,7 +84,7 @@ if uploaded_file is not None:
                     df[col] = df[col].fillna(0) # Fill numeric NaNs with 0
 
             # --- Sidebar Filters ---
-            st.sidebar.header("Player Filters")
+            st.sidebar.header("League Filters")
 
             # --- League filter moved up and applied first ---
             leagues = sorted(df['League'].unique().tolist())
