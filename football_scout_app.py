@@ -86,55 +86,43 @@ if uploaded_file is not None:
             # --- Sidebar Filters ---
             st.sidebar.header("Player Filters")
 
-            # Player search
-            player_names = sorted(df['Player'].unique().tolist())
-            selected_player_name = st.sidebar.selectbox("Select a specific player (optional)", ["All"] + player_names)
+            # --- League filter moved up and applied first ---
+            leagues = sorted(df['League'].unique().tolist())
+            selected_leagues = st.sidebar.multiselect("Select League(s)", leagues, default=leagues)
 
-            # Conditional filtering based on player selection
-            if selected_player_name != "All":
-                # If a specific player is selected, filter the entire DataFrame for that player
-                filtered_df = df[df['Player'] == selected_player_name]
-                st.sidebar.info(f"Showing data for: {selected_player_name}")
+            # Apply league filter immediately
+            initial_filtered_df = df[df['League'].isin(selected_leagues)]
+
+            # Check if any players remain after league filter
+            if initial_filtered_df.empty:
+                st.sidebar.warning("No players found for the selected leagues. Please adjust your league selection.")
+                filtered_df = pd.DataFrame() # Set filtered_df to empty to prevent further operations
             else:
-                # If "All" players are selected, show general filters
+                teams = sorted(initial_filtered_df['Team'].unique().tolist()) # Teams are now based on selected leagues
+                main_positions = sorted(initial_filtered_df['Main Position'].unique().tolist()) # Positions also
+                
+                selected_teams = st.sidebar.multiselect("Select Team(s)", teams, default=teams)
+                selected_main_positions = st.sidebar.multiselect("Select Main Position(s)", main_positions, default=main_positions)
 
-                # --- NEW: League filter moved up and applied first ---
-                leagues = sorted(df['League'].unique().tolist())
-                selected_leagues = st.sidebar.multiselect("Select League(s)", leagues, default=leagues)
+                min_age, max_age = int(initial_filtered_df['Age'].min()), int(initial_filtered_df['Age'].max())
+                age_range = st.sidebar.slider("Select Age Range", min_age, max_age, (min_age, max_age))
 
-                # Apply league filter immediately
-                initial_filtered_df = df[df['League'].isin(selected_leagues)]
-
-                # Check if any players remain after league filter
-                if initial_filtered_df.empty:
-                    st.sidebar.warning("No players found for the selected leagues. Please adjust your league selection.")
-                    filtered_df = pd.DataFrame() # Set filtered_df to empty to prevent further operations
-                else:
-                    teams = sorted(initial_filtered_df['Team'].unique().tolist()) # Teams are now based on selected leagues
-                    main_positions = sorted(initial_filtered_df['Main Position'].unique().tolist()) # Positions also
-                    
-                    selected_teams = st.sidebar.multiselect("Select Team(s)", teams, default=teams)
-                    selected_main_positions = st.sidebar.multiselect("Select Main Position(s)", main_positions, default=main_positions)
-
-                    min_age, max_age = int(initial_filtered_df['Age'].min()), int(initial_filtered_df['Age'].max())
-                    age_range = st.sidebar.slider("Select Age Range", min_age, max_age, (min_age, max_age))
-
-                    min_mv, max_mv = initial_filtered_df['Market value'].min(), initial_filtered_df['Market value'].max()
-                    market_value_range = st.sidebar.slider("Select Market Value Range", float(min_mv), float(max_mv), (float(min_mv), float(max_mv)))
+                min_mv, max_mv = initial_filtered_df['Market value'].min(), initial_filtered_df['Market value'].max()
+                market_value_range = st.sidebar.slider("Select Market Value Range", float(min_mv), float(max_mv), (float(min_mv), float(max_mv)))
 
 
-                    # Apply remaining filters on the initial_filtered_df
-                    filtered_df = initial_filtered_df[
-                        (initial_filtered_df['Team'].isin(selected_teams)) &
-                        (initial_filtered_df['Main Position'].isin(selected_main_positions)) &
-                        (initial_filtered_df['Age'] >= age_range[0]) & (initial_filtered_df['Age'] <= age_range[1]) &
-                        (initial_filtered_df['Market value'] >= market_value_range[0]) & (initial_filtered_df['Market value'] <= market_value_range[1])
-                    ]
+                # Apply remaining filters on the initial_filtered_df
+                filtered_df = initial_filtered_df[
+                    (initial_filtered_df['Team'].isin(selected_teams)) &
+                    (initial_filtered_df['Main Position'].isin(selected_main_positions)) &
+                    (initial_filtered_df['Age'] >= age_range[0]) & (initial_filtered_df['Age'] <= age_range[1]) &
+                    (initial_filtered_df['Market value'] >= market_value_range[0]) & (initial_filtered_df['Market value'] <= market_value_range[1])
+                ]
 
-                    # Filter by minutes played to exclude players with very low sample size
-                    min_minutes_max = int(initial_filtered_df['Minutes played'].max()) if not initial_filtered_df.empty else 0
-                    min_minutes = st.sidebar.slider("Minimum Minutes Played", 0, min_minutes_max, 500)
-                    filtered_df = filtered_df[filtered_df['Minutes played'] >= min_minutes]
+                # Filter by minutes played to exclude players with very low sample size
+                min_minutes_max = int(initial_filtered_df['Minutes played'].max()) if not initial_filtered_df.empty else 0
+                min_minutes = st.sidebar.slider("Minimum Minutes Played", 0, min_minutes_max, 500)
+                filtered_df = filtered_df[filtered_df['Minutes played'] >= min_minutes]
 
             st.sidebar.markdown(f"**Players matching filters: {len(filtered_df)}**")
 
