@@ -265,13 +265,6 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Let user reorder the chosen columns
-    try:
-        import streamlit_sortables as sortables
-        ordered_cols = sortables.sort_items(selected_display_cols, direction="horizontal", key="col_order")
-    except Exception:
-        ordered_cols = selected_display_cols
-
     st.dataframe(
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
