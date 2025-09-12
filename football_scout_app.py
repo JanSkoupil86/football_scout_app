@@ -406,6 +406,12 @@ if compare_players:
             ))
 
         fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=True,
+            template='plotly_white',
+            height=640
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
     else:
         st.info("Select metrics to compare players.")
 else:
