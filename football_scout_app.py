@@ -1,3 +1,31 @@
+with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
+    st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
+    profile = st.selectbox("Profile", ["(none)", "Pressing Forward"], index=1)
+
+    if profile == "Pressing Forward":
+        pf_metrics = [
+            "Defensive duels per 90",
+            "Pressing duels per 90",
+            "Interceptions per 90",
+            "Shots per 90",
+            "Progressive runs per 90",
+        ]
+        # Sliders in percentages
+        w1 = st.slider("Weight %: Defensive duels per 90", 0, 100, 20, 1)
+        w2 = st.slider("Weight %: Pressing duels per 90", 0, 100, 25, 1)
+        w3 = st.slider("Weight %: Interceptions per 90", 0, 100, 20, 1)
+        w4 = st.slider("Weight %: Shots per 90", 0, 100, 15, 1)
+        w5 = st.slider("Weight %: Progressive runs per 90", 0, 100, 20, 1)
+
+        # Convert percentages into relative weights
+        pf_weights = np.array([w1, w2, w3, w4, w5], dtype=float)
+        if pf_weights.sum() == 0:
+            pf_weights = np.ones_like(pf_weights)
+        pf_weights = pf_weights / pf_weights.sum()
+
+        calc_col_name = "Score: Pressing Forward"
+        filtered = make_profile_score(filtered, pf_metrics, pf_weights, calc_col_name)
+        st.caption(f"✅ Added column **{calc_col_name}** to the dataset.")
 import streamlit as st
 import pandas as pd
 import numpy as np
