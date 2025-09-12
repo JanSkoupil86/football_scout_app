@@ -4,6 +4,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
+import io  # for PNG buffer when kaleido is available
 
 # ---------------------------
 # Page config
@@ -430,21 +431,25 @@ if compare_players:
         )
         st.plotly_chart(fig_radar, use_container_width=True)
 
-        # --- Download radar as PNG (uses kaleido if available) ---
+        # --- Download radar as PNG (Kaleido) ---
         try:
-            import kaleido  # noqa: F401  (only to ensure dependency is present)
-            png_bytes = fig_radar.to_image(format="png", scale=2)  # higher scale = sharper export
+            import kaleido  # check presence; not otherwise used
+            # Use in-memory buffer to avoid temp files
+            png_buf = io.BytesIO()
+            fig_radar.write_image(png_buf, format="png")
             st.download_button(
                 "🖼️ Download radar as PNG",
-                data=png_bytes,
+                data=png_buf.getvalue(),
                 file_name="player_radar.png",
                 mime="image/png"
             )
-        except Exception:
-            st.info(
-                "To enable **Download radar as PNG**, install the `kaleido` package:\n\n"
+        except ModuleNotFoundError:
+            st.warning(
+                "⚠️ PNG export requires **kaleido**. Install it with:\n\n"
                 "`pip install -U kaleido`"
             )
+        except Exception as e:
+            st.info(f"PNG export failed: {e}")
 
     else:
         st.info("Select metrics to compare players.")
