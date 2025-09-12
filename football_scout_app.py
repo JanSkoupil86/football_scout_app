@@ -4,7 +4,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
-import io  # for PNG buffer when kaleido is available
 
 # ---------------------------
 # Page config
@@ -53,6 +52,7 @@ NON_FEATURE_COLUMNS = {
 
 PCT_SUFFIX = ", %"  # columns that end with this are percentages (e.g., "Accurate passes, %")
 
+
 def parse_market_value(series: pd.Series) -> pd.Series:
     """Parse market value strings into float (millions of EUR)."""
     if series.dtype.kind in 'iuf':
@@ -78,6 +78,7 @@ def parse_market_value(series: pd.Series) -> pd.Series:
 
     return series.apply(to_float)
 
+
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     # Special-case market value
@@ -93,6 +94,7 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
             if df[col].dtype.kind not in 'iuf':
                 df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
+
 
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
@@ -430,27 +432,6 @@ if compare_players:
             height=640
         )
         st.plotly_chart(fig_radar, use_container_width=True)
-
-        # --- Download radar as PNG (Kaleido) ---
-        try:
-            import kaleido  # check presence; not otherwise used
-            # Use in-memory buffer to avoid temp files
-            png_buf = io.BytesIO()
-            fig_radar.write_image(png_buf, format="png")
-            st.download_button(
-                "🖼️ Download radar as PNG",
-                data=png_buf.getvalue(),
-                file_name="player_radar.png",
-                mime="image/png"
-            )
-        except ModuleNotFoundError:
-            st.warning(
-                "⚠️ PNG export requires **kaleido**. Install it with:\n\n"
-                "`pip install -U kaleido`"
-            )
-        except Exception as e:
-            st.info(f"PNG export failed: {e}")
-
     else:
         st.info("Select metrics to compare players.")
 else:
