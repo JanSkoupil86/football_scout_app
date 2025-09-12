@@ -14,7 +14,7 @@ st.set_page_config(
     page_icon="⚽",
 )
 
-st.title("⚽ Advanced Football Player Scouting App — Improved")
+st.title("⚽ Advanced Football Player Scouting App")
 st.markdown("Upload your football data CSV to analyze player metrics. This version adds caching, robust parsing, downloads, and a radar chart.")
 
 # ---------------------------
