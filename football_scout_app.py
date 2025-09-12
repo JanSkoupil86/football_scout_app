@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("⚽ Advanced Football Player Scouting App — Improved")
-st.markdown("Upload your football data CSV to analyze player metrics. This version adds caching, robust parsing, downloads, and a radar chart.")
+st.markdown("Upload your football data CSV to analyze player metrics. Caching, robust parsing, ALL filters, drag‑and‑drop ordering, rounding to 2 decimals, downloads, and a radar chart included.")
 
 # ---------------------------
 # Utilities
@@ -47,11 +47,7 @@ NON_FEATURE_COLUMNS = {
     'Passport country', 'Foot', 'On loan', 'Contract expires', 'League', 'Main Position'
 }
 
-LIKELY_NUMERIC_NAMES = {
-    'Age', 'Market value', 'Matches played', 'Minutes played', 'Goals', 'xG', 'Assists', 'xA'
-}
-
-PCT_SUFFIX = ", %"  # columns that end with this are percentages
+PCT_SUFFIX = ", %"  # columns that end with this are percentages (e.g., "Accurate passes, %")
 
 
 def parse_market_value(series: pd.Series) -> pd.Series:
@@ -59,7 +55,6 @@ def parse_market_value(series: pd.Series) -> pd.Series:
     Returns float in millions of EUR for easier sliders.
     """
     if series.dtype.kind in 'iuf':
-        # already numeric; assume it's in same unit throughout; convert to millions if very large
         s = series.astype(float)
         if s.max() > 1e6:
             return s / 1e6
@@ -80,7 +75,6 @@ def parse_market_value(series: pd.Series) -> pd.Series:
             val = float(s) * mult
         except ValueError:
             return np.nan
-        # return in millions
         return val / 1e6
 
     return series.apply(to_float)
@@ -105,7 +99,6 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
-
 
 # ---------------------------
 # Sidebar — File uploader
@@ -140,9 +133,9 @@ if 'Column1' in df_raw.columns and df_raw['Column1'].nunique() == len(df_raw):
 # Coerce types
 df = coerce_numeric(df_raw)
 
-# Fill NaNs in numeric columns for safe aggregations
+# Fill NaNs in numeric columns and round to 2 decimals for consistent display & exports
 for col in get_numeric_columns(df):
-    df[col] = df[col].fillna(0)
+    df[col] = df[col].fillna(0).round(2)
 
 # ---------------------------
 # Sidebar — Filters
@@ -151,7 +144,7 @@ st.sidebar.header("Filters")
 
 # League first
 leagues = sorted(df['League'].dropna().unique().tolist())
-selected_leagues, leagues_all = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or use ALL")
+selected_leagues, _ = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or use ALL")
 filtered = df[df['League'].isin(selected_leagues)].copy()
 
 if filtered.empty:
@@ -162,8 +155,8 @@ if filtered.empty:
 teams = sorted(filtered['Team'].dropna().unique().tolist())
 positions = sorted(filtered['Main Position'].dropna().unique().tolist())
 
-selected_teams, teams_all = multiselect_all("Team(s)", teams, default_all=True, help="Pick teams or ALL")
-selected_positions, pos_all = multiselect_all("Main Position(s)", positions, default_all=True, help="Pick positions or ALL")
+selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True, help="Pick teams or ALL")
+selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True, help="Pick positions or ALL")
 
 # Age slider
 age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
@@ -208,6 +201,10 @@ if 'Minutes played' in filtered.columns:
 
 filtered = filtered.loc[mask].copy()
 
+# Round again after filtering (safe if transforms introduced decimals)
+for col in get_numeric_columns(filtered):
+    filtered[col] = filtered[col].round(2)
+
 st.sidebar.markdown(f"**Players matching filters: {len(filtered)}**")
 
 if filtered.empty:
@@ -219,21 +216,15 @@ if filtered.empty:
 # ---------------------------
 st.subheader("Filtered Player Data")
 
-# --- Drag & drop helpers (graceful fallback) ---
+# Drag & drop helper (optional community components)
 
 def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
-    """Return a reordered list using drag-and-drop, if an optional component is installed.
-    Falls back to the original order when unavailable.
-    Supported packages: `streamlit-sortable` (preferred) or `streamlit-sortables`.
-    """
     try:
-        # streamlit-sortable (pip install streamlit-sortable)
         from streamlit_sortable import sort_items  # type: ignore
         ordered = sort_items(items=items, direction=direction, key=key)
         return ordered or items
     except Exception:
         try:
-            # streamlit-sortables (legacy alt: pip install streamlit-sortables)
             from streamlit_sortables import sort_items  # type: ignore
             ordered = sort_items(items=items, direction=direction, key=key)
             return ordered or items
@@ -254,9 +245,6 @@ if 'Market value (M€)' in filtered.columns:
 
 display_options = [c for c in filtered.columns if c not in exclude_cols]
 selected_display_cols = st.multiselect(
-    # Note: Streamlit multiselect doesn't support drag/drop ordering.
-    # We'll use st.sortable if available (experimental) or st.data_editor as workaround.
-
     "Columns to display",
     options=display_options,
     default=default_cols,
@@ -265,13 +253,6 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Let user reorder the chosen columns
-    try:
-        import streamlit_sortables as sortables
-        ordered_cols = sortables.sort_items(selected_display_cols, direction="horizontal", key="col_order")
-    except Exception:
-        ordered_cols = selected_display_cols
-
     st.dataframe(
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
@@ -307,7 +288,7 @@ if selected_avg_metrics:
     n_cols = min(4, len(selected_avg_metrics))
     cols = st.columns(n_cols)
     for i, m in enumerate(ordered_avg_metrics):
-        val = filtered[m].mean()
+        val = filtered[m].mean().round(2)
         suffix = "%" if m.endswith(PCT_SUFFIX) else ""
         cols[i % n_cols].metric(f"Avg {m}", f"{val:.2f}{suffix}")
 else:
@@ -342,6 +323,10 @@ else:
             if plot_df[ax].std(ddof=0) > 0:
                 z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
                 plot_df = plot_df[np.abs(z) <= 3]
+
+    # Ensure the plotted columns are rounded to exactly 2 decimals
+    plot_df[x_axis] = plot_df[x_axis].round(2)
+    plot_df[y_axis] = plot_df[y_axis].round(2)
 
     fig = px.scatter(
         plot_df,
@@ -381,6 +366,7 @@ if compare_players:
 
     if comp_metrics:
         ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
+        comp_df = comp_df.round(2)
         st.dataframe(comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
         # Download comparison
@@ -409,7 +395,7 @@ if compare_players:
         fig_radar = go.Figure()
         for player in compare_players:
             row = comp_df.loc[player, ordered_comp_metrics]
-            r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in comp_metrics]
+            r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in ordered_comp_metrics]
             # close the loop
             fig_radar.add_trace(go.Scatterpolar(r=r + [r[0]], theta=theta + [theta[0]], fill='toself', name=player))
 
