@@ -339,7 +339,10 @@ else:
         template="plotly_white",
         height=620,
     )
-    fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
+    fig.update_traces(
+        marker=dict(line=dict(width=1, color='DarkSlateGrey')),
+        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------
