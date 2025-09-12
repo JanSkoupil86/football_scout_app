@@ -267,6 +267,8 @@ ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_c
 if selected_display_cols:
     st.dataframe(
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
+        use_container_width=True
+    ).reset_index(drop=True),
         use_container_width=True,
     )
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
@@ -379,6 +381,8 @@ if compare_players:
         ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
         st.dataframe(
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
+        use_container_width=True
+    ).reset_index(drop=True),
         use_container_width=True,
     )comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
