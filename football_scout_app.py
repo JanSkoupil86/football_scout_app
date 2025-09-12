@@ -18,7 +18,7 @@ st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
     "Caching, robust parsing, ALL filters, drag-and-drop ordering, rounding to 2 decimals, "
-    "downloads, and a radar chart included."
+    "downloads, and a radar chart (z-score standardized) included."
 )
 
 # ---------------------------
@@ -223,6 +223,7 @@ rank_metric = st.session_state.get('rank_metric', _default_rank)
 
 # Drag & drop helper (optional community components)
 def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
+    """Try to enable drag-and-drop ordering; fall back silently if component missing."""
     try:
         from streamlit_sortable import sort_items  # type: ignore
         ordered = sort_items(items=items, direction=direction, key=key)
@@ -233,8 +234,7 @@ def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> li
             ordered = sort_items(items=items, direction=direction, key=key)
             return ordered or items
         except Exception:
-            # Silent fallback (no caption)
-            return items
+            return items  # no hint/caption
 
 default_cols = [c for c in [
     'Player', 'Team', 'League', 'Main Position', 'Age',
@@ -317,7 +317,6 @@ else:
     plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})",
                            1, min(30, len(filtered)), min(15, len(filtered)))
     plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
-
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
@@ -354,7 +353,7 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------
-# Player comparison + Radar chart
+# Player comparison + Radar chart (Z-score)
 # ---------------------------
 st.subheader("Compare Selected Players")
 compare_players = st.multiselect(
@@ -393,38 +392,35 @@ if compare_players:
         st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
                            file_name="player_comparison.csv", mime="text/csv")
 
-        # Radar chart (normalize across the filtered set for comparability)
-        mm_base = filtered.set_index('Player')
-        mm = {}
-        for m in ordered_comp_metrics:
-            series = mm_base[m].replace([np.inf, -np.inf], np.nan).dropna()
-            if series.empty:
-                mm[m] = (0.0, 1.0)
-            else:
-                lo, hi = float(series.min()), float(series.max())
-                if hi - lo < 1e-9:
-                    hi = lo + 1.0
-                mm[m] = (lo, hi)
+        # ----- Radar chart with Z-SCORES over the CURRENTLY FILTERED PLAYERS -----
+        mm_base = filtered.set_index('Player')  # <- pool for z-score stats (matches "Players matching filters: N")
+        # Mean and std for each metric across filtered players
+        metric_means = {m: mm_base[m].mean() for m in ordered_comp_metrics}
+        metric_stds  = {m: mm_base[m].std(ddof=0) for m in ordered_comp_metrics}
 
-        def scale(val, lo, hi):
-            return float((val - lo) / (hi - lo))
+        def zscore(val, mean, std):
+            if pd.isna(val) or pd.isna(mean) or pd.isna(std) or std == 0:
+                return 0.0
+            return float((val - mean) / std)
 
         theta = ordered_comp_metrics
         fig_radar = go.Figure()
         for player in compare_players:
             row = comp_df.loc[player, ordered_comp_metrics]
-            r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in ordered_comp_metrics]
+            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0
+                 for m in ordered_comp_metrics]
             fig_radar.add_trace(go.Scatterpolar(
                 r=r + [r[0]],
                 theta=theta + [theta[0]],
                 fill='toself',
                 name=player,
-                text=[f"{player}: {val:.2f}" for val in r] + [f"{player}: {r[0]:.2f}"],
+                text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
                 hoverinfo="text"
             ))
 
+        # Clip to a sensible z-score range (±3 std devs covers ~99.7%)
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
             showlegend=True,
             template='plotly_white',
             height=640
