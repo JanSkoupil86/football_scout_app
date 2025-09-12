@@ -256,7 +256,10 @@ if selected_display_cols:
     # Row limit option
     row_limit = st.slider("Number of rows to show", 1, 30, 15)
     st.dataframe(
-        filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
+        filtered[ordered_display_cols]
+            .sort_values(by="Player")
+            .reset_index(drop=True)
+            .head(row_limit).head(row_limit),
         use_container_width=True,
     )
 else:
