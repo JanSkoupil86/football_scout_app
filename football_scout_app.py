@@ -321,7 +321,9 @@ else:
     color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
-    plot_df = filtered.copy()
+    # Limit how many players are rendered in the chart
+    plot_limit = st.slider("Number of players to plot", 1, min(30, len(filtered)), min(15, len(filtered)))
+    plot_df = filtered.head(plot_limit).copy()
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
