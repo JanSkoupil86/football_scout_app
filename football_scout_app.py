@@ -328,6 +328,9 @@ else:
     plot_df[x_axis] = plot_df[x_axis].round(2)
     plot_df[y_axis] = plot_df[y_axis].round(2)
 
+    # Option to always show labels without hovering
+    show_labels = st.checkbox("Show player labels on chart", value=False)
+
     fig = px.scatter(
         plot_df,
         x=x_axis,
@@ -335,13 +338,17 @@ else:
         hover_name="Player" if 'Player' in plot_df.columns else None,
         color=None if color_by == 'None' else color_by,
         size=None if size_by == 'None' else size_by,
+        text=plot_df['Player'] if show_labels and 'Player' in plot_df.columns else None,
         title=f"{y_axis} vs. {x_axis} by Player",
         template="plotly_white",
         height=620,
     )
     fig.update_traces(
         marker=dict(line=dict(width=1, color='DarkSlateGrey')),
-        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>"
+        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
+        textposition="top center",
+        textfont=dict(size=12),
+        cliponaxis=False,
     )
     st.plotly_chart(fig, use_container_width=True)
 
