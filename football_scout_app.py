@@ -301,9 +301,9 @@ else:
     color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
-    # Limit how many players are rendered in the chart
-    plot_limit = st.slider("Number of players to plot (Top-N by Y-axis)", 1, min(30, len(filtered)), min(15, len(filtered)))
-    plot_df = filtered.sort_values(by=y_axis, ascending=False).head(plot_limit).copy()
+    # Choose whether to rank Top-N by X or Y axis
+    rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
+    sort_metric = y_ax
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
