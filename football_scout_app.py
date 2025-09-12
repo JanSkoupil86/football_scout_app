@@ -4,7 +4,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
-import io  # for PNG buffer when kaleido is available
 
 # ---------------------------
 # Page config
@@ -234,7 +233,7 @@ def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> li
             ordered = sort_items(items=items, direction=direction, key=key)
             return ordered or items
         except Exception:
-            st.caption("💡 Install `streamlit-sortable` to enable drag-and-drop reordering.")
+            # Silent fallback (no caption)
             return items
 
 default_cols = [c for c in [
@@ -318,6 +317,7 @@ else:
     plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})",
                            1, min(30, len(filtered)), min(15, len(filtered)))
     plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
+
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
@@ -430,27 +430,6 @@ if compare_players:
             height=640
         )
         st.plotly_chart(fig_radar, use_container_width=True)
-
-        # --- Download radar as PNG (Kaleido) ---
-        try:
-            import kaleido  # check presence; not otherwise used
-            # Use in-memory buffer to avoid temp files
-            png_buf = io.BytesIO()
-            fig_radar.write_image(png_buf, format="png")
-            st.download_button(
-                "🖼️ Download radar as PNG",
-                data=png_buf.getvalue(),
-                file_name="player_radar.png",
-                mime="image/png"
-            )
-        except ModuleNotFoundError:
-            st.warning(
-                "⚠️ PNG export requires **kaleido**. Install it with:\n\n"
-                "`pip install -U kaleido`"
-            )
-        except Exception as e:
-            st.info(f"PNG export failed: {e}")
-
     else:
         st.info("Select metrics to compare players.")
 else:
