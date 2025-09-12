@@ -303,7 +303,11 @@ else:
 
     # Choose whether to rank Top-N by X or Y axis
     rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
-    sort_metric = y_ax
+    sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
+
+    # Limit how many players are rendered in the chart
+    plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(15, len(filtered)))
+    plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
