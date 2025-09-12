@@ -258,8 +258,16 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Row limit option (Top-N by current rank metric)
-    row_limit = st.slider(f"Number of rows to show (Top-N by {rank_metric})", 1, 30, 15)
+    # Row ordering selector
+    sort_metric = st.selectbox("Sort table by metric", get_numeric_columns(filtered), index=(get_numeric_columns(filtered).index(rank_metric) if rank_metric in get_numeric_columns(filtered) else 0))
+    row_limit = st.slider(f"Number of rows to show (Top-N by {sort_metric})", 1, 30, 15)
+    table_df = (
+        filtered
+        .sort_values(by=sort_metric, ascending=False)
+        [ordered_display_cols]
+        .reset_index(drop=True)
+        .head(row_limit)
+    )
     st.dataframe(
         filtered.sort_values(by=rank_metric, ascending=False)[ordered_display_cols]
             .reset_index(drop=True)
@@ -335,117 +343,4 @@ else:
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
     # Limit how many players are rendered in the chart
-    plot_limit = st.slider("Number of players to plot (Top‑N by rank metric)",, 1, min(30, len(filtered)), min(15, len(filtered)))
-    plot_df = filtered.sort_values(by=st.session_state.get('rank_metric', y_axis), ascending=False).head(plot_limit).copy()
-    if remove_outliers:
-        # z-score on selected axes
-        for ax in [x_axis, y_axis]:
-            if plot_df[ax].std(ddof=0) > 0:
-                z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
-                plot_df = plot_df[np.abs(z) <= 3]
-
-    # Ensure the plotted columns are rounded to exactly 2 decimals
-    plot_df[x_axis] = plot_df[x_axis].round(2)
-    plot_df[y_axis] = plot_df[y_axis].round(2)
-
-    # Option to always show labels without hovering
-    show_labels = st.checkbox("Show player labels on chart", value=False)
-
-    fig = px.scatter(
-        plot_df,
-        x=x_axis,
-        y=y_axis,
-        hover_name="Player" if 'Player' in plot_df.columns else None,
-        color=None if color_by == 'None' else color_by,
-        size=None if size_by == 'None' else size_by,
-        text=plot_df['Player'] if show_labels and 'Player' in plot_df.columns else None,
-        title=f"{y_axis} vs. {x_axis} by Player",
-        template="plotly_white",
-        height=620,
-    )
-    fig.update_traces(
-        marker=dict(line=dict(width=1, color='DarkSlateGrey')),
-        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
-        textposition="top center",
-        textfont=dict(size=12),
-        cliponaxis=False,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------------------------
-# Player comparison + Radar chart
-# ---------------------------
-st.subheader("Compare Selected Players")
-compare_players = st.multiselect(
-    "Players to compare (max 5 recommended)",
-    options=sorted(filtered['Player'].dropna().unique().tolist()),
-    default=[]
-)
-
-if compare_players:
-    comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
-
-    comp_metric_choices = [c for c in num_cols if not c.endswith(PCT_SUFFIX)]
-    default_comp = [c for c in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Successful defensive actions per 90', 'Duels won, %'] if c in comp_metric_choices]
-
-    comp_metrics = st.multiselect(
-        "Metrics for comparison table & radar",
-        options=comp_metric_choices,
-        default=default_comp if default_comp else comp_metric_choices[:6]
-    )
-
-    if comp_metrics:
-        ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
-        comp_df = comp_df.round(2)
-        st.dataframe(comp_df[ordered_comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
-
-        # Download comparison
-        csv_buf2 = StringIO()
-        comp_df[ordered_comp_metrics].to_csv(csv_buf2)
-        st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(), file_name="player_comparison.csv", mime="text/csv")
-
-        # Radar chart (normalize across the filtered set for comparability)
-        # Min-max per metric using only players currently filtered (not just selected)
-        mm_base = filtered.set_index('Player')
-        mm = {}
-        for m in ordered_comp_metrics:
-            series = mm_base[m].replace([np.inf, -np.inf], np.nan).dropna()
-            if series.empty:
-                mm[m] = (0.0, 1.0)
-            else:
-                lo, hi = float(series.min()), float(series.max())
-                if hi - lo < 1e-9:
-                    hi = lo + 1.0
-                mm[m] = (lo, hi)
-
-        def scale(val, lo, hi):
-            return float((val - lo) / (hi - lo))
-
-        theta = ordered_comp_metrics
-        fig_radar = go.Figure()
-        for player in compare_players:
-            row = comp_df.loc[player, ordered_comp_metrics]
-            r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in ordered_comp_metrics]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=r + [r[0]],
-                theta=theta + [theta[0]],
-                fill='toself',
-                name=player,
-                text=[f"{player}: {val:.2f}" for val in r] + [f"{player}: {r[0]:.2f}"],
-                hoverinfo="text"
-            ))
-
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-            showlegend=True,
-            template='plotly_white',
-            height=640
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-    else:
-        st.info("Select metrics to compare players.")
-else:
-    st.info("Select players above to compare their stats and see a radar chart.")
-
-st.markdown("---")
-st.markdown("Developed with ❤️ using Streamlit & Plotly | Enhanced edition ✨")
+    plot_limit = st.slider("Number of players to plot (Top-N by rank metric)", 1, min(30, len(filtered)), min(15, len(filtered)))
