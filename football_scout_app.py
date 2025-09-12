@@ -256,10 +256,7 @@ if selected_display_cols:
     # Row limit option
     row_limit = st.slider("Number of rows to show", 1, 30, 15)
     st.dataframe(
-        filtered[ordered_display_cols]
-            .sort_values(by="Player")
-            .reset_index(drop=True)
-            .head(row_limit).head(row_limit),
+        filtered[ordered_display_cols].sort_values(by=y_axis if 'y_axis' in locals() and y_axis in filtered.columns else 'Player', ascending=False).reset_index(drop=True).head(row_limit).head(row_limit),
         use_container_width=True,
     )
 else:
@@ -323,7 +320,7 @@ else:
 
     # Limit how many players are rendered in the chart
     plot_limit = st.slider("Number of players to plot", 1, min(30, len(filtered)), min(15, len(filtered)))
-    plot_df = filtered.head(plot_limit).copy()
+    plot_df = filtered.sort_values(by=y_axis if 'y_axis' in locals() and y_axis in filtered.columns else 'Player', ascending=False).head(plot_limit).copy()
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
@@ -339,6 +336,7 @@ else:
     show_labels = st.checkbox("Show player labels on chart", value=False)
 
     fig = px.scatter(
+        plot_df.head(row_limit),
         plot_df,
         x=x_axis,
         y=y_axis,
