@@ -14,7 +14,7 @@ st.set_page_config(
     page_icon="⚽",
 )
 
-st.title("⚽ Advanced Football Player Scouting App")
+st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown("Upload your football data CSV to analyze player metrics. Caching, robust parsing, ALL filters, drag‑and‑drop ordering, rounding to 2 decimals, downloads, and a radar chart included.")
 
 # ---------------------------
@@ -278,6 +278,8 @@ st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(
 # Scatter plot
 # ---------------------------
 st.subheader("Player Performance Visualization")
+# Recompute numeric columns (averages section was removed)
+num_cols = get_numeric_columns(filtered)
 plot_metrics = [c for c in num_cols if c not in {'Age', 'Market value'}]
 
 # Helpful defaults
