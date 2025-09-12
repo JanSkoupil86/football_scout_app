@@ -367,7 +367,7 @@ if compare_players:
     if comp_metrics:
         ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
         comp_df = comp_df.round(2)
-        st.dataframe(comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
+        st.dataframe(comp_df[ordered_comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
         # Download comparison
         csv_buf2 = StringIO()
