@@ -14,10 +14,11 @@ st.set_page_config(
     page_icon="⚽",
 )
 
-st.title("⚽ Advanced Football Player Scouting App")
+st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
-    
+    "Caching, robust parsing, ALL filters, drag-and-drop ordering, rounding to 2 decimals, "
+    "downloads, a radar chart, and a calculated player profile score."
 )
 
 # ---------------------------
@@ -94,6 +95,41 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
+
+def _zscore(series: pd.Series) -> pd.Series:
+    """Z-score with safe zero-std handling."""
+    m = series.mean()
+    s = series.std(ddof=0)
+    if pd.isna(s) or s == 0:
+        return pd.Series(np.zeros(len(series)), index=series.index)
+    return (series - m) / s
+
+def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: list[float], new_col: str) -> pd.DataFrame:
+    """
+    Add a weighted z-score composite column to df for the given metrics.
+    Uses z-score across the CURRENT df (filtered view).
+    Only uses present metrics; weights align to those.
+    """
+    present = [m for m in metrics if m in df.columns]
+    if not present:
+        df[new_col] = 0.0
+        return df
+
+    w_map = {m: w for m, w in zip(metrics, weights)}
+    used_weights = np.array([w_map[m] for m in present], dtype=float)
+    if used_weights.sum() == 0:
+        used_weights = np.ones_like(used_weights)
+    used_weights = used_weights / used_weights.sum()
+
+    z_cols = []
+    for m in present:
+        z = _zscore(df[m].astype(float))
+        z_cols.append(z.values.reshape(-1, 1))
+    Z = np.hstack(z_cols)  # (n_players, n_metrics)
+
+    score = (Z * used_weights.reshape(1, -1)).sum(axis=1)
+    df[new_col] = np.round(score, 2)
+    return df
 
 # ---------------------------
 # Sidebar — File uploader
@@ -209,20 +245,47 @@ if filtered.empty:
     st.stop()
 
 # ---------------------------
+# Player Profiles (Calculated Fields) — z-score based
+# ---------------------------
+calc_col_name = None
+with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
+    st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
+    profile = st.selectbox("Profile", ["(none)", "Pressing Forward"], index=1)
+
+    if profile == "Pressing Forward":
+        pf_metrics = [
+            "Defensive duels per 90",
+            "Pressing duels per 90",
+            "Interceptions per 90",
+            "Shots per 90",
+            "Progressive runs per 90",
+        ]
+        # Default weights (editable)
+        w1 = st.slider("Weight: Defensive duels per 90", 0.0, 5.0, 1.0, 0.1)
+        w2 = st.slider("Weight: Pressing duels per 90", 0.0, 5.0, 1.5, 0.1)
+        w3 = st.slider("Weight: Interceptions per 90", 0.0, 5.0, 1.2, 0.1)
+        w4 = st.slider("Weight: Shots per 90", 0.0, 5.0, 1.0, 0.1)
+        w5 = st.slider("Weight: Progressive runs per 90", 0.0, 5.0, 1.3, 0.1)
+        pf_weights = [w1, w2, w3, w4, w5]
+
+        calc_col_name = "Score: Pressing Forward"
+        filtered = make_profile_score(filtered, pf_metrics, pf_weights, calc_col_name)
+        st.caption(f"✅ Added column **{calc_col_name}** to the dataset.")
+
+# ---------------------------
 # Data table (select columns)
 # ---------------------------
 st.subheader("Filtered Player Data")
 
 num_cols_for_rank = get_numeric_columns(filtered)
 _default_rank = next(
-    (m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG'] if m in filtered.columns),
+    (m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG', calc_col_name] if m and m in filtered.columns),
     (num_cols_for_rank[0] if num_cols_for_rank else 'Minutes played')
 )
 rank_metric = st.session_state.get('rank_metric', _default_rank)
 
-# Drag & drop helper (optional community components)
 def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
-    """Try to enable drag-and-drop ordering; fall back silently if component missing."""
+    """Try optional drag-and-drop libs; fall back silently."""
     try:
         from streamlit_sortable import sort_items  # type: ignore
         ordered = sort_items(items=items, direction=direction, key=key)
@@ -233,13 +296,14 @@ def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> li
             ordered = sort_items(items=items, direction=direction, key=key)
             return ordered or items
         except Exception:
-            return items  # no hint/caption
+            return items  # silent fallback
 
 default_cols = [c for c in [
     'Player', 'Team', 'League', 'Main Position', 'Age',
     'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
-    'Goals', 'Assists', 'xG', 'xA', 'Minutes played'
-] if c in filtered.columns]
+    'Goals', 'Assists', 'xG', 'xA', 'Minutes played',
+    calc_col_name if calc_col_name and calc_col_name in filtered.columns else None
+] if c and c in filtered.columns]
 
 # Build selection options (exclude redundant/raw columns when parsed versions exist)
 exclude_cols = set()
@@ -280,13 +344,17 @@ st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(
 # Scatter plot
 # ---------------------------
 st.subheader("Player Performance Visualization")
-# Recompute numeric columns (averages section was removed)
+# Recompute numeric columns (if profile added)
 num_cols = get_numeric_columns(filtered)
 plot_metrics = [c for c in num_cols if c not in {'Age', 'Market value'}]
 
 # Helpful defaults
 x_default = 'Goals per 90' if 'Goals per 90' in plot_metrics else (plot_metrics[0] if plot_metrics else None)
-y_default = 'Assists per 90' if 'Assists per 90' in plot_metrics else (plot_metrics[1] if len(plot_metrics) > 1 else x_default)
+# Prefer calculated score as Y if available
+if calc_col_name and calc_col_name in plot_metrics:
+    y_default = calc_col_name
+else:
+    y_default = 'Assists per 90' if 'Assists per 90' in plot_metrics else (plot_metrics[1] if len(plot_metrics) > 1 else x_default)
 
 if x_default is None or y_default is None:
     st.warning("No numerical metrics available for plotting.")
@@ -317,7 +385,7 @@ else:
                            1, min(30, len(filtered)), min(15, len(filtered)))
     plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
     if remove_outliers:
-        # z-score on selected axes
+        # z-score on selected axes (based on currently plotted subset)
         for ax in [x_axis, y_axis]:
             if plot_df[ax].std(ddof=0) > 0:
                 z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
@@ -352,7 +420,7 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------
-# Player comparison + Radar chart (Z-score)
+# Player comparison + Radar chart (z-score normalized)
 # ---------------------------
 st.subheader("Compare Selected Players")
 compare_players = st.multiselect(
@@ -391,44 +459,5 @@ if compare_players:
         st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
                            file_name="player_comparison.csv", mime="text/csv")
 
-        # ----- Radar chart with Z-SCORES over the CURRENTLY FILTERED PLAYERS -----
-        mm_base = filtered.set_index('Player')  # <- pool for z-score stats (matches "Players matching filters: N")
-        # Mean and std for each metric across filtered players
-        metric_means = {m: mm_base[m].mean() for m in ordered_comp_metrics}
-        metric_stds  = {m: mm_base[m].std(ddof=0) for m in ordered_comp_metrics}
-
-        def zscore(val, mean, std):
-            if pd.isna(val) or pd.isna(mean) or pd.isna(std) or std == 0:
-                return 0.0
-            return float((val - mean) / std)
-
-        theta = ordered_comp_metrics
-        fig_radar = go.Figure()
-        for player in compare_players:
-            row = comp_df.loc[player, ordered_comp_metrics]
-            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0
-                 for m in ordered_comp_metrics]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=r + [r[0]],
-                theta=theta + [theta[0]],
-                fill='toself',
-                name=player,
-                text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
-                hoverinfo="text"
-            ))
-
-        # Clip to a sensible z-score range (±3 std devs covers ~99.7%)
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 4])),
-            showlegend=True,
-            template='plotly_white',
-            height=640
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-    else:
-        st.info("Select metrics to compare players.")
-else:
-    st.info("Select players above to compare their stats and see a radar chart.")
-
-st.markdown("---")
-st.markdown("Developed with ❤️ using Streamlit & Plotly | Enhanced edition ✨")
+        # Radar chart — z-score across the CURRENT filtered set
+        mm_base = filtered.set
