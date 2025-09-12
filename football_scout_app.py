@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("⚽ Advanced Football Player Scouting App")
-st.markdown("Upload your football data CSV to analyze player metrics)
+st.markdown("Upload your football data CSV to analyze player metrics")
 
 # ---------------------------
 # Utilities
