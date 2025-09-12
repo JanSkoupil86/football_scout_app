@@ -273,13 +273,9 @@ if selected_display_cols:
         ordered_cols = selected_display_cols
 
     st.dataframe(
-        # Enable automatic column width sizing
+        filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
-        column_config=None,
-        hide_index=False,
-        height=None,
-        width=None,
-        ) # patched
+    )
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
     )
@@ -389,13 +385,9 @@ if compare_players:
     if comp_metrics:
         ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
         st.dataframe(
-        # Enable automatic column width sizing
+        filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
-        column_config=None,
-        hide_index=False,
-        height=None,
-        width=None,
-        ) # patchedcomp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
+    )comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
         # Download comparison
         csv_buf2 = StringIO()
