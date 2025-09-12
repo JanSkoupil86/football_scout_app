@@ -396,11 +396,16 @@ if compare_players:
         for player in compare_players:
             row = comp_df.loc[player, ordered_comp_metrics]
             r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in ordered_comp_metrics]
-            # close the loop
-            fig_radar.add_trace(go.Scatterpolar(r=r + [r[0]], theta=theta + [theta[0]], fill='toself', name=player))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=r + [r[0]],
+                theta=theta + [theta[0]],
+                fill='toself',
+                name=player,
+                text=[f"{player}: {val:.2f}" for val in r] + [f"{player}: {r[0]:.2f}"],
+                hoverinfo="text"
+            ))
 
-        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=True, template='plotly_white', height=640)
-        st.plotly_chart(fig_radar, use_container_width=True)
+        fig_radar.update_layout(
     else:
         st.info("Select metrics to compare players.")
 else:
