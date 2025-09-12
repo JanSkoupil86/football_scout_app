@@ -321,15 +321,22 @@ else:
         x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
     with c2:
         y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
-    # keep table ranking in sync with Y metric
-    st.session_state['rank_metric'] = y_axis
+    # Choose which metric to rank/sort by (default to current Y-axis)
+    rankable_metrics = [m for m in plot_metrics]
+    rank_by = st.selectbox(
+        "Rank table & plot by",
+        options=rankable_metrics,
+        index=rankable_metrics.index(y_axis) if y_axis in rankable_metrics else 0,
+        help="Top‑N selection for both the table and the chart will use this metric."
+    )
+    st.session_state['rank_metric'] = rank_by
 
     color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
     # Limit how many players are rendered in the chart
-    plot_limit = st.slider("Number of players to plot (Top-N by Y-axis)", 1, min(30, len(filtered)), min(15, len(filtered)))
-    plot_df = filtered.sort_values(by=y_axis, ascending=False).head(plot_limit).copy()
+    plot_limit = st.slider("Number of players to plot (Top‑N by rank metric)",, 1, min(30, len(filtered)), min(15, len(filtered)))
+    plot_df = filtered.sort_values(by=st.session_state.get('rank_metric', y_axis), ascending=False).head(plot_limit).copy()
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
