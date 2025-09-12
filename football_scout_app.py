@@ -419,7 +419,7 @@ if compare_players:
 
         # Clip to a sensible z-score range (±3 std devs covers ~99.7%)
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 4])),
             showlegend=True,
             template='plotly_white',
             height=640
