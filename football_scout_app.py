@@ -219,6 +219,28 @@ if filtered.empty:
 # ---------------------------
 st.subheader("Filtered Player Data")
 
+# --- Drag & drop helpers (graceful fallback) ---
+
+def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
+    """Return a reordered list using drag-and-drop, if an optional component is installed.
+    Falls back to the original order when unavailable.
+    Supported packages: `streamlit-sortable` (preferred) or `streamlit-sortables`.
+    """
+    try:
+        # streamlit-sortable (pip install streamlit-sortable)
+        from streamlit_sortable import sort_items  # type: ignore
+        ordered = sort_items(items=items, direction=direction, key=key)
+        return ordered or items
+    except Exception:
+        try:
+            # streamlit-sortables (legacy alt: pip install streamlit-sortables)
+            from streamlit_sortables import sort_items  # type: ignore
+            ordered = sort_items(items=items, direction=direction, key=key)
+            return ordered or items
+        except Exception:
+            st.caption("💡 Install `streamlit-sortable` to enable drag-and-drop reordering.")
+            return items
+
 default_cols = [c for c in [
     'Player', 'Team', 'League', 'Main Position', 'Age',
     'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
@@ -232,14 +254,33 @@ if 'Market value (M€)' in filtered.columns:
 
 display_options = [c for c in filtered.columns if c not in exclude_cols]
 selected_display_cols = st.multiselect(
+    # Note: Streamlit multiselect doesn't support drag/drop ordering.
+    # We'll use st.sortable if available (experimental) or st.data_editor as workaround.
+
     "Columns to display",
     options=display_options,
     default=default_cols,
 )
 
+ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
+
 if selected_display_cols:
+    # Let user reorder the chosen columns
+    try:
+        import streamlit_sortables as sortables
+        ordered_cols = sortables.sort_items(selected_display_cols, direction="horizontal", key="col_order")
+    except Exception:
+        ordered_cols = selected_display_cols
+
     st.dataframe(
-        filtered[selected_display_cols].sort_values(by="Player").reset_index(drop=True),
+        # Enable automatic column width sizing
+        use_container_width=True,
+        column_config=None,
+        hide_index=False,
+        height=None,
+        width=None,
+        ) # patched
+        filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
     )
 else:
@@ -247,7 +288,7 @@ else:
 
 # Download filtered data
 csv_buf = StringIO()
-filtered[selected_display_cols or default_cols].to_csv(csv_buf, index=False)
+filtered[ordered_display_cols or default_cols].to_csv(csv_buf, index=False)
 st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(), file_name="filtered_players.csv", mime="text/csv")
 
 # ---------------------------
@@ -267,10 +308,12 @@ selected_avg_metrics = st.multiselect(
     default=default_avg if default_avg else metric_choices[:4]
 )
 
+ordered_avg_metrics = reorder_pills(selected_avg_metrics, key="order_avg_metrics")
+
 if selected_avg_metrics:
     n_cols = min(4, len(selected_avg_metrics))
     cols = st.columns(n_cols)
-    for i, m in enumerate(selected_avg_metrics):
+    for i, m in enumerate(ordered_avg_metrics):
         val = filtered[m].mean()
         suffix = "%" if m.endswith(PCT_SUFFIX) else ""
         cols[i % n_cols].metric(f"Avg {m}", f"{val:.2f}{suffix}")
@@ -344,18 +387,26 @@ if compare_players:
     )
 
     if comp_metrics:
-        st.dataframe(comp_df[comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
+        ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
+        st.dataframe(
+        # Enable automatic column width sizing
+        use_container_width=True,
+        column_config=None,
+        hide_index=False,
+        height=None,
+        width=None,
+        ) # patchedcomp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
         # Download comparison
         csv_buf2 = StringIO()
-        comp_df[comp_metrics].to_csv(csv_buf2)
+        comp_df[ordered_comp_metrics].to_csv(csv_buf2)
         st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(), file_name="player_comparison.csv", mime="text/csv")
 
         # Radar chart (normalize across the filtered set for comparability)
         # Min-max per metric using only players currently filtered (not just selected)
         mm_base = filtered.set_index('Player')
         mm = {}
-        for m in comp_metrics:
+        for m in ordered_comp_metrics:
             series = mm_base[m].replace([np.inf, -np.inf], np.nan).dropna()
             if series.empty:
                 mm[m] = (0.0, 1.0)
@@ -368,10 +419,10 @@ if compare_players:
         def scale(val, lo, hi):
             return float((val - lo) / (hi - lo))
 
-        theta = comp_metrics
+        theta = ordered_comp_metrics
         fig_radar = go.Figure()
         for player in compare_players:
-            row = comp_df.loc[player, comp_metrics]
+            row = comp_df.loc[player, ordered_comp_metrics]
             r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in comp_metrics]
             # close the loop
             fig_radar.add_trace(go.Scatterpolar(r=r + [r[0]], theta=theta + [theta[0]], fill='toself', name=player))
