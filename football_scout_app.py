@@ -216,6 +216,11 @@ if filtered.empty:
 # ---------------------------
 st.subheader("Filtered Player Data")
 
+# Rank metric used by the table (kept in sync with scatter Y-axis later)
+num_cols_for_rank = get_numeric_columns(filtered)
+_default_rank = next((m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG'] if m in filtered.columns), (num_cols_for_rank[0] if num_cols_for_rank else 'Minutes played'))
+rank_metric = st.session_state.get('rank_metric', _default_rank)
+
 # Drag & drop helper (optional community components)
 
 def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
@@ -253,13 +258,12 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Row limit option
-    row_limit = st.slider("Number of rows to show", 1, 30, 15)
+    # Row limit option (Top-N by current rank metric)
+    row_limit = st.slider(f"Number of rows to show (Top-N by {rank_metric})", 1, 30, 15)
     st.dataframe(
-        filtered[ordered_display_cols]
-            .sort_values(by="Player")
+        filtered.sort_values(by=rank_metric, ascending=False)[ordered_display_cols]
             .reset_index(drop=True)
-            .head(row_limit).head(row_limit),
+            .head(row_limit),
         use_container_width=True,
     )
 else:
@@ -317,13 +321,15 @@ else:
         x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
     with c2:
         y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
+    # keep table ranking in sync with Y metric
+    st.session_state['rank_metric'] = y_axis
 
     color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
     # Limit how many players are rendered in the chart
-    plot_limit = st.slider("Number of players to plot", 1, min(30, len(filtered)), min(15, len(filtered)))
-    plot_df = filtered.head(plot_limit).copy()
+    plot_limit = st.slider("Number of players to plot (Top-N by Y-axis)", 1, min(30, len(filtered)), min(15, len(filtered)))
+    plot_df = filtered.sort_values(by=y_axis, ascending=False).head(plot_limit).copy()
     if remove_outliers:
         # z-score on selected axes
         for ax in [x_axis, y_axis]:
@@ -339,7 +345,6 @@ else:
     show_labels = st.checkbox("Show player labels on chart", value=False)
 
     fig = px.scatter(
-        plot_df.head(row_limit),
         plot_df,
         x=x_axis,
         y=y_axis,
