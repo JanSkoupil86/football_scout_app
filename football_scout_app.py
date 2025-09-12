@@ -18,7 +18,7 @@ st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
     "Caching, robust parsing, ALL filters, drag-and-drop ordering, rounding to 2 decimals, "
-    "downloads, a radar chart, and a calculated player profile score."
+    "downloads, a radar chart (z-score standardized), and a calculated player profile score."
 )
 
 # ---------------------------
@@ -104,7 +104,7 @@ def _zscore(series: pd.Series) -> pd.Series:
         return pd.Series(np.zeros(len(series)), index=series.index)
     return (series - m) / s
 
-def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: list[float], new_col: str) -> pd.DataFrame:
+def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, new_col: str) -> pd.DataFrame:
     """
     Add a weighted z-score composite column to df for the given metrics.
     Uses z-score across the CURRENT df (filtered view).
@@ -115,6 +115,7 @@ def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: list[float
         df[new_col] = 0.0
         return df
 
+    # Align weights (already normalized to sum=1 before calling)
     w_map = {m: w for m, w in zip(metrics, weights)}
     used_weights = np.array([w_map[m] for m in present], dtype=float)
     if used_weights.sum() == 0:
@@ -245,7 +246,7 @@ if filtered.empty:
     st.stop()
 
 # ---------------------------
-# Player Profiles (Calculated Fields) — z-score based
+# Player Profiles (Calculated Fields) — z-score based with % weights
 # ---------------------------
 calc_col_name = None
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
@@ -260,13 +261,17 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             "Shots per 90",
             "Progressive runs per 90",
         ]
-        # Default weights (editable)
-        w1 = st.slider("Weight: Defensive duels per 90", 0.0, 5.0, 1.0, 0.1)
-        w2 = st.slider("Weight: Pressing duels per 90", 0.0, 5.0, 1.5, 0.1)
-        w3 = st.slider("Weight: Interceptions per 90", 0.0, 5.0, 1.2, 0.1)
-        w4 = st.slider("Weight: Shots per 90", 0.0, 5.0, 1.0, 0.1)
-        w5 = st.slider("Weight: Progressive runs per 90", 0.0, 5.0, 1.3, 0.1)
-        pf_weights = [w1, w2, w3, w4, w5]
+        # Percentage sliders (0–100). We normalize to sum=1 internally.
+        w1 = st.slider("Weight %: Defensive duels per 90", 0, 100, 20, 1)
+        w2 = st.slider("Weight %: Pressing duels per 90", 0, 100, 25, 1)
+        w3 = st.slider("Weight %: Interceptions per 90", 0, 100, 20, 1)
+        w4 = st.slider("Weight %: Shots per 90", 0, 100, 15, 1)
+        w5 = st.slider("Weight %: Progressive runs per 90", 0, 100, 20, 1)
+
+        pf_weights_pct = np.array([w1, w2, w3, w4, w5], dtype=float)
+        if pf_weights_pct.sum() == 0:
+            pf_weights_pct = np.ones_like(pf_weights_pct)
+        pf_weights = pf_weights_pct / pf_weights_pct.sum()  # normalize percentages to relative weights
 
         calc_col_name = "Score: Pressing Forward"
         filtered = make_profile_score(filtered, pf_metrics, pf_weights, calc_col_name)
@@ -460,4 +465,44 @@ if compare_players:
                            file_name="player_comparison.csv", mime="text/csv")
 
         # Radar chart — z-score across the CURRENT filtered set
-        mm_base = filtered.set
+        mm_base = filtered.set_index('Player')  # pool for stats equals the "Players matching filters" set
+
+        # Mean and std for each metric across filtered players
+        metric_means = {m: mm_base[m].mean() for m in ordered_comp_metrics}
+        metric_stds  = {m: mm_base[m].std(ddof=0) for m in ordered_comp_metrics}
+
+        def zscore(val, mean, std):
+            if pd.isna(val) or pd.isna(mean) or pd.isna(std) or std == 0:
+                return 0.0
+            return float((val - mean) / std)
+
+        theta = ordered_comp_metrics
+        fig_radar = go.Figure()
+        for player in compare_players:
+            row = comp_df.loc[player, ordered_comp_metrics]
+            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0
+                 for m in ordered_comp_metrics]
+            fig_radar.add_trace(go.Scatterpolar(
+                r=r + [r[0]],
+                theta=theta + [theta[0]],
+                fill='toself',
+                name=player,
+                text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
+                hoverinfo="text"
+            ))
+
+        # Clip to a sensible z-score range (±3 std devs covers ~99.7%)
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
+            showlegend=True,
+            template='plotly_white',
+            height=640
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+    else:
+        st.info("Select metrics to compare players.")
+else:
+    st.info("Select players above to compare their stats and see a radar chart.")
+
+st.markdown("---")
+st.markdown("Developed with ❤️ using Streamlit & Plotly | Enhanced edition ✨")
