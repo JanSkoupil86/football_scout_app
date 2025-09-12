@@ -275,35 +275,6 @@ filtered[ordered_display_cols or default_cols].to_csv(csv_buf, index=False)
 st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(), file_name="filtered_players.csv", mime="text/csv")
 
 # ---------------------------
-# Key Metrics Averages
-# ---------------------------
-st.subheader("Key Metrics Averages (Filtered Players)")
-num_cols = get_numeric_columns(filtered)
-# Exclude obvious filters from averages
-exclude_avg = {'Age', 'Minutes played', 'Matches played'}
-metric_choices = [c for c in num_cols if c not in exclude_avg]
-
-default_avg = [c for c in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Accurate passes, %', 'Duels won, %'] if c in metric_choices]
-
-selected_avg_metrics = st.multiselect(
-    "Metrics for average summary",
-    options=metric_choices,
-    default=default_avg if default_avg else metric_choices[:4]
-)
-
-ordered_avg_metrics = reorder_pills(selected_avg_metrics, key="order_avg_metrics")
-
-if selected_avg_metrics:
-    n_cols = min(4, len(selected_avg_metrics))
-    cols = st.columns(n_cols)
-    for i, m in enumerate(ordered_avg_metrics):
-        val = filtered[m].mean().round(2)
-        suffix = "%" if m.endswith(PCT_SUFFIX) else ""
-        cols[i % n_cols].metric(f"Avg {m}", f"{val:.2f}{suffix}")
-else:
-    st.info("Select metrics above to see averages.")
-
-# ---------------------------
 # Scatter plot
 # ---------------------------
 st.subheader("Player Performance Visualization")
