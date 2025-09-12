@@ -1,271 +1,375 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from io import StringIO
 
-# Set page config for better layout
-st.set_page_config(layout="wide", page_title="Advanced Football Scouting App", page_icon="⚽")
+# ---------------------------
+# Page config
+# ---------------------------
+st.set_page_config(
+    layout="wide",
+    page_title="Advanced Football Scouting App",
+    page_icon="⚽",
+)
 
-st.title("⚽ Advanced Football Player Scouting App")
-st.markdown("Upload your football data CSV to analyze player metrics from your extensive database.")
+st.title("⚽ Advanced Football Player Scouting App — Improved")
+st.markdown("Upload your football data CSV to analyze player metrics. This version adds caching, robust parsing, downloads, and a radar chart.")
 
-# List of all your provided columns for easy reference and dynamic usage
-ALL_COLUMNS = [
-    'Column1', 'Player', 'Team', 'Team within selected timeframe', 'Position', 'Age',
-    'Market value', 'Contract expires', 'Matches played', 'Minutes played', 'Goals', 'xG',
-    'Assists', 'xA', 'Duels per 90', 'Duels won, %', 'Birth country', 'Passport country',
-    'Foot', 'Height', 'Weight', 'On loan', 'Successful defensive actions per 90',
-    'Defensive duels per 90', 'Defensive duels won, %', 'Aerial duels per 90',
-    'Aerial duels won, %', 'Sliding tackles per 90', 'PAdj Sliding tackles',
-    'Shots blocked per 90', 'Interceptions per 90', 'PAdj Interceptions', 'Fouls per 90',
-    'Yellow cards', 'Yellow cards per 90', 'Red cards', 'Red cards per 90',
-    'Successful attacking actions per 90', 'Goals per 90', 'Non-penalty goals',
-    'Non-penalty goals per 90', 'xG per 90', 'Head goals', 'Head goals per 90', 'Shots',
-    'Shots per 90', 'Shots on target, %', 'Goal conversion, %', 'Assists per 90',
-    'Crosses per 90', 'Accurate crosses, %', 'Crosses from left flank per 90',
-    'Accurate crosses from left flank, %', 'Crosses from right flank per 90',
-    'Accurate crosses from right flank, %', 'Crosses to goalie box per 90',
-    'Dribbles per 90', 'Successful dribbles, %', 'Offensive duels per 90',
-    'Offensive duels won, %', 'Touches in box per 90', 'Progressive runs per 90',
-    'Accelerations per 90', 'Received passes per 90', 'Received long passes per 90',
-    'Fouls suffered per 90', 'Passes per 90', 'Accurate passes, %', 'Forward passes per 90',
-    'Accurate forward passes, %', 'Back passes per 90', 'Accurate back passes, %',
-    'Lateral passes per 90', 'Accurate lateral passes, %', 'Short / medium passes per 90',
-    'Accurate short / medium passes, %', 'Long passes per 90', 'Accurate long passes, %',
-    'Average pass length, m', 'Average long pass length, m', 'xA per 90',
-    'Shot assists per 90', 'Second assists per 90', 'Third assists per 90',
-    'Smart passes per 90', 'Accurate smart passes, %', 'Key passes per 90',
-    'Passes to final third per 90', 'Accurate passes to final third, %',
-    'Passes to penalty area per 90', 'Accurate passes to penalty area, %',
-    'Through passes per 90', 'Accurate through passes, %', 'Deep completions per 90',
-    'Deep completed crosses per 90', 'Progressive passes per 90',
-    'Accurate progressive passes, %', 'Conceded goals', 'Conceded goals per 90',
-    'Shots against', 'Shots against per 90', 'Clean sheets', 'Save rate, %',
-    'xG against', 'xG against per 90', 'Prevented goals', 'Prevented goals per 90',
-    'Back passes received as GK per 90', 'Exits per 90', 'Aerial duels per 90.1',
-    'Free kicks per 90', 'Direct free kicks per 90', 'Direct free kicks on target, %',
-    'Corners per 90', 'Penalties taken', 'Penalty conversion, %', 'League', 'Main Position'
-]
+# ---------------------------
+# Utilities
+# ---------------------------
+@st.cache_data(show_spinner=False)
+def load_csv(file) -> pd.DataFrame:
+    # Try utf-8, fallback to latin-1
+    try:
+        return pd.read_csv(file)
+    except UnicodeDecodeError:
+        file.seek(0)
+        return pd.read_csv(file, encoding="latin-1")
 
-# Identify numerical columns (most of them except the identifying ones)
-NUMERIC_COLUMNS = [col for col in ALL_COLUMNS if col not in [
+# Known non-feature columns we generally don't treat as numeric
+NON_FEATURE_COLUMNS = {
     'Column1', 'Player', 'Team', 'Team within selected timeframe', 'Position', 'Birth country',
     'Passport country', 'Foot', 'On loan', 'Contract expires', 'League', 'Main Position'
-]]
+}
 
-# --- File Uploader ---
-uploaded_file = st.sidebar.file_uploader("Upload your Football Data CSV", type=["csv"])
+LIKELY_NUMERIC_NAMES = {
+    'Age', 'Market value', 'Matches played', 'Minutes played', 'Goals', 'xG', 'Assists', 'xA'
+}
 
-df = None # Initialize df outside the if block
+PCT_SUFFIX = ", %"  # columns that end with this are percentages
 
-if uploaded_file is not None:
-    try:
-        df = pd.read_csv(uploaded_file)
-        st.sidebar.success("CSV file loaded successfully!")
 
-        # Basic cleanup: Rename 'Column1' if it's just an index
-        if 'Column1' in df.columns and df['Column1'].nunique() == len(df): # Check if it looks like an index
-            df = df.drop(columns=['Column1'])
-            st.sidebar.info("Dropped 'Column1' as it appears to be an index.")
+def parse_market_value(series: pd.Series) -> pd.Series:
+    """Parse market value strings like '€12.5m', '€800k', '12,000,000' into float (EUR).
+    Returns float in millions of EUR for easier sliders.
+    """
+    if series.dtype.kind in 'iuf':
+        # already numeric; assume it's in same unit throughout; convert to millions if very large
+        s = series.astype(float)
+        if s.max() > 1e6:
+            return s / 1e6
+        return s
 
-        # Ensure essential columns exist, or provide a warning
-        required_cols = ['Player', 'Team', 'Main Position', 'Age', 'Market value', 'League']
-        if not all(col in df.columns for col in required_cols):
-            st.error(f"Missing one or more critical columns: {', '.join(required_cols)}. Please check your CSV.")
-            df = None # Invalidate df if critical columns are missing
+    def to_float(x):
+        if pd.isna(x):
+            return np.nan
+        s = str(x).strip().replace('€', '').replace(',', '').lower()
+        mult = 1.0
+        if s.endswith('m'):
+            mult = 1_000_000.0
+            s = s[:-1]
+        elif s.endswith('k'):
+            mult = 1_000.0
+            s = s[:-1]
+        try:
+            val = float(s) * mult
+        except ValueError:
+            return np.nan
+        # return in millions
+        return val / 1e6
+
+    return series.apply(to_float)
+
+
+def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    # Special-case market value
+    if 'Market value' in df.columns:
+        df['Market value (M€)'] = parse_market_value(df['Market value'])
+    # Try to coerce all other columns that look numeric or end with percentage marker
+    for col in df.columns:
+        if col in NON_FEATURE_COLUMNS or col == 'Market value':
+            continue
+        if col.endswith(PCT_SUFFIX):
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '', regex=False), errors='coerce')
         else:
-            # --- Data Type Conversion ---
-            for col in NUMERIC_COLUMNS:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            # Fill NaN for numeric columns that might be used in calculations/metrics display
-            for col in NUMERIC_COLUMNS:
-                if col in df.columns:
-                    df[col] = df[col].fillna(0) # Fill numeric NaNs with 0
-
-            # --- Sidebar Filters ---
-            st.sidebar.header("League Filters")
-
-            # --- League filter moved up and applied first ---
-            leagues = sorted(df['League'].unique().tolist())
-            selected_leagues = st.sidebar.multiselect("Select League(s)", leagues, default=leagues)
-
-            # Apply league filter immediately
-            initial_filtered_df = df[df['League'].isin(selected_leagues)]
-
-            # Check if any players remain after league filter
-            if initial_filtered_df.empty:
-                st.sidebar.warning("No players found for the selected leagues. Please adjust your league selection.")
-                filtered_df = pd.DataFrame() # Set filtered_df to empty to prevent further operations
-            else:
-                teams = sorted(initial_filtered_df['Team'].unique().tolist()) # Teams are now based on selected leagues
-                main_positions = sorted(initial_filtered_df['Main Position'].unique().tolist()) # Positions also
-                
-                selected_teams = st.sidebar.multiselect("Select Team(s)", teams, default=teams)
-                selected_main_positions = st.sidebar.multiselect("Select Main Position(s)", main_positions, default=main_positions)
-
-                min_age, max_age = int(initial_filtered_df['Age'].min()), int(initial_filtered_df['Age'].max())
-                age_range = st.sidebar.slider("Select Age Range", min_age, max_age, (min_age, max_age))
-
-                min_mv, max_mv = initial_filtered_df['Market value'].min(), initial_filtered_df['Market value'].max()
-                market_value_range = st.sidebar.slider("Select Market Value Range", float(min_mv), float(max_mv), (float(min_mv), float(max_mv)))
+            if df[col].dtype.kind not in 'iuf':
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
 
 
-                # Apply remaining filters on the initial_filtered_df
-                filtered_df = initial_filtered_df[
-                    (initial_filtered_df['Team'].isin(selected_teams)) &
-                    (initial_filtered_df['Main Position'].isin(selected_main_positions)) &
-                    (initial_filtered_df['Age'] >= age_range[0]) & (initial_filtered_df['Age'] <= age_range[1]) &
-                    (initial_filtered_df['Market value'] >= market_value_range[0]) & (initial_filtered_df['Market value'] <= market_value_range[1])
-                ]
-
-                # Filter by minutes played to exclude players with very low sample size
-                min_minutes_max = int(initial_filtered_df['Minutes played'].max()) if not initial_filtered_df.empty else 0
-                min_minutes = st.sidebar.slider("Minimum Minutes Played", 0, min_minutes_max, 500)
-                filtered_df = filtered_df[filtered_df['Minutes played'] >= min_minutes]
-
-            st.sidebar.markdown(f"**Players matching filters: {len(filtered_df)}**")
+def get_numeric_columns(df: pd.DataFrame) -> list:
+    return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
 
-            # --- Main Content Area ---
-            if not filtered_df.empty:
-                st.subheader("Filtered Player Data")
+# ---------------------------
+# Sidebar — File uploader
+# ---------------------------
+uploaded = st.sidebar.file_uploader("Upload your Football Data CSV", type=["csv"]) 
 
-                # Allow user to select which columns to display
-                default_display_cols = ['Player', 'Team', 'League', 'Main Position', 'Age', 'Market value',
-                                        'Goals', 'Assists', 'xG', 'xA', 'Minutes played']
-                # Ensure defaults are actually in ALL_COLUMNS and in the df
-                default_display_cols = [col for col in default_display_cols if col in df.columns]
+if uploaded is None:
+    st.info("Please upload your football data CSV to begin. Include columns like 'Player', 'Team', 'Main Position', 'Age', 'Goals per 90', etc.")
+    st.stop()
 
-                # Available columns for selection, excluding internal ones and potentially those with mostly 0s or NaNs
-                display_options = [col for col in df.columns if col not in ['Column1', 'Team within selected timeframe', 'Position']] # Exclude Column1 and Position (using Main Position)
-                selected_display_cols = st.multiselect(
-                    "Select columns to display",
-                    options=display_options,
-                    default=default_display_cols
-                )
+# Load & clean
+try:
+    df_raw = load_csv(uploaded)
+except pd.errors.EmptyDataError:
+    st.error("The uploaded CSV file is empty.")
+    st.stop()
+except pd.errors.ParserError:
+    st.error("Could not parse the CSV file. Please ensure it is a valid CSV.")
+    st.stop()
 
-                if selected_display_cols:
-                    st.dataframe(filtered_df[selected_display_cols].sort_values(by="Player").reset_index(drop=True))
-                else:
-                    st.warning("Please select at least one column to display.")
+# Basic sanity checks
+required_cols = ['Player', 'Team', 'Main Position', 'Age', 'League']
+missing = [c for c in required_cols if c not in df_raw.columns]
+if missing:
+    st.error(f"Missing critical column(s): {', '.join(missing)}. Please check your CSV.")
+    st.stop()
 
+# Drop 'Column1' if it looks like an index
+if 'Column1' in df_raw.columns and df_raw['Column1'].nunique() == len(df_raw):
+    df_raw = df_raw.drop(columns=['Column1'])
 
-                # --- Key Metrics Summary (Dynamic) ---
-                st.subheader("Key Metrics Averages (Filtered Players)")
-                selected_avg_metrics = st.multiselect(
-                    "Select metrics for average summary",
-                    options=[col for col in NUMERIC_COLUMNS if col in filtered_df.columns and col not in ['Age', 'Market value', 'Minutes played', 'Matches played']], # Exclude Age, MV, Minutes, Matches from averages as they are filtered
-                    default=['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Accurate passes, %', 'Duels won, %']
-                )
+# Coerce types
+df = coerce_numeric(df_raw)
 
-                if selected_avg_metrics:
-                    num_cols_for_metrics = min(4, len(selected_avg_metrics)) # Display up to 4 metrics per row
-                    cols = st.columns(num_cols_for_metrics)
-                    for i, metric in enumerate(selected_avg_metrics):
-                        if metric in filtered_df.columns:
-                            cols[i % num_cols_for_metrics].metric(f"Avg {metric}", f"{filtered_df[metric].mean():.2f}")
-                else:
-                    st.info("Select metrics above to see their averages.")
+# Fill NaNs in numeric columns for safe aggregations
+for col in get_numeric_columns(df):
+    df[col] = df[col].fillna(0)
 
-                # --- Visualization ---
-                st.subheader("Player Performance Visualization")
+# ---------------------------
+# Sidebar — Filters
+# ---------------------------
+st.sidebar.header("Filters")
 
-                # Filter numerical columns to only those actually present in the DataFrame
-                available_plot_metrics = [col for col in NUMERIC_COLUMNS if col in filtered_df.columns]
+# League first
+leagues = sorted(df['League'].dropna().unique().tolist())
+selected_leagues = st.sidebar.multiselect("League(s)", leagues, default=leagues)
+filtered = df[df['League'].isin(selected_leagues)].copy()
 
-                if available_plot_metrics:
-                    col_plot1, col_plot2 = st.columns(2)
-                    with col_plot1:
-                        x_axis = st.selectbox(
-                            "Select X-axis metric",
-                            available_plot_metrics,
-                            index=available_plot_metrics.index('Goals per 90') if 'Goals per 90' in available_plot_metrics else 0
-                        )
-                    with col_plot2:
-                        y_axis = st.selectbox(
-                            "Select Y-axis metric",
-                            available_plot_metrics,
-                            index=available_plot_metrics.index('Assists per 90') if 'Assists per 90' in available_plot_metrics else min(1, len(available_plot_metrics)-1)
-                        )
+if filtered.empty:
+    st.warning("No players found for selected leagues. Adjust filters.")
+    st.stop()
 
-                    color_by_option = st.selectbox(
-                        "Color points by",
-                        options=['Main Position', 'Team', 'League', 'Foot', 'None'],
-                        index=0
-                    )
+# Teams and positions depend on league filter
+teams = sorted(filtered['Team'].dropna().unique().tolist())
+positions = sorted(filtered['Main Position'].dropna().unique().tolist())
 
-                    size_by_option = st.selectbox(
-                        "Size points by",
-                        options=['None', 'Minutes played', 'Market value', 'Age', 'Matches played'],
-                        index=1
-                    )
+selected_teams = st.sidebar.multiselect("Team(s)", teams, default=teams)
+selected_positions = st.sidebar.multiselect("Main Position(s)", positions, default=positions)
 
-                    if x_axis and y_axis:
-                        fig = px.scatter(
-                            filtered_df,
-                            x=x_axis,
-                            y=y_axis,
-                            hover_name="Player",
-                            color=color_by_option if color_by_option != 'None' else None,
-                            size=size_by_option if size_by_option != 'None' else None,
-                            title=f"{y_axis} vs. {x_axis} by Player",
-                            template="plotly_white", # A cleaner plot theme
-                            height=600
-                        )
-                        fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
-                        st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("No numerical metrics available for plotting in the filtered data.")
+# Age slider
+age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
+age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max))
 
-
-                # --- Player Comparison (Enhanced) ---
-                st.subheader("Compare Selected Players")
-                # Dropdown for selecting players to compare
-                compare_players_options = filtered_df['Player'].unique().tolist()
-                players_to_compare = st.multiselect(
-                    "Select players to compare (max 5 recommended for clarity)",
-                    compare_players_options,
-                    default=[]
-                )
-
-                if players_to_compare:
-                    comparison_df = filtered_df[filtered_df['Player'].isin(players_to_compare)].set_index('Player')
-
-                    # Select metrics for comparison table
-                    comparison_metrics = st.multiselect(
-                        "Select metrics for comparison table",
-                        options=[col for col in NUMERIC_COLUMNS if col in comparison_df.columns and not col.endswith(', %')], # Exclude percentages from comparison for now, or handle them specially
-                        default=['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
-                                 'Accurate passes, %', 'Duels won, %', 'Successful defensive actions per 90',
-                                 'Market value', 'Age', 'Minutes played']
-                    )
-
-                    if comparison_metrics:
-                        # Display comparison table
-                        st.dataframe(comparison_df[comparison_metrics].transpose().style.highlight_max(axis=1, color='lightgreen'))
-
-                        # Optional: Radar chart for comparison (requires more setup)
-                        st.markdown("##### Radar Chart Comparison (🚧 Coming Soon!)")
-                        # Placeholder for a future radar chart implementation
-                        # This would involve normalizing data and using go.Figure with go.Scatterpolar
-                    else:
-                        st.info("Select metrics to compare players in the table.")
-                else:
-                    st.info("Select players from the list above to compare their stats.")
-
-            else:
-                st.warning("No players match the selected filters. Please adjust your criteria.")
-
-    except pd.errors.EmptyDataError:
-        st.error("The uploaded CSV file is empty. Please upload a file with data.")
-    except pd.errors.ParserError:
-        st.error("Could not parse the CSV file. Please ensure it is a valid CSV.")
-    except Exception as e:
-        st.error(f"An unexpected error occurred: {e}")
-        st.info("Please ensure your CSV is correctly formatted and contains expected columns.")
+# Market value slider — use parsed 'Market value (M€)' if available, else fallback
+if 'Market value (M€)' in filtered.columns:
+    mv_col = 'Market value (M€)'
 else:
-    st.info("Please upload your football data CSV to begin scouting. It should contain columns like 'Player', 'Team', 'Main Position', 'Age', 'Goals per 90', etc.")
+    mv_col = 'Market value' if 'Market value' in filtered.columns else None
+
+if mv_col is not None:
+    mv_min, mv_max = float(filtered[mv_col].replace([np.inf, -np.inf], np.nan).dropna().min()), float(filtered[mv_col].replace([np.inf, -np.inf], np.nan).dropna().max())
+    if np.isfinite(mv_min) and np.isfinite(mv_max):
+        mv_range = st.sidebar.slider(
+            "Market value range" + (" (M€)" if mv_col == 'Market value (M€)' else ""),
+            float(np.floor(mv_min)), float(np.ceil(mv_max)), (float(np.floor(mv_min)), float(np.ceil(mv_max)))
+        )
+    else:
+        mv_col = None  # disable if bad values
+
+# Minutes played threshold
+if 'Minutes played' in filtered.columns:
+    min_minutes_max = int(filtered['Minutes played'].max())
+    min_minutes = st.sidebar.slider("Minimum minutes played", 0, max(0, min_minutes_max), min(500, max(0, min_minutes_max)))
+else:
+    min_minutes = 0
+
+# Optional: outlier removal using z-score on selected plotting metrics later
+remove_outliers = st.sidebar.checkbox("Remove outliers (Z-score > 3)", value=False, help="Applied to the selected X/Y metrics only")
+
+# Apply remaining filters
+mask = (
+    filtered['Team'].isin(selected_teams) &
+    filtered['Main Position'].isin(selected_positions) &
+    (filtered['Age'].between(age_range[0], age_range[1]))
+)
+if mv_col is not None:
+    mask &= filtered[mv_col].between(mv_range[0], mv_range[1])
+if 'Minutes played' in filtered.columns:
+    mask &= filtered['Minutes played'] >= min_minutes
+
+filtered = filtered.loc[mask].copy()
+
+st.sidebar.markdown(f"**Players matching filters: {len(filtered)}**")
+
+if filtered.empty:
+    st.warning("No players match the selected filters. Please adjust your criteria.")
+    st.stop()
+
+# ---------------------------
+# Data table (select columns)
+# ---------------------------
+st.subheader("Filtered Player Data")
+
+default_cols = [c for c in [
+    'Player', 'Team', 'League', 'Main Position', 'Age',
+    'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
+    'Goals', 'Assists', 'xG', 'xA', 'Minutes played'
+] if c in filtered.columns]
+
+# Build selection options (exclude redundant/raw columns when parsed versions exist)
+exclude_cols = set()
+if 'Market value (M€)' in filtered.columns:
+    exclude_cols.add('Market value')
+
+display_options = [c for c in filtered.columns if c not in exclude_cols]
+selected_display_cols = st.multiselect(
+    "Columns to display",
+    options=display_options,
+    default=default_cols,
+)
+
+if selected_display_cols:
+    st.dataframe(
+        filtered[selected_display_cols].sort_values(by="Player").reset_index(drop=True),
+        use_container_width=True,
+    )
+else:
+    st.info("Please select at least one column to display.")
+
+# Download filtered data
+csv_buf = StringIO()
+filtered[selected_display_cols or default_cols].to_csv(csv_buf, index=False)
+st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(), file_name="filtered_players.csv", mime="text/csv")
+
+# ---------------------------
+# Key Metrics Averages
+# ---------------------------
+st.subheader("Key Metrics Averages (Filtered Players)")
+num_cols = get_numeric_columns(filtered)
+# Exclude obvious filters from averages
+exclude_avg = {'Age', 'Minutes played', 'Matches played'}
+metric_choices = [c for c in num_cols if c not in exclude_avg]
+
+default_avg = [c for c in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Accurate passes, %', 'Duels won, %'] if c in metric_choices]
+
+selected_avg_metrics = st.multiselect(
+    "Metrics for average summary",
+    options=metric_choices,
+    default=default_avg if default_avg else metric_choices[:4]
+)
+
+if selected_avg_metrics:
+    n_cols = min(4, len(selected_avg_metrics))
+    cols = st.columns(n_cols)
+    for i, m in enumerate(selected_avg_metrics):
+        val = filtered[m].mean()
+        suffix = "%" if m.endswith(PCT_SUFFIX) else ""
+        cols[i % n_cols].metric(f"Avg {m}", f"{val:.2f}{suffix}")
+else:
+    st.info("Select metrics above to see averages.")
+
+# ---------------------------
+# Scatter plot
+# ---------------------------
+st.subheader("Player Performance Visualization")
+plot_metrics = [c for c in num_cols if c not in {'Age', 'Market value'}]
+
+# Helpful defaults
+x_default = 'Goals per 90' if 'Goals per 90' in plot_metrics else (plot_metrics[0] if plot_metrics else None)
+y_default = 'Assists per 90' if 'Assists per 90' in plot_metrics else (plot_metrics[1] if len(plot_metrics) > 1 else x_default)
+
+if x_default is None or y_default is None:
+    st.warning("No numerical metrics available for plotting.")
+else:
+    c1, c2 = st.columns(2)
+    with c1:
+        x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
+    with c2:
+        y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
+
+    color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
+    size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
+
+    plot_df = filtered.copy()
+    if remove_outliers:
+        # z-score on selected axes
+        for ax in [x_axis, y_axis]:
+            if plot_df[ax].std(ddof=0) > 0:
+                z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
+                plot_df = plot_df[np.abs(z) <= 3]
+
+    fig = px.scatter(
+        plot_df,
+        x=x_axis,
+        y=y_axis,
+        hover_name="Player" if 'Player' in plot_df.columns else None,
+        color=None if color_by == 'None' else color_by,
+        size=None if size_by == 'None' else size_by,
+        title=f"{y_axis} vs. {x_axis} by Player",
+        template="plotly_white",
+        height=620,
+    )
+    fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------
+# Player comparison + Radar chart
+# ---------------------------
+st.subheader("Compare Selected Players")
+compare_players = st.multiselect(
+    "Players to compare (max 5 recommended)",
+    options=sorted(filtered['Player'].dropna().unique().tolist()),
+    default=[]
+)
+
+if compare_players:
+    comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
+
+    comp_metric_choices = [c for c in num_cols if not c.endswith(PCT_SUFFIX)]
+    default_comp = [c for c in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Successful defensive actions per 90', 'Duels won, %'] if c in comp_metric_choices]
+
+    comp_metrics = st.multiselect(
+        "Metrics for comparison table & radar",
+        options=comp_metric_choices,
+        default=default_comp if default_comp else comp_metric_choices[:6]
+    )
+
+    if comp_metrics:
+        st.dataframe(comp_df[comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
+
+        # Download comparison
+        csv_buf2 = StringIO()
+        comp_df[comp_metrics].to_csv(csv_buf2)
+        st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(), file_name="player_comparison.csv", mime="text/csv")
+
+        # Radar chart (normalize across the filtered set for comparability)
+        # Min-max per metric using only players currently filtered (not just selected)
+        mm_base = filtered.set_index('Player')
+        mm = {}
+        for m in comp_metrics:
+            series = mm_base[m].replace([np.inf, -np.inf], np.nan).dropna()
+            if series.empty:
+                mm[m] = (0.0, 1.0)
+            else:
+                lo, hi = float(series.min()), float(series.max())
+                if hi - lo < 1e-9:
+                    hi = lo + 1.0
+                mm[m] = (lo, hi)
+
+        def scale(val, lo, hi):
+            return float((val - lo) / (hi - lo))
+
+        theta = comp_metrics
+        fig_radar = go.Figure()
+        for player in compare_players:
+            row = comp_df.loc[player, comp_metrics]
+            r = [scale(float(row[m]), *mm[m]) if pd.notna(row[m]) else 0.0 for m in comp_metrics]
+            # close the loop
+            fig_radar.add_trace(go.Scatterpolar(r=r + [r[0]], theta=theta + [theta[0]], fill='toself', name=player))
+
+        fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=True, template='plotly_white', height=640)
+        st.plotly_chart(fig_radar, use_container_width=True)
+    else:
+        st.info("Select metrics to compare players.")
+else:
+    st.info("Select players above to compare their stats and see a radar chart.")
 
 st.markdown("---")
-st.markdown("Developed with ❤️ using Streamlit & Plotly")
+st.markdown("Developed with ❤️ using Streamlit & Plotly | Enhanced edition ✨")
