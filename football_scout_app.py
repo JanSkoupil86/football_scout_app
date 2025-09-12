@@ -265,8 +265,8 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    st.dataframe(
-        filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
+    st.dataframe(filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True), use_container_width=True)
+.reset_index(drop=True),
         use_container_width=True
     ).reset_index(drop=True),
         use_container_width=True,
