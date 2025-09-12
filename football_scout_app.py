@@ -258,8 +258,10 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Row limit option (Top-N by current rank metric)
-    row_limit = st.slider(f"Number of rows to show (Top-N by {rank_metric})", 1, 30, 15)
+    # Allow user to choose which metric to rank rows by
+    rank_by = st.selectbox("Sort Top-N rows by", options=num_cols_for_rank, index=num_cols_for_rank.index(rank_metric) if rank_metric in num_cols_for_rank else 0)
+    row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
+    rank_metric = rank_by
     st.dataframe(
         filtered.sort_values(by=rank_metric, ascending=False)[ordered_display_cols]
             .reset_index(drop=True)
@@ -294,8 +296,7 @@ else:
         x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
     with c2:
         y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
-    # keep table ranking in sync with Y metric
-    st.session_state['rank_metric'] = y_axis
+    # (removed auto-sync of table ranking with Y metric)
 
     color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
     size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
