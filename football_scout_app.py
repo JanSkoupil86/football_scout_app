@@ -265,12 +265,14 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    st.dataframe(filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True), use_container_width=True)  # cleaned.reset_index(drop=True), use_container_width=True).reset_index(drop=True), use_container_width=True)
-.reset_index(drop=True), use_container_width=True).reset_index(drop=True),
-        use_container_width=True
-    ).reset_index(drop=True),
-        use_container_width=True,
-    )
+    # Let user reorder the chosen columns
+    try:
+        import streamlit_sortables as sortables
+        ordered_cols = sortables.sort_items(selected_display_cols, direction="horizontal", key="col_order")
+    except Exception:
+        ordered_cols = selected_display_cols
+
+    st.dataframe(
         filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True),
         use_container_width=True,
     )
@@ -379,11 +381,7 @@ if compare_players:
 
     if comp_metrics:
         ordered_comp_metrics = reorder_pills(comp_metrics, key="order_comp_metrics")
-        st.dataframe(filtered[ordered_display_cols].sort_values(by="Player").reset_index(drop=True), use_container_width=True)  # cleaned.reset_index(drop=True), use_container_width=True).reset_index(drop=True), use_container_width=True).reset_index(drop=True),
-        use_container_width=True
-    ).reset_index(drop=True),
-        use_container_width=True,
-    )comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
+        st.dataframe(comp_df[ordered_comp_metrics].transpose().style.highlight_max(axis=1, color='#C8E6C9'), use_container_width=True)
 
         # Download comparison
         csv_buf2 = StringIO()
