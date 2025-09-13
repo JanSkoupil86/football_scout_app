@@ -142,10 +142,6 @@ def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[l
     """
     Try to resolve requested metric names to existing df column names.
     Returns (resolved_list, missing_list).
-    Rules:
-      - exact match
-      - try inserting ', %' before % if missing
-      - fallback to normalization-based match ignoring spaces/commas/% and case
     """
     col_norm_map = {_norm(c): c for c in columns}
     resolved, missing = [], []
@@ -278,6 +274,7 @@ if filtered.empty:
 # Player Profiles (Calculated Fields) — Built-ins + Custom Profile
 # ---------------------------
 calc_col_name = None
+profile_metrics_in_use: list[str] = []  # <-- track metrics used by the active profile (order preserved)
 
 # Built-in goalkeeper profiles
 PROFILES = {
@@ -309,25 +306,6 @@ PROFILES = {
     ]
 }
 
-# Metric alias resolver (e.g., "Save rate %" -> "Save rate, %")
-def _norm(s: str) -> str:
-    return re.sub(r'[\s,%%]+', '', s).lower()
-
-def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
-    col_norm_map = {_norm(c): c for c in columns}
-    resolved, missing = [], []
-    for name in requested:
-        if name in columns:
-            resolved.append(name); continue
-        alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
-        if alt in columns:
-            resolved.append(alt); continue
-        key = _norm(name)
-        if key in col_norm_map:
-            resolved.append(col_norm_map[key]); continue
-        missing.append(name)
-    return resolved, missing
-
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
     st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
     mode = st.radio("Profile mode", ["Built-in", "Custom"], index=1, horizontal=True)
@@ -340,6 +318,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.info("Some profile metrics were not found in this dataset and will be skipped: " + ", ".join(missing))
 
         if resolved_metrics:
+            profile_metrics_in_use = resolved_metrics.copy()  # <-- sync to comparison defaults
             default_pct = max(1, int(100 / len(resolved_metrics)))
             weights_pct = []
             for i, m in enumerate(resolved_metrics, start=1):
@@ -359,6 +338,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
         numeric_cols = get_numeric_columns(filtered)
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
         if custom_metrics:
+            profile_metrics_in_use = custom_metrics.copy()  # <-- sync to comparison defaults
             default_pct = max(1, int(100 / len(custom_metrics)))
             weights_pct = []
             for i, m in enumerate(custom_metrics, start=1):
@@ -534,17 +514,24 @@ if compare_players:
     # ✅ Use the same numeric pool as profiles & table (includes % metrics & profile scores)
     comp_metric_choices = get_numeric_columns(filtered).copy()
 
-    # Sensible defaults; prefer profile score if exists
-    preferred_defaults = [
-        'Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
-        'Successful defensive actions per 90', 'Duels won, %'
-    ]
-    if calc_col_name and calc_col_name in comp_metric_choices:
-        preferred_defaults = [calc_col_name] + preferred_defaults
+    # ✅ Default to the exact metrics used in the active profile (order preserved)
+    default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
 
-    default_comp = [m for m in preferred_defaults if m in comp_metric_choices]
+    # Optionally prepend the profile score to defaults if present
+    if calc_col_name and calc_col_name in comp_metric_choices:
+        default_comp = [calc_col_name] + default_comp
+
+    # Fallback defaults if profile list is empty
     if not default_comp:
-        default_comp = comp_metric_choices[:6]
+        fallback_defaults = [
+            'Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
+            'Successful defensive actions per 90', 'Duels won, %'
+        ]
+        if calc_col_name and calc_col_name in comp_metric_choices:
+            fallback_defaults = [calc_col_name] + fallback_defaults
+        default_comp = [m for m in fallback_defaults if m in comp_metric_choices]
+        if not default_comp:
+            default_comp = comp_metric_choices[:6]
 
     comp_metrics = st.multiselect(
         "Metrics for comparison table & radar",
@@ -573,12 +560,6 @@ if compare_players:
             comp_df[ordered_comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'),
             use_container_width=True
         )
-
-        # Download comparison CSV
-        csv_buf2 = StringIO()
-        comp_df[ordered_comp_metrics].to_csv(csv_buf2)
-        st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
-                           file_name="player_comparison.csv", mime="text/csv")
 
         # Radar chart — z-score across the CURRENT filtered set
         mm_base = filtered.set_index('Player')  # pool for stats equals the "Players matching filters" set
@@ -614,6 +595,12 @@ if compare_players:
             height=640
         )
         st.plotly_chart(fig_radar, use_container_width=True)
+
+        # Download comparison CSV
+        csv_buf2 = StringIO()
+        comp_df[ordered_comp_metrics].to_csv(csv_buf2)
+        st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
+                           file_name="player_comparison.csv", mime="text/csv")
     else:
         st.info("Select metrics to compare players.")
 else:
