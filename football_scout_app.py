@@ -4,7 +4,6 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import StringIO
-import re
 
 # ---------------------------
 # Page config
@@ -19,7 +18,7 @@ st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
     "Caching, robust parsing, ALL filters, drag-and-drop ordering, rounding to 2 decimals, "
-    "downloads, a radar chart (z-score standardized), and calculated player profile scores (incl. Custom Profile)."
+    "downloads, a custom profile builder, and a z-score radar included."
 )
 
 # ---------------------------
@@ -51,37 +50,35 @@ NON_FEATURE_COLUMNS = {
     'Passport country', 'Foot', 'On loan', 'Contract expires', 'League', 'Main Position'
 }
 
-PCT_SUFFIX = ", %"  # dataset columns use a comma before %
+PCT_SUFFIX = ", %"  # columns that end with this are percentages (e.g., "Accurate passes, %")
 
 def parse_market_value(series: pd.Series) -> pd.Series:
     """Parse market value strings into float (millions of EUR)."""
     if series.dtype.kind in 'iuf':
         s = series.astype(float)
         return (s / 1e6) if s.max() > 1e6 else s
-
     def to_float(x):
         if pd.isna(x):
             return np.nan
         s = str(x).strip().replace('€', '').replace(',', '').lower()
         mult = 1.0
         if s.endswith('m'):
-            mult = 1_000_000.0; s = s[:-1]
+            mult = 1_000_000.0
+            s = s[:-1]
         elif s.endswith('k'):
-            mult = 1_000.0; s = s[:-1]
+            mult = 1_000.0
+            s = s[:-1]
         try:
             val = float(s) * mult
         except ValueError:
             return np.nan
         return val / 1e6
-
     return series.apply(to_float)
 
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Special-case market value
     if 'Market value' in df.columns:
         df['Market value (M€)'] = parse_market_value(df['Market value'])
-    # Coerce other numerics
     for col in df.columns:
         if col in NON_FEATURE_COLUMNS or col == 'Market value':
             continue
@@ -95,67 +92,66 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
-def _zscore(series: pd.Series) -> pd.Series:
-    """Z-score with safe zero-std handling."""
-    m = series.mean()
-    s = series.std(ddof=0)
-    if pd.isna(s) or s == 0:
-        return pd.Series(np.zeros(len(series)), index=series.index)
-    return (series - m) / s
+def zscore(series: pd.Series) -> pd.Series:
+    """Z-score (mean 0, std 1) with safe handling for constant series."""
+    s = series.astype(float).replace([np.inf, -np.inf], np.nan)
+    mu = s.mean()
+    sd = s.std(ddof=0)
+    if sd == 0 or pd.isna(sd):
+        return pd.Series(0.0, index=s.index)
+    return (s - mu) / sd
 
-def normalize_weights(pcts: np.ndarray) -> np.ndarray:
-    if pcts.sum() == 0:
-        return np.ones_like(pcts) / len(pcts)
-    return pcts / pcts.sum()
-
-def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, new_col: str) -> pd.DataFrame:
+# --- Weight sliders with strict 100% validation ---
+def draw_weight_sliders(metrics: list[str], default_pct: int, key_prefix: str) -> np.ndarray | None:
+    """Render one slider per metric and require the total to be 100%.
+    Returns the raw % array (not normalized) or None if invalid.
     """
-    Add a weighted z-score composite column to df for the given metrics.
-    Uses z-score across the CURRENT df (filtered view).
-    Only uses present metrics; weights align to those.
-    """
-    present = [m for m in metrics if m in df.columns]
-    if not present:
-        df[new_col] = 0.0
-        return df
+    weights_pct = []
+    for i, m in enumerate(metrics, start=1):
+        weights_pct.append(
+            st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"{key_prefix}_{i}")
+        )
+    weights_pct = np.array(weights_pct, dtype=float)
+    total = weights_pct.sum()
 
-    # Align weights (already normalized to sum=1 before calling)
-    w_map = {m: w for m, w in zip(metrics, weights)}
-    used_weights = np.array([w_map[m] for m in present], dtype=float)
-    used_weights = normalize_weights(used_weights)
+    # Show live total and enforce 100% with small tolerance.
+    tol = 0.5
+    if abs(total - 100) <= tol:
+        st.success(f"✅ Total weights: {total:.0f}%")
+        return weights_pct
+    else:
+        st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%. Adjust the sliders.")
+        return None
 
-    z_cols = []
-    for m in present:
-        z = _zscore(df[m].astype(float))
-        z_cols.append(z.values.reshape(-1, 1))
-    Z = np.hstack(z_cols)  # (n_players, n_metrics)
+def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, score_col: str) -> pd.DataFrame:
+    """Add a profile score column using weighted sum of z-scores across the filtered dataset."""
+    out = df.copy()
+    zs = []
+    for m in metrics:
+        zs.append(zscore(out[m]) if m in out.columns else pd.Series(0.0, index=out.index))
+    if len(zs) == 0:
+        out[score_col] = 0.0
+        return out
+    Z = np.vstack([z.values for z in zs]).T  # shape (n, k)
+    w = np.array(weights, dtype=float)
+    w = w / w.sum() if w.sum() != 0 else np.ones_like(w) / len(w)
+    score = (Z @ w).astype(float)
+    out[score_col] = np.round(score, 2)
+    return out
 
-    score = (Z * used_weights.reshape(1, -1)).sum(axis=1)
-    df[new_col] = np.round(score, 2)
-    return df
-
-# -------- Metric alias resolver (e.g., "Save rate %" -> "Save rate, %") --------
-def _norm(s: str) -> str:
-    return re.sub(r'[\s,%%]+', '', s).lower()
-
-def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
-    """
-    Try to resolve requested metric names to existing df column names.
-    Returns (resolved_list, missing_list).
-    """
-    col_norm_map = {_norm(c): c for c in columns}
-    resolved, missing = [], []
-    for name in requested:
-        if name in columns:
-            resolved.append(name); continue
-        alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
-        if alt in columns:
-            resolved.append(alt); continue
-        key = _norm(name)
-        if key in col_norm_map:
-            resolved.append(col_norm_map[key]); continue
-        missing.append(name)
-    return resolved, missing
+def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
+    """Try to enable drag-and-drop if component is present; otherwise keep order silently."""
+    try:
+        from streamlit_sortable import sort_items  # type: ignore
+        ordered = sort_items(items=items, direction=direction, key=key)
+        return ordered or items
+    except Exception:
+        try:
+            from streamlit_sortables import sort_items  # type: ignore
+            ordered = sort_items(items=items, direction=direction, key=key)
+            return ordered or items
+        except Exception:
+            return items
 
 # ---------------------------
 # Sidebar — File uploader
@@ -271,119 +267,54 @@ if filtered.empty:
     st.stop()
 
 # ---------------------------
-# Player Profiles (Calculated Fields) — Built-ins + Custom Profile
+# Custom Profile Builder (z-score weighted)
 # ---------------------------
-calc_col_name = None
-profile_metrics_in_use: list[str] = []  # <-- track metrics used by the active profile (order preserved)
+st.subheader("Custom Profile Builder")
 
-# Built-in goalkeeper profiles
-PROFILES = {
-    "Classic Goalkeeper": [
-        "Save rate %",                # dataset: "Save rate, %"
-        "Prevented goals per 90",
-        "Conceded goals per 90",
-        "Exits per 90",
-        "Aerial duels won %",         # dataset: "Aerial duels won, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
-    ],
-    "Sweeper Keeper": [
-        "Exits per 90",
-        "Passes per 90",
-        "Accurate passes %",          # dataset: "Accurate passes, %"
-        "Progressive passes per 90",
-        "Forward passes per 90",
-        "Accurate forward passes %",  # dataset: "Accurate forward passes, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
-    ],
-    "All-Round Keeper": [
-        "Prevented goals per 90",
-        "Save rate %",                # dataset: "Save rate, %"
-        "Exits per 90",
-        "Aerial duels won %",         # dataset: "Aerial duels won, %"
-        "Passes per 90",
-        "Accurate passes %",          # dataset: "Accurate passes, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
-    ]
-}
+all_metrics_universe = [c for c in filtered.columns if c not in NON_FEATURE_COLUMNS]  # include all numerics we coerced
+# Narrow the list to numerics only (profile scoring uses z-scores)
+all_numeric_metrics = [c for c in all_metrics_universe if pd.api.types.is_numeric_dtype(filtered[c])]
 
-with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
-    st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
-    mode = st.radio("Profile mode", ["Built-in", "Custom"], index=1, horizontal=True)
+with st.expander("Build a custom profile", expanded=False):
+    custom_name = st.text_input("Profile name", value="My Profile")
+    custom_metrics = st.multiselect(
+        "Pick metrics for the profile (z-score based)",
+        options=all_numeric_metrics,
+        default=[m for m in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90'] if m in all_numeric_metrics]
+    )
 
-    if mode == "Built-in":
-        profile = st.selectbox("Choose profile", list(PROFILES.keys()))
-        requested_metrics = PROFILES[profile]
-        resolved_metrics, missing = resolve_metrics_aliases(requested_metrics, filtered.columns.tolist())
-        if missing:
-            st.info("Some profile metrics were not found in this dataset and will be skipped: " + ", ".join(missing))
-
-        if resolved_metrics:
-            profile_metrics_in_use = resolved_metrics.copy()  # <-- sync to comparison defaults
-            default_pct = max(1, int(100 / len(resolved_metrics)))
-            weights_pct = []
-            for i, m in enumerate(resolved_metrics, start=1):
-                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_{profile}_{i}"))
-            weights_pct = np.array(weights_pct, dtype=float)
-            weights = normalize_weights(weights_pct)
-            calc_col_name = f"Score: {profile}"
-            filtered = make_profile_score(filtered, resolved_metrics, weights, calc_col_name)
-            st.caption(f"✅ Added column **{calc_col_name}** to the dataset.")
-        else:
-            st.warning("No valid metrics for this profile in the current dataset.")
-
-    else:
-        # Custom Profile Builder
-        st.subheader("Custom Profile")
-        custom_name = st.text_input("Profile name", value="Custom Profile")
-        numeric_cols = get_numeric_columns(filtered)
-        custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
-        if custom_metrics:
-            profile_metrics_in_use = custom_metrics.copy()  # <-- sync to comparison defaults
-            default_pct = max(1, int(100 / len(custom_metrics)))
-            weights_pct = []
-            for i, m in enumerate(custom_metrics, start=1):
-                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}"))
-            weights_pct = np.array(weights_pct, dtype=float)
-            weights = normalize_weights(weights_pct)
-
+    if custom_metrics:
+        default_pct = max(1, int(100 / len(custom_metrics)))
+        weights_pct = draw_weight_sliders(custom_metrics, default_pct, key_prefix="w_custom")
+        # Only proceed if total is exactly 100% (±0.5 tol)
+        if weights_pct is not None:
+            weights = weights_pct / 100.0
             calc_col_name = f"Score: {custom_name}"
             filtered = make_profile_score(filtered, custom_metrics, weights, calc_col_name)
-            st.caption(f"✅ Added column **{calc_col_name}** to the dataset.")
+            st.success(f"Added column **{calc_col_name}** to the dataset (weighted z-scores).")
+            st.session_state["last_profile_metrics"] = custom_metrics
         else:
-            st.info("Select at least one metric to build a custom profile.")
+            st.stop()
+    else:
+        st.info("Pick at least one metric to build your profile.")
 
 # ---------------------------
 # Data table (select columns)
 # ---------------------------
 st.subheader("Filtered Player Data")
 
-num_cols_for_rank = get_numeric_columns(filtered)
+num_cols_for_rank = get_numeric_columns(filtered)  # includes any Score: ... columns
 _default_rank = next(
-    (m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG', calc_col_name] if m and m in filtered.columns),
+    (m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG'] if m in filtered.columns),
     (num_cols_for_rank[0] if num_cols_for_rank else 'Minutes played')
 )
-rank_metric = st.session_state.get('rank_metric', _default_rank)
-
-def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
-    """Try optional drag-and-drop libs; fall back silently."""
-    try:
-        from streamlit_sortable import sort_items  # type: ignore
-        ordered = sort_items(items=items, direction=direction, key=key)
-        return ordered or items
-    except Exception:
-        try:
-            from streamlit_sortables import sort_items  # type: ignore
-            ordered = sort_items(items=items, direction=direction, key=key)
-            return ordered or items
-        except Exception:
-            return items  # silent fallback
+rank_metric_ss = st.session_state.get('rank_metric', _default_rank)
 
 default_cols = [c for c in [
     'Player', 'Team', 'League', 'Main Position', 'Age',
     'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
-    'Goals', 'Assists', 'xG', 'xA', 'Minutes played',
-    calc_col_name if calc_col_name and calc_col_name in filtered.columns else None
-] if c and c in filtered.columns]
+    'Goals', 'Assists', 'xG', 'xA', 'Minutes played'
+] if c in filtered.columns]
 
 # Build selection options (exclude redundant/raw columns when parsed versions exist)
 exclude_cols = set()
@@ -400,12 +331,13 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
+    # Allow user to choose which metric to rank rows by
     rank_by = st.selectbox("Sort Top-N rows by", options=num_cols_for_rank,
-                           index=num_cols_for_rank.index(rank_metric) if rank_metric in num_cols_for_rank else 0)
+                           index=num_cols_for_rank.index(rank_metric_ss) if rank_metric_ss in num_cols_for_rank else 0)
+    st.session_state['rank_metric'] = rank_by
     row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
-    rank_metric = rank_by
     st.dataframe(
-        filtered.sort_values(by=rank_metric, ascending=False)[ordered_display_cols]
+        filtered.sort_values(by=rank_by, ascending=False)[ordered_display_cols]
             .reset_index(drop=True)
             .head(row_limit),
         use_container_width=True,
@@ -423,17 +355,12 @@ st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(
 # Scatter plot
 # ---------------------------
 st.subheader("Player Performance Visualization")
-# Recompute numeric columns (if profile added)
 num_cols = get_numeric_columns(filtered)
 plot_metrics = [c for c in num_cols if c not in {'Age', 'Market value'}]
 
 # Helpful defaults
 x_default = 'Goals per 90' if 'Goals per 90' in plot_metrics else (plot_metrics[0] if plot_metrics else None)
-# Prefer calculated score as Y if available
-if calc_col_name and calc_col_name in plot_metrics:
-    y_default = calc_col_name
-else:
-    y_default = 'Assists per 90' if 'Assists per 90' in plot_metrics else (plot_metrics[1] if len(plot_metrics) > 1 else x_default)
+y_default = 'Assists per 90' if 'Assists per 90' in plot_metrics else (plot_metrics[1] if len(plot_metrics) > 1 else x_default)
 
 if x_default is None or y_default is None:
     st.warning("No numerical metrics available for plotting.")
@@ -464,7 +391,7 @@ else:
                            1, min(30, len(filtered)), min(15, len(filtered)))
     plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
     if remove_outliers:
-        # z-score on selected axes (based on currently plotted subset)
+        # z-score on selected axes
         for ax in [x_axis, y_axis]:
             if plot_df[ax].std(ddof=0) > 0:
                 z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
@@ -499,7 +426,7 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------
-# Player comparison + Radar chart (z-score normalized)
+# Player comparison + Radar chart (z-score based)
 # ---------------------------
 st.subheader("Compare Selected Players")
 compare_players = st.multiselect(
@@ -511,98 +438,66 @@ compare_players = st.multiselect(
 if compare_players:
     comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
 
-    # ✅ Use the same numeric pool as profiles & table (includes % metrics & profile scores)
-    comp_metric_choices = get_numeric_columns(filtered).copy()
+    # If a custom profile was just built, use its metrics as default; else fall back to a sensible set
+    default_for_comp = st.session_state.get("last_profile_metrics", None)
+    if default_for_comp is None:
+        default_for_comp = [m for m in ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90'] if m in filtered.columns]
 
-    # ✅ Default to the exact metrics used in the active profile (order preserved)
-    default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
-
-    # Optionally prepend the profile score to defaults if present
-    if calc_col_name and calc_col_name in comp_metric_choices:
-        default_comp = [calc_col_name] + default_comp
-
-    # Fallback defaults if profile list is empty
-    if not default_comp:
-        fallback_defaults = [
-            'Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
-            'Successful defensive actions per 90', 'Duels won, %'
-        ]
-        if calc_col_name and calc_col_name in comp_metric_choices:
-            fallback_defaults = [calc_col_name] + fallback_defaults
-        default_comp = [m for m in fallback_defaults if m in comp_metric_choices]
-        if not default_comp:
-            default_comp = comp_metric_choices[:6]
-
+    comp_metric_choices = [c for c in get_numeric_columns(filtered)]  # same universe as data table & profiles
     comp_metrics = st.multiselect(
-        "Metrics for comparison table & radar",
+        "Metrics for comparison table & radar (z-score normalized across filtered players)",
         options=comp_metric_choices,
-        default=default_comp
+        default=[m for m in default_for_comp if m in comp_metric_choices]
     )
 
     if comp_metrics:
-        # Optional drag reorder
-        def reorder_pills_inner(items: list, *, key: str, direction: str = "horizontal") -> list:
-            try:
-                from streamlit_sortable import sort_items  # type: ignore
-                ordered = sort_items(items=items, direction=direction, key=key)
-                return ordered or items
-            except Exception:
-                try:
-                    from streamlit_sortables import sort_items  # type: ignore
-                    ordered = sort_items(items=items, direction=direction, key=key)
-                    return ordered or items
-                except Exception:
-                    return items
-        ordered_comp_metrics = reorder_pills_inner(comp_metrics, key="order_comp_metrics")
-        comp_df = comp_df.round(2)
-
+        # Show comparison table (raw values, rounded)
         st.dataframe(
-            comp_df[ordered_comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'),
+            comp_df[comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'),
             use_container_width=True
         )
 
-        # Radar chart — z-score across the CURRENT filtered set
-        mm_base = filtered.set_index('Player')  # pool for stats equals the "Players matching filters" set
+        # Radar chart: z-score per metric across the filtered set,
+        # then scaled to [0,1] for plotting convenience
+        base = filtered.set_index('Player')
+        z_scaled = {}
+        for m in comp_metrics:
+            s = base[m].astype(float).replace([np.inf, -np.inf], np.nan)
+            mu = s.mean()
+            sd = s.std(ddof=0)
+            if sd == 0 or pd.isna(sd):
+                z = pd.Series(0.0, index=s.index)
+            else:
+                z = (s - mu) / sd
+            # Map z to [0,1] using min/max over the filtered set; guard constant
+            zmin, zmax = z.min(), z.max()
+            if pd.isna(zmin) or pd.isna(zmax) or zmax - zmin < 1e-9:
+                zr = pd.Series(0.5, index=z.index)
+            else:
+                zr = (z - zmin) / (zmax - zmin)
+            z_scaled[m] = zr
 
-        # Mean and std for each metric across filtered players
-        metric_means = {m: mm_base[m].mean() for m in ordered_comp_metrics}
-        metric_stds  = {m: mm_base[m].std(ddof=0) for m in ordered_comp_metrics}
-
-        def zscore(val, mean, std):
-            if pd.isna(val) or pd.isna(mean) or pd.isna(std) or std == 0:
-                return 0.0
-            return float((val - mean) / std)
-
-        theta = ordered_comp_metrics
+        theta = comp_metrics
         fig_radar = go.Figure()
         for player in compare_players:
-            row = comp_df.loc[player, ordered_comp_metrics]
-            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0
-                 for m in ordered_comp_metrics]
+            # read scaled z for the selected player
+            r_vals = [float(z_scaled[m].get(player, 0.5)) for m in comp_metrics]
             fig_radar.add_trace(go.Scatterpolar(
-                r=r + [r[0]],
+                r=r_vals + [r_vals[0]],
                 theta=theta + [theta[0]],
                 fill='toself',
-                name=player,
-                text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
-                hoverinfo="text"
+                name=player
             ))
 
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),  # clip to ±3σ
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
             showlegend=True,
             template='plotly_white',
             height=640
         )
         st.plotly_chart(fig_radar, use_container_width=True)
-
-        # Download comparison CSV
-        csv_buf2 = StringIO()
-        comp_df[ordered_comp_metrics].to_csv(csv_buf2)
-        st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
-                           file_name="player_comparison.csv", mime="text/csv")
     else:
-        st.info("Select metrics to compare players.")
+        st.info("Pick at least one metric for comparison and radar.")
 else:
     st.info("Select players above to compare their stats and see a radar chart.")
 
