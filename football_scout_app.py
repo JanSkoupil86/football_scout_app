@@ -589,7 +589,7 @@ if compare_players:
             ))
 
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),  # clip to ±3σ
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 4])),  # clip to ±3σ
             showlegend=True,
             template='plotly_white',
             height=640
