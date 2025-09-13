@@ -279,7 +279,7 @@ if filtered.empty:
 # ---------------------------
 calc_col_name = None
 
-# Built-in goalkeeper profiles (keep)
+# Built-in goalkeeper profiles
 PROFILES = {
     "Classic Goalkeeper": [
         "Save rate %",                # dataset: "Save rate, %"
@@ -309,6 +309,25 @@ PROFILES = {
     ]
 }
 
+# Metric alias resolver (e.g., "Save rate %" -> "Save rate, %")
+def _norm(s: str) -> str:
+    return re.sub(r'[\s,%%]+', '', s).lower()
+
+def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
+    col_norm_map = {_norm(c): c for c in columns}
+    resolved, missing = [], []
+    for name in requested:
+        if name in columns:
+            resolved.append(name); continue
+        alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
+        if alt in columns:
+            resolved.append(alt); continue
+        key = _norm(name)
+        if key in col_norm_map:
+            resolved.append(col_norm_map[key]); continue
+        missing.append(name)
+    return resolved, missing
+
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
     st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
     mode = st.radio("Profile mode", ["Built-in", "Custom"], index=1, horizontal=True)
@@ -321,7 +340,6 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.info("Some profile metrics were not found in this dataset and will be skipped: " + ", ".join(missing))
 
         if resolved_metrics:
-            # Equal default percentages
             default_pct = max(1, int(100 / len(resolved_metrics)))
             weights_pct = []
             for i, m in enumerate(resolved_metrics, start=1):
@@ -339,7 +357,6 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
         st.subheader("Custom Profile")
         custom_name = st.text_input("Profile name", value="Custom Profile")
         numeric_cols = get_numeric_columns(filtered)
-        # let user pick any metrics
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
         if custom_metrics:
             default_pct = max(1, int(100 / len(custom_metrics)))
@@ -403,7 +420,6 @@ selected_display_cols = st.multiselect(
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
-    # Allow user to choose which metric to rank rows by
     rank_by = st.selectbox("Sort Top-N rows by", options=num_cols_for_rank,
                            index=num_cols_for_rank.index(rank_metric) if rank_metric in num_cols_for_rank else 0)
     row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
@@ -515,16 +531,25 @@ compare_players = st.multiselect(
 if compare_players:
     comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
 
-    comp_metric_choices = [c for c in num_cols if not c.endswith(PCT_SUFFIX)]
-    default_comp = [c for c in [
+    # ✅ Use the same numeric pool as profiles & table (includes % metrics & profile scores)
+    comp_metric_choices = get_numeric_columns(filtered).copy()
+
+    # Sensible defaults; prefer profile score if exists
+    preferred_defaults = [
         'Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
         'Successful defensive actions per 90', 'Duels won, %'
-    ] if c in comp_metric_choices]
+    ]
+    if calc_col_name and calc_col_name in comp_metric_choices:
+        preferred_defaults = [calc_col_name] + preferred_defaults
+
+    default_comp = [m for m in preferred_defaults if m in comp_metric_choices]
+    if not default_comp:
+        default_comp = comp_metric_choices[:6]
 
     comp_metrics = st.multiselect(
         "Metrics for comparison table & radar",
         options=comp_metric_choices,
-        default=default_comp if default_comp else comp_metric_choices[:6]
+        default=default_comp
     )
 
     if comp_metrics:
