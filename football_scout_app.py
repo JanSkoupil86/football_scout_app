@@ -19,7 +19,7 @@ st.title("⚽ Advanced Football Player Scouting App — Improved")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
     "Caching, robust parsing, ALL filters, drag-and-drop ordering, rounding to 2 decimals, "
-    "downloads, a radar chart (z-score standardized), and calculated player profile scores (incl. Custom Profile)."
+    "downloads, a radar chart (z-score standardized), and calculated player profile scores."
 )
 
 # ---------------------------
@@ -134,7 +134,7 @@ def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray
     df[new_col] = np.round(score, 2)
     return df
 
-# -------- Metric alias resolver (e.g., "Save rate %" -> "Save rate, %") --------
+# -------- Metric alias resolver (e.g., "Accurate progressive passes %" -> "Accurate progressive passes, %") --------
 def _norm(s: str) -> str:
     return re.sub(r'[\s,%%]+', '', s).lower()
 
@@ -148,6 +148,7 @@ def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[l
     for name in requested:
         if name in columns:
             resolved.append(name); continue
+        # Common % aliasing to Wyscout's ", %"
         alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
         if alt in columns:
             resolved.append(alt); continue
@@ -156,6 +157,24 @@ def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[l
             resolved.append(col_norm_map[key]); continue
         missing.append(name)
     return resolved, missing
+
+# --- ENFORCE 100% WEIGHT TOTALS ---
+def draw_weight_sliders(metrics: list[str], default_pct: int, key_prefix: str) -> np.ndarray | None:
+    """Render a percent slider for each metric and require total to be 100% (±0.5)."""
+    weights_pct = []
+    for i, m in enumerate(metrics, start=1):
+        weights_pct.append(
+            st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"{key_prefix}_{i}")
+        )
+    weights_pct = np.array(weights_pct, dtype=float)
+    total = weights_pct.sum()
+    tol = 0.5
+    if abs(total - 100) <= tol:
+        st.success(f"✅ Total weights: {total:.0f}%")
+        return weights_pct
+    else:
+        st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
+        return None
 
 # ---------------------------
 # Sidebar — File uploader
@@ -271,60 +290,119 @@ if filtered.empty:
     st.stop()
 
 # ---------------------------
-# Player Profiles (Calculated Fields) — Built-ins + Custom Profile
+# Player Profiles (Calculated Fields) — BUILT-IN + Custom
 # ---------------------------
 calc_col_name = None
-profile_metrics_in_use: list[str] = []  # <-- track metrics used by the active profile (order preserved)
+profile_metrics_in_use: list[str] = []  # track metrics used by the active profile (order preserved)
 
-# Built-in goalkeeper profiles
+# ---- BUILT-IN PROFILES (with your requested adds) ----
 PROFILES = {
-    "Classic Goalkeeper": [
-        "Save rate %",                # dataset: "Save rate, %"
-        "Prevented goals per 90",
-        "Conceded goals per 90",
-        "Exits per 90",
-        "Aerial duels won %",         # dataset: "Aerial duels won, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
-    ],
-    "Sweeper Keeper": [
-        "Exits per 90",
+    "Ball-Playing CB": [
         "Passes per 90",
-        "Accurate passes %",          # dataset: "Accurate passes, %"
         "Progressive passes per 90",
-        "Forward passes per 90",
-        "Accurate forward passes %",  # dataset: "Accurate forward passes, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
+        "Accurate progressive passes %",   # alias -> ", %"
+        "Accurate long passes %",          # alias -> ", %"
+        "Interceptions per 90",
+        "Forward passes per 90",           # ADDED
     ],
-    "All-Round Keeper": [
-        "Prevented goals per 90",
-        "Save rate %",                # dataset: "Save rate, %"
-        "Exits per 90",
-        "Aerial duels won %",         # dataset: "Aerial duels won, %"
-        "Passes per 90",
-        "Accurate passes %",          # dataset: "Accurate passes, %"
-        "Accurate long passes %",     # dataset: "Accurate long passes, %"
-    ]
+    "Libero / Middle Pin CB": [
+        "Defensive duels per 90",
+        "Defensive duels won %",           # alias -> ", %"
+        "Interceptions per 90",
+        "Accurate passes %",               # alias -> ", %"
+        "Accurate long passes %",          # alias -> ", %"
+        "Progressive passes per 90",       # ADDED
+    ],
+    "Wide CB (in 3)": [
+        "Defensive duels per 90",
+        "Defensive duels won %",           # alias -> ", %"
+        "Interceptions per 90",
+        "Progressive passes per 90",
+        "Accurate progressive passes %",   # alias -> ", %"
+        "Progressive runs per 90",         # ADDED
+    ],
+    "Defensive Midfielder #6": [
+        "Interceptions per 90",
+        "Defensive duels per 90",
+        "Defensive duels won %",           # alias -> ", %"
+        "Accurate passes %",               # alias -> ", %"
+        "Average pass length, m",          # Wyscout column name usually includes ", m"
+        "Progressive passes per 90",       # ADDED
+    ],
+    "Deep-Lying Playmaker": [
+        "Received passes per 90",
+        "Progressive passes per 90",
+        "Accurate progressive passes %",   # alias -> ", %"
+        "Accurate long passes %",          # alias -> ", %"
+        "Interceptions per 90",
+        "Passes to final third per 90",    # ADDED
+    ],
+    "Box-to-Box Midfielder": [
+        "Defensive duels per 90",
+        "Defensive duels won %",           # alias -> ", %"
+        "Progressive runs per 90",
+        "Touches in box per 90",
+        "Shots per 90",
+        "xG per 90",                       # ADDED
+    ],
+    "Full-Back": [
+        "Defensive duels per 90",
+        "Defensive duels won %",           # alias -> ", %"
+        "Interceptions per 90",
+        "Crosses per 90",
+        "Accurate crosses %",              # alias -> ", %"
+        "Progressive runs per 90",         # ADDED
+    ],
+    "Inverted Winger": [
+        "Shots per 90",
+        "xG per 90",
+        "Progressive runs per 90",
+        "Shot assists per 90",
+        "xA per 90",
+        "Touches in box per 90",           # ADDED (explicit request)
+    ],
+    "Target Man #9": [
+        "Received long passes per 90",
+        "Won aerial duels %",              # alias -> ", %"
+        "Fouls suffered per 90",
+        "Passes to final third per 90",
+        "xG per 90",
+        "Head goals per 90",               # ADDED practical proxy for headed threat
+    ],
+    "Pressing Forward": [
+        "Defensive duels per 90",
+        "Pressing duels per 90",
+        "Interceptions per 90",
+        "Shots per 90",
+        "Progressive runs per 90",
+        "xG per 90",                       # ADDED
+    ],
 }
 
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
     st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
-    mode = st.radio("Profile mode", ["Built-in", "Custom"], index=1, horizontal=True)
+    mode = st.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
 
     if mode == "Built-in":
         profile = st.selectbox("Choose profile", list(PROFILES.keys()))
         requested_metrics = PROFILES[profile]
         resolved_metrics, missing = resolve_metrics_aliases(requested_metrics, filtered.columns.tolist())
         if missing:
-            st.info("Some profile metrics were not found in this dataset and will be skipped: " + ", ".join(missing))
+            st.info("Some profile metrics were not found and will be skipped: " + ", ".join(missing))
 
         if resolved_metrics:
-            profile_metrics_in_use = resolved_metrics.copy()  # <-- sync to comparison defaults
+            profile_metrics_in_use = resolved_metrics.copy()
             default_pct = max(1, int(100 / len(resolved_metrics)))
             weights_pct = []
             for i, m in enumerate(resolved_metrics, start=1):
                 weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_{profile}_{i}"))
             weights_pct = np.array(weights_pct, dtype=float)
-            weights = normalize_weights(weights_pct)
+            total = weights_pct.sum()
+            if abs(total - 100) > 0.5:
+                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
+                st.stop()
+            weights = (weights_pct / 100.0)
+
             calc_col_name = f"Score: {profile}"
             filtered = make_profile_score(filtered, resolved_metrics, weights, calc_col_name)
             st.caption(f"✅ Added column **{calc_col_name}** to the dataset.")
@@ -338,13 +416,17 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
         numeric_cols = get_numeric_columns(filtered)
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
         if custom_metrics:
-            profile_metrics_in_use = custom_metrics.copy()  # <-- sync to comparison defaults
+            profile_metrics_in_use = custom_metrics.copy()
             default_pct = max(1, int(100 / len(custom_metrics)))
             weights_pct = []
             for i, m in enumerate(custom_metrics, start=1):
                 weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}"))
             weights_pct = np.array(weights_pct, dtype=float)
-            weights = normalize_weights(weights_pct)
+            total = weights_pct.sum()
+            if abs(total - 100) > 0.5:
+                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
+                st.stop()
+            weights = (weights_pct / 100.0)
 
             calc_col_name = f"Score: {custom_name}"
             filtered = make_profile_score(filtered, custom_metrics, weights, calc_col_name)
@@ -511,10 +593,10 @@ compare_players = st.multiselect(
 if compare_players:
     comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
 
-    # ✅ Use the same numeric pool as profiles & table (includes % metrics & profile scores)
+    # Use the same numeric pool as profiles & table (includes % metrics & profile scores)
     comp_metric_choices = get_numeric_columns(filtered).copy()
 
-    # ✅ Default to the exact metrics used in the active profile (order preserved)
+    # Default to the exact metrics used in the active profile (order preserved)
     default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
 
     # Optionally prepend the profile score to defaults if present
@@ -589,7 +671,7 @@ if compare_players:
             ))
 
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 4])),  # clip to ±3σ
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),  # clip to ±3σ
             showlegend=True,
             template='plotly_white',
             height=640
