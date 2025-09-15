@@ -295,51 +295,80 @@ if filtered.empty:
 calc_col_name = None
 profile_metrics_in_use: list[str] = []  # track metrics used by the active profile (order preserved)
 
-# ---- BUILT-IN PROFILES (with your requested adds) ----
+# ---- BUILT-IN PROFILES (incl. Goalkeepers) ----
 PROFILES = {
+    # Goalkeepers
+    "Classic Goalkeeper": [
+        "Save rate %",                # -> "Save rate, %"
+        "Prevented goals per 90",
+        "Conceded goals per 90",
+        "Exits per 90",
+        "Aerial duels won %",         # -> "Aerial duels won, %"
+        "Accurate long passes %",     # -> "Accurate long passes, %"
+    ],
+    "Sweeper Keeper": [
+        "Exits per 90",
+        "Passes per 90",
+        "Accurate passes %",          # -> "Accurate passes, %"
+        "Progressive passes per 90",
+        "Forward passes per 90",
+        "Accurate forward passes %",  # -> "Accurate forward passes, %"
+        "Accurate long passes %",     # -> "Accurate long passes, %"
+    ],
+    "All-Round Keeper": [
+        "Prevented goals per 90",
+        "Save rate %",                # -> "Save rate, %"
+        "Exits per 90",
+        "Aerial duels won %",         # -> "Aerial duels won, %"
+        "Passes per 90",
+        "Accurate passes %",          # -> "Accurate passes, %"
+        "Accurate long passes %",     # -> "Accurate long passes, %"
+    ],
+
+    # Defenders & Mids & Forwards
     "Ball-Playing CB": [
         "Passes per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # alias -> ", %"
-        "Accurate long passes %",          # alias -> ", %"
+        "Accurate progressive passes %",   # -> ", %"
+        "Accurate long passes %",          # -> ", %"
         "Interceptions per 90",
         "Forward passes per 90",           # ADDED
     ],
     "Libero / Middle Pin CB": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # alias -> ", %"
+        "Defensive duels won %",           # -> ", %"
         "Interceptions per 90",
-        "Accurate passes %",               # alias -> ", %"
-        "Accurate long passes %",          # alias -> ", %"
+        "Accurate passes %",               # -> ", %"
+        "Accurate long passes %",          # -> ", %"
         "Progressive passes per 90",       # ADDED
     ],
     "Wide CB (in 3)": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # alias -> ", %"
+        "Defensive duels won %",           # -> ", %"
         "Interceptions per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # alias -> ", %"
+        "Accurate progressive passes %",   # -> ", %"
         "Progressive runs per 90",         # ADDED
     ],
     "Defensive Midfielder #6": [
         "Interceptions per 90",
         "Defensive duels per 90",
-        "Defensive duels won %",           # alias -> ", %"
-        "Accurate passes %",               # alias -> ", %"
-        "Average pass length, m",          # Wyscout column name usually includes ", m"
+        "Defensive duels won %",           # -> ", %"
+        "Accurate passes %",               # -> ", %"
+        "Average pass length, m",
         "Progressive passes per 90",       # ADDED
     ],
     "Deep-Lying Playmaker": [
         "Received passes per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # alias -> ", %"
-        "Accurate long passes %",          # alias -> ", %"
+        "Accurate progressive passes %",   # -> ", %"
+        "Accurate long passes %",          # -> ", %"
         "Interceptions per 90",
         "Passes to final third per 90",    # ADDED
     ],
     "Box-to-Box Midfielder": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # alias -> ", %"
+        "Defensive duels won %",           # -> ", %"
         "Progressive runs per 90",
         "Touches in box per 90",
         "Shots per 90",
@@ -347,10 +376,10 @@ PROFILES = {
     ],
     "Full-Back": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # alias -> ", %"
+        "Defensive duels won %",           # -> ", %"
         "Interceptions per 90",
         "Crosses per 90",
-        "Accurate crosses %",              # alias -> ", %"
+        "Accurate crosses %",              # -> ", %"
         "Progressive runs per 90",         # ADDED
     ],
     "Inverted Winger": [
@@ -359,19 +388,19 @@ PROFILES = {
         "Progressive runs per 90",
         "Shot assists per 90",
         "xA per 90",
-        "Touches in box per 90",           # ADDED (explicit request)
+        "Touches in box per 90",           # ADDED
     ],
     "Target Man #9": [
         "Received long passes per 90",
-        "Won aerial duels %",              # alias -> ", %"
+        "Won aerial duels %",              # -> ", %"
         "Fouls suffered per 90",
         "Passes to final third per 90",
         "xG per 90",
-        "Head goals per 90",               # ADDED practical proxy for headed threat
+        "Head goals per 90",               # proxy for headed threat (will be skipped if missing)
     ],
     "Pressing Forward": [
         "Defensive duels per 90",
-        "Pressing duels per 90",
+        "Pressing duels per 90",           # will be skipped if missing
         "Interceptions per 90",
         "Shots per 90",
         "Progressive runs per 90",
@@ -412,8 +441,8 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
     else:
         # Custom Profile Builder
         st.subheader("Custom Profile")
-        custom_name = st.text_input("Profile name", value="Custom Profile")
         numeric_cols = get_numeric_columns(filtered)
+        custom_name = st.text_input("Profile name", value="Custom Profile")
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
         if custom_metrics:
             profile_metrics_in_use = custom_metrics.copy()
