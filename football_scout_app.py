@@ -45,20 +45,16 @@ def load_csv(file) -> pd.DataFrame:
         file.seek(0)
         return pd.read_csv(file, encoding="latin-1")
 
-# Known non-feature columns we generally don't treat as numeric
 NON_FEATURE_COLUMNS = {
     'Column1', 'Player', 'Team', 'Team within selected timeframe', 'Position', 'Birth country',
     'Passport country', 'Foot', 'On loan', 'Contract expires', 'League', 'Main Position'
 }
-
-PCT_SUFFIX = ", %"  # dataset columns use a comma before %
+PCT_SUFFIX = ", %"
 
 def parse_market_value(series: pd.Series) -> pd.Series:
-    """Parse market value strings into float (millions of EUR)."""
     if series.dtype.kind in 'iuf':
         s = series.astype(float)
         return (s / 1e6) if s.max() > 1e6 else s
-
     def to_float(x):
         if pd.isna(x):
             return np.nan
@@ -73,15 +69,12 @@ def parse_market_value(series: pd.Series) -> pd.Series:
         except ValueError:
             return np.nan
         return val / 1e6
-
     return series.apply(to_float)
 
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Special-case market value
     if 'Market value' in df.columns:
         df['Market value (M€)'] = parse_market_value(df['Market value'])
-    # Coerce other numerics
     for col in df.columns:
         if col in NON_FEATURE_COLUMNS or col == 'Market value':
             continue
@@ -96,7 +89,6 @@ def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
 def _zscore(series: pd.Series) -> pd.Series:
-    """Z-score with safe zero-std handling."""
     m = series.mean()
     s = series.std(ddof=0)
     if pd.isna(s) or s == 0:
@@ -109,46 +101,31 @@ def normalize_weights(pcts: np.ndarray) -> np.ndarray:
     return pcts / pcts.sum()
 
 def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, new_col: str) -> pd.DataFrame:
-    """
-    Add a weighted z-score composite column to df for the given metrics.
-    Uses z-score across the CURRENT df (filtered view).
-    Only uses present metrics; weights align to those.
-    """
     present = [m for m in metrics if m in df.columns]
     if not present:
         df[new_col] = 0.0
         return df
-
-    # Align weights (already normalized to sum=1 before calling)
     w_map = {m: w for m, w in zip(metrics, weights)}
     used_weights = np.array([w_map[m] for m in present], dtype=float)
     used_weights = normalize_weights(used_weights)
-
     z_cols = []
     for m in present:
         z = _zscore(df[m].astype(float))
         z_cols.append(z.values.reshape(-1, 1))
-    Z = np.hstack(z_cols)  # (n_players, n_metrics)
-
+    Z = np.hstack(z_cols)
     score = (Z * used_weights.reshape(1, -1)).sum(axis=1)
     df[new_col] = np.round(score, 2)
     return df
 
-# -------- Metric alias resolver (e.g., "Accurate progressive passes %" -> "Accurate progressive passes, %") --------
 def _norm(s: str) -> str:
     return re.sub(r'[\s,%%]+', '', s).lower()
 
 def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
-    """
-    Try to resolve requested metric names to existing df column names.
-    Returns (resolved_list, missing_list).
-    """
     col_norm_map = {_norm(c): c for c in columns}
     resolved, missing = [], []
     for name in requested:
         if name in columns:
             resolved.append(name); continue
-        # Common % aliasing to Wyscout's ", %"
         alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
         if alt in columns:
             resolved.append(alt); continue
@@ -157,24 +134,6 @@ def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[l
             resolved.append(col_norm_map[key]); continue
         missing.append(name)
     return resolved, missing
-
-# --- ENFORCE 100% WEIGHT TOTALS ---
-def draw_weight_sliders(metrics: list[str], default_pct: int, key_prefix: str) -> np.ndarray | None:
-    """Render a percent slider for each metric and require total to be 100% (±0.5)."""
-    weights_pct = []
-    for i, m in enumerate(metrics, start=1):
-        weights_pct.append(
-            st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"{key_prefix}_{i}")
-        )
-    weights_pct = np.array(weights_pct, dtype=float)
-    total = weights_pct.sum()
-    tol = 0.5
-    if abs(total - 100) <= tol:
-        st.success(f"✅ Total weights: {total:.0f}%")
-        return weights_pct
-    else:
-        st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
-        return None
 
 # ---------------------------
 # Sidebar — File uploader
@@ -185,31 +144,22 @@ if uploaded is None:
     st.info("Please upload your football data CSV to begin. Include columns like 'Player', 'Team', 'Main Position', 'Age', 'Goals per 90', etc.")
     st.stop()
 
-# Load & clean
 try:
     df_raw = load_csv(uploaded)
 except pd.errors.EmptyDataError:
-    st.error("The uploaded CSV file is empty.")
-    st.stop()
+    st.error("The uploaded CSV file is empty."); st.stop()
 except pd.errors.ParserError:
-    st.error("Could not parse the CSV file. Please ensure it is a valid CSV.")
-    st.stop()
+    st.error("Could not parse the CSV file. Please ensure it is a valid CSV."); st.stop()
 
-# Basic sanity checks
 required_cols = ['Player', 'Team', 'Main Position', 'Age', 'League']
 missing = [c for c in required_cols if c not in df_raw.columns]
 if missing:
-    st.error(f"Missing critical column(s): {', '.join(missing)}. Please check your CSV.")
-    st.stop()
+    st.error(f"Missing critical column(s): {', '.join(missing)}. Please check your CSV."); st.stop()
 
-# Drop 'Column1' if it looks like an index
 if 'Column1' in df_raw.columns and df_raw['Column1'].nunique() == len(df_raw):
     df_raw = df_raw.drop(columns=['Column1'])
 
-# Coerce types
 df = coerce_numeric(df_raw)
-
-# Fill NaNs in numeric columns and round to 2 decimals for consistent display & exports
 for col in get_numeric_columns(df):
     df[col] = df[col].fillna(0).round(2)
 
@@ -218,27 +168,20 @@ for col in get_numeric_columns(df):
 # ---------------------------
 st.sidebar.header("Filters")
 
-# League first
 leagues = sorted(df['League'].dropna().unique().tolist())
 selected_leagues, _ = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or use ALL")
 filtered = df[df['League'].isin(selected_leagues)].copy()
-
 if filtered.empty:
-    st.warning("No players found for selected leagues. Adjust filters.")
-    st.stop()
+    st.warning("No players found for selected leagues. Adjust filters."); st.stop()
 
-# Teams and positions depend on league filter
 teams = sorted(filtered['Team'].dropna().unique().tolist())
 positions = sorted(filtered['Main Position'].dropna().unique().tolist())
-
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True, help="Pick teams or ALL")
 selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True, help="Pick positions or ALL")
 
-# Age slider
 age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
 age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max))
 
-# Market value slider — use parsed 'Market value (M€)' if available, else fallback
 if 'Market value (M€)' in filtered.columns:
     mv_col = 'Market value (M€)'
 else:
@@ -254,19 +197,16 @@ if mv_col is not None:
             (float(np.floor(mv_min)), float(np.ceil(mv_max)))
         )
     else:
-        mv_col = None  # disable if bad values
+        mv_col = None
 
-# Minutes played threshold
 if 'Minutes played' in filtered.columns:
     min_minutes_max = int(filtered['Minutes played'].max())
     min_minutes = st.sidebar.slider("Minimum minutes played", 0, max(0, min_minutes_max), min(500, max(0, min_minutes_max)))
 else:
     min_minutes = 0
 
-# Optional: outlier removal using z-score on selected plotting metrics later
 remove_outliers = st.sidebar.checkbox("Remove outliers (Z-score > 3)", value=False, help="Applied to the selected X/Y metrics only")
 
-# Apply remaining filters
 mask = (
     filtered['Team'].isin(selected_teams) &
     filtered['Main Position'].isin(selected_positions) &
@@ -278,109 +218,137 @@ if 'Minutes played' in filtered.columns:
     mask &= filtered['Minutes played'] >= min_minutes
 
 filtered = filtered.loc[mask].copy()
-
-# Round again after filtering (safe if transforms introduced decimals)
 for col in get_numeric_columns(filtered):
     filtered[col] = filtered[col].round(2)
 
 st.sidebar.markdown(f"**Players matching filters: {len(filtered)}**")
-
 if filtered.empty:
-    st.warning("No players match the selected filters. Please adjust your criteria.")
-    st.stop()
+    st.warning("No players match the selected filters. Please adjust your criteria."); st.stop()
 
 # ---------------------------
-# Player Profiles (Calculated Fields) — BUILT-IN + Custom
+# Player Profiles — BUILT-IN + Custom
 # ---------------------------
 calc_col_name = None
-profile_metrics_in_use: list[str] = []  # track metrics used by the active profile (order preserved)
+profile_metrics_in_use: list[str] = []
 
-# ---- BUILT-IN PROFILES (incl. Goalkeepers) ----
 PROFILES = {
-    # Goalkeepers
+    # Goalkeepers (restored)
     "Classic Goalkeeper": [
-        "Save rate %",                # -> "Save rate, %"
+        "Save rate %",
         "Prevented goals per 90",
         "Conceded goals per 90",
         "Exits per 90",
-        "Aerial duels won %",         # -> "Aerial duels won, %"
-        "Accurate long passes %",     # -> "Accurate long passes, %"
+        "Aerial duels won %",
+        "Accurate long passes %",
     ],
     "Sweeper Keeper": [
         "Exits per 90",
         "Passes per 90",
-        "Accurate passes %",          # -> "Accurate passes, %"
+        "Accurate passes %",
         "Progressive passes per 90",
         "Forward passes per 90",
-        "Accurate forward passes %",  # -> "Accurate forward passes, %"
-        "Accurate long passes %",     # -> "Accurate long passes, %"
+        "Accurate forward passes %",
+        "Accurate long passes %",
     ],
     "All-Round Keeper": [
         "Prevented goals per 90",
-        "Save rate %",                # -> "Save rate, %"
+        "Save rate %",
         "Exits per 90",
-        "Aerial duels won %",         # -> "Aerial duels won, %"
+        "Aerial duels won %",
         "Passes per 90",
-        "Accurate passes %",          # -> "Accurate passes, %"
-        "Accurate long passes %",     # -> "Accurate long passes, %"
+        "Accurate passes %",
+        "Accurate long passes %",
     ],
 
-    # Defenders & Mids & Forwards
+    # Defenders
     "Ball-Playing CB": [
         "Passes per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # -> ", %"
-        "Accurate long passes %",          # -> ", %"
+        "Accurate progressive passes %",
+        "Accurate long passes %",
         "Interceptions per 90",
-        "Forward passes per 90",           # ADDED
+        "Forward passes per 90",
+    ],
+    "Combative CB / Stopper": [
+        "Defensive duels per 90",
+        "Defensive duels won %",
+        "Aerial duels per 90",
+        "Aerial duels won %",
+        "Shots blocked per 90",
     ],
     "Libero / Middle Pin CB": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # -> ", %"
+        "Defensive duels won %",
         "Interceptions per 90",
-        "Accurate passes %",               # -> ", %"
-        "Accurate long passes %",          # -> ", %"
-        "Progressive passes per 90",       # ADDED
+        "Accurate passes %",
+        "Accurate long passes %",
+        "Progressive passes per 90",
     ],
     "Wide CB (in 3)": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # -> ", %"
+        "Defensive duels won %",
         "Interceptions per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # -> ", %"
-        "Progressive runs per 90",         # ADDED
+        "Accurate progressive passes %",
+        "Progressive runs per 90",
     ],
+
+    # Midfielders
     "Defensive Midfielder #6": [
         "Interceptions per 90",
         "Defensive duels per 90",
-        "Defensive duels won %",           # -> ", %"
-        "Accurate passes %",               # -> ", %"
+        "Defensive duels won %",
+        "Accurate passes %",
         "Average pass length, m",
-        "Progressive passes per 90",       # ADDED
+        "Progressive passes per 90",
+    ],
+    "Attacking Midfielder #8": [
+        "Progressive passes per 90",
+        "Accurate progressive passes %",
+        "Progressive runs per 90",
+        "xA per 90",
+        "Shots per 90",
     ],
     "Deep-Lying Playmaker": [
         "Received passes per 90",
         "Progressive passes per 90",
-        "Accurate progressive passes %",   # -> ", %"
-        "Accurate long passes %",          # -> ", %"
+        "Accurate progressive passes %",
+        "Accurate long passes %",
         "Interceptions per 90",
-        "Passes to final third per 90",    # ADDED
+        "Passes to final third per 90",
     ],
     "Box-to-Box Midfielder": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # -> ", %"
+        "Defensive duels won %",
         "Progressive runs per 90",
         "Touches in box per 90",
         "Shots per 90",
-        "xG per 90",                       # ADDED
+        "xG per 90",
     ],
+
+    # Full/Wing backs & Wingers
     "Full-Back": [
         "Defensive duels per 90",
-        "Defensive duels won %",           # -> ", %"
+        "Defensive duels won %",
         "Interceptions per 90",
         "Crosses per 90",
-        "Accurate crosses %",              # -> ", %"
-        "Progressive runs per 90",         # ADDED
+        "Accurate crosses %",
+        "Progressive runs per 90",
+    ],
+    "Wing-Back": [
+        "Interceptions per 90",
+        "Progressive runs per 90",
+        "Crosses per 90",
+        "Accurate crosses %",
+        "Shot assists per 90",
+    ],
+    "Classic Winger": [
+        "Dribbles per 90",
+        "Successful dribbles, %",
+        "Progressive runs per 90",
+        "Crosses per 90",
+        "Accurate crosses, %",
+        "Shot assists per 90",
     ],
     "Inverted Winger": [
         "Shots per 90",
@@ -388,23 +356,40 @@ PROFILES = {
         "Progressive runs per 90",
         "Shot assists per 90",
         "xA per 90",
-        "Touches in box per 90",           # ADDED
+        "Touches in box per 90",
+    ],
+
+    # Creators / Forwards
+    "Playmaker #10": [
+        "Progressive passes per 90",
+        "Accurate progressive passes %",
+        "Deep completions per 90",
+        "Shot assists per 90",
+        "xA per 90",
+        "Shots per 90",
     ],
     "Target Man #9": [
         "Received long passes per 90",
-        "Won aerial duels %",              # -> ", %"
+        "Aerial duels won %",
         "Fouls suffered per 90",
         "Passes to final third per 90",
         "xG per 90",
-        "Head goals per 90",               # proxy for headed threat (will be skipped if missing)
+        "Head goals per 90",
+    ],
+    "Poacher": [
+        "Touches in box per 90",
+        "Received passes per 90",
+        "xG per 90",
+        "Non-penalty goals per 90",
+        "Goal conversion %",
     ],
     "Pressing Forward": [
         "Defensive duels per 90",
-        "Pressing duels per 90",           # will be skipped if missing
+        "Pressing duels per 90",
         "Interceptions per 90",
         "Shots per 90",
         "Progressive runs per 90",
-        "xG per 90",                       # ADDED
+        "xG per 90",
     ],
 }
 
@@ -428,8 +413,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             weights_pct = np.array(weights_pct, dtype=float)
             total = weights_pct.sum()
             if abs(total - 100) > 0.5:
-                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
-                st.stop()
+                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%."); st.stop()
             weights = (weights_pct / 100.0)
 
             calc_col_name = f"Score: {profile}"
@@ -439,7 +423,6 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.warning("No valid metrics for this profile in the current dataset.")
 
     else:
-        # Custom Profile Builder
         st.subheader("Custom Profile")
         numeric_cols = get_numeric_columns(filtered)
         custom_name = st.text_input("Profile name", value="Custom Profile")
@@ -453,8 +436,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             weights_pct = np.array(weights_pct, dtype=float)
             total = weights_pct.sum()
             if abs(total - 100) > 0.5:
-                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%.")
-                st.stop()
+                st.error(f"❗ Total weights must equal 100%. Current total: {total:.0f}%."); st.stop()
             weights = (weights_pct / 100.0)
 
             calc_col_name = f"Score: {custom_name}"
@@ -464,10 +446,9 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.info("Select at least one metric to build a custom profile.")
 
 # ---------------------------
-# Data table (select columns)
+# Filtered table
 # ---------------------------
 st.subheader("Filtered Player Data")
-
 num_cols_for_rank = get_numeric_columns(filtered)
 _default_rank = next(
     (m for m in ['Assists per 90','Goals per 90','xA per 90','xG per 90','xA','xG', calc_col_name] if m and m in filtered.columns),
@@ -476,7 +457,6 @@ _default_rank = next(
 rank_metric = st.session_state.get('rank_metric', _default_rank)
 
 def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> list:
-    """Try optional drag-and-drop libs; fall back silently."""
     try:
         from streamlit_sortable import sort_items  # type: ignore
         ordered = sort_items(items=items, direction=direction, key=key)
@@ -487,7 +467,7 @@ def reorder_pills(items: list, *, key: str, direction: str = "horizontal") -> li
             ordered = sort_items(items=items, direction=direction, key=key)
             return ordered or items
         except Exception:
-            return items  # silent fallback
+            return items
 
 default_cols = [c for c in [
     'Player', 'Team', 'League', 'Main Position', 'Age',
@@ -496,18 +476,12 @@ default_cols = [c for c in [
     calc_col_name if calc_col_name and calc_col_name in filtered.columns else None
 ] if c and c in filtered.columns]
 
-# Build selection options (exclude redundant/raw columns when parsed versions exist)
 exclude_cols = set()
 if 'Market value (M€)' in filtered.columns:
     exclude_cols.add('Market value')
 
 display_options = [c for c in filtered.columns if c not in exclude_cols]
-selected_display_cols = st.multiselect(
-    "Columns to display",
-    options=display_options,
-    default=default_cols,
-)
-
+selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 ordered_display_cols = reorder_pills(selected_display_cols, key="order_display_cols")
 
 if selected_display_cols:
@@ -524,7 +498,6 @@ if selected_display_cols:
 else:
     st.info("Please select at least one column to display.")
 
-# Download filtered data
 csv_buf = StringIO()
 filtered[ordered_display_cols or default_cols].to_csv(csv_buf, index=False)
 st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(),
@@ -534,13 +507,10 @@ st.download_button("⬇️ Download filtered data (CSV)", data=csv_buf.getvalue(
 # Scatter plot
 # ---------------------------
 st.subheader("Player Performance Visualization")
-# Recompute numeric columns (if profile added)
 num_cols = get_numeric_columns(filtered)
 plot_metrics = [c for c in num_cols if c not in {'Age', 'Market value'}]
 
-# Helpful defaults
 x_default = 'Goals per 90' if 'Goals per 90' in plot_metrics else (plot_metrics[0] if plot_metrics else None)
-# Prefer calculated score as Y if available
 if calc_col_name and calc_col_name in plot_metrics:
     y_default = calc_col_name
 else:
@@ -555,57 +525,38 @@ else:
     with c2:
         y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
 
-    color_by = st.selectbox(
-        "Color by",
-        options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns],
-        index=0
-    )
-    size_by = st.selectbox(
-        "Size by",
-        options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns],
-        index=1
-    )
+    color_by = st.selectbox("Color by", options=[o for o in ['Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns], index=0)
+    size_by = st.selectbox("Size by", options=[o for o in ['None', 'Minutes played', 'Market value (M€)', 'Age', 'Matches played'] if o == 'None' or o in filtered.columns], index=1)
 
-    # Choose whether to rank Top-N by X or Y axis
     rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
     sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
 
-    # Limit how many players are rendered in the chart
-    plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})",
-                           1, min(30, len(filtered)), min(15, len(filtered)))
+    plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(15, len(filtered)))
     plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
     if remove_outliers:
-        # z-score on selected axes (based on currently plotted subset)
         for ax in [x_axis, y_axis]:
             if plot_df[ax].std(ddof=0) > 0:
                 z = (plot_df[ax] - plot_df[ax].mean()) / plot_df[ax].std(ddof=0)
                 plot_df = plot_df[np.abs(z) <= 3]
 
-    # Ensure the plotted columns are rounded to exactly 2 decimals
     plot_df[x_axis] = plot_df[x_axis].round(2)
     plot_df[y_axis] = plot_df[y_axis].round(2)
-
-    # Option to always show labels without hovering
     show_labels = st.checkbox("Show player labels on chart", value=False)
 
     fig = px.scatter(
         plot_df,
-        x=x_axis,
-        y=y_axis,
+        x=x_axis, y=y_axis,
         hover_name="Player" if 'Player' in plot_df.columns else None,
         color=None if color_by == 'None' else color_by,
         size=None if size_by == 'None' else size_by,
         text=plot_df['Player'] if show_labels and 'Player' in plot_df.columns else None,
         title=f"{y_axis} vs. {x_axis} by Player",
-        template="plotly_white",
-        height=620,
+        template="plotly_white", height=620,
     )
     fig.update_traces(
         marker=dict(line=dict(width=1, color='DarkSlateGrey')),
         hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
-        textposition="top center",
-        textfont=dict(size=12),
-        cliponaxis=False,
+        textposition="top center", textfont=dict(size=12), cliponaxis=False,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -621,37 +572,20 @@ compare_players = st.multiselect(
 
 if compare_players:
     comp_df = filtered[filtered['Player'].isin(compare_players)].set_index('Player')
-
-    # Use the same numeric pool as profiles & table (includes % metrics & profile scores)
     comp_metric_choices = get_numeric_columns(filtered).copy()
 
-    # Default to the exact metrics used in the active profile (order preserved)
     default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
-
-    # Optionally prepend the profile score to defaults if present
     if calc_col_name and calc_col_name in comp_metric_choices:
         default_comp = [calc_col_name] + default_comp
-
-    # Fallback defaults if profile list is empty
     if not default_comp:
-        fallback_defaults = [
-            'Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90',
-            'Successful defensive actions per 90', 'Duels won, %'
-        ]
+        fallback_defaults = ['Goals per 90', 'Assists per 90', 'xG per 90', 'xA per 90', 'Successful defensive actions per 90', 'Duels won, %']
         if calc_col_name and calc_col_name in comp_metric_choices:
             fallback_defaults = [calc_col_name] + fallback_defaults
-        default_comp = [m for m in fallback_defaults if m in comp_metric_choices]
-        if not default_comp:
-            default_comp = comp_metric_choices[:6]
+        default_comp = [m for m in fallback_defaults if m in comp_metric_choices] or comp_metric_choices[:6]
 
-    comp_metrics = st.multiselect(
-        "Metrics for comparison table & radar",
-        options=comp_metric_choices,
-        default=default_comp
-    )
+    comp_metrics = st.multiselect("Metrics for comparison table & radar", options=comp_metric_choices, default=default_comp)
 
     if comp_metrics:
-        # Optional drag reorder
         def reorder_pills_inner(items: list, *, key: str, direction: str = "horizontal") -> list:
             try:
                 from streamlit_sortable import sort_items  # type: ignore
@@ -664,6 +598,7 @@ if compare_players:
                     return ordered or items
                 except Exception:
                     return items
+
         ordered_comp_metrics = reorder_pills_inner(comp_metrics, key="order_comp_metrics")
         comp_df = comp_df.round(2)
 
@@ -672,10 +607,8 @@ if compare_players:
             use_container_width=True
         )
 
-        # Radar chart — z-score across the CURRENT filtered set
-        mm_base = filtered.set_index('Player')  # pool for stats equals the "Players matching filters" set
-
-        # Mean and std for each metric across filtered players
+        # Z-score across the current filtered pool
+        mm_base = filtered.set_index('Player')
         metric_means = {m: mm_base[m].mean() for m in ordered_comp_metrics}
         metric_stds  = {m: mm_base[m].std(ddof=0) for m in ordered_comp_metrics}
 
@@ -688,8 +621,7 @@ if compare_players:
         fig_radar = go.Figure()
         for player in compare_players:
             row = comp_df.loc[player, ordered_comp_metrics]
-            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0
-                 for m in ordered_comp_metrics]
+            r = [zscore(float(row[m]), metric_means[m], metric_stds[m]) if pd.notna(row[m]) else 0.0 for m in ordered_comp_metrics]
             fig_radar.add_trace(go.Scatterpolar(
                 r=r + [r[0]],
                 theta=theta + [theta[0]],
@@ -700,14 +632,13 @@ if compare_players:
             ))
 
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),  # clip to ±3σ
+            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
             showlegend=True,
             template='plotly_white',
             height=640
         )
         st.plotly_chart(fig_radar, use_container_width=True)
 
-        # Download comparison CSV
         csv_buf2 = StringIO()
         comp_df[ordered_comp_metrics].to_csv(csv_buf2)
         st.download_button("⬇️ Download comparison (CSV)", data=csv_buf2.getvalue(),
