@@ -102,20 +102,21 @@ def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray
     if not present:
         df[new_col] = 0.0
         return df
-
-    # Align weights to the present metrics and normalize
     w_map = {m: w for m, w in zip(metrics, weights)}
     used_weights = np.array([w_map[m] for m in present], dtype=float)
     used_weights = normalize_weights(used_weights)
 
-    # Z-score all present columns in one vectorized shot
-    X = df[present].astype(float)
-    Z = X.apply(_zscore, raw=False)  # returns a DataFrame same shape
-
-    # Weighted sum via matrix multiply; round once at the end
-    vals = Z.to_numpy() @ used_weights
-    df[new_col] = np.round(vals, 2)
+    z_cols = []
+    for m in present:
+        z = _zscore(df[m].astype(float))
+        z_cols.append(z.values.reshape(-1, 1))
+    Z = np.hstack(z_cols)
+    df[new_col] = np.round((Z * used_weights.reshape(1, -1)).sum(axis=1), 2)
     return df
+
+# --- Metric alias resolver (e.g., "Save rate %" -> "Save rate, %") ---
+def _norm(s: str) -> str:
+    return re.sub(r'[\s,%%]+', '', s).lower()
 
 def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
     col_norm_map = {_norm(c): c for c in columns}
