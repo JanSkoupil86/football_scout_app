@@ -286,7 +286,7 @@ PROFILES = {
     "All-Round Keeper": [
         "Prevented goals per 90", "Save rate %", "Exits per 90",
         "Aerial duels won %", "Passes per 90", "Accurate passes %",
-        "Accurate long passes %"
+        "Accurate long passes %", "Save rate %"
     ],
 
     # Centre-backs / Defenders
