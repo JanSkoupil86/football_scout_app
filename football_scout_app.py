@@ -377,12 +377,14 @@ PROFILES = {
         "Touches in box per 90", "Received passes per 90",
         "xG per 90", "Non-penalty goals per 90", "Goal conversion %", "Shots per 90" 
     ],
-    "Pressing Forward": [
-        "Defensive duels per 90", "Pressing duels per 90",
-        "Interceptions per 90", "Shots per 90", "Progressive runs per 90",
-        # suggestion adds
-        "Recoveries per 90"
-    ],
+   "Pressing Forward": [
+    "Defensive duels per 90",
+    "Defensive duels won, %",
+    "Interceptions per 90",
+    "Shots per 90",
+    "Progressive runs per 90",
+    "xG per 90"                      # ← new addition
+],
 }
 
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
