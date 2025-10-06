@@ -346,7 +346,7 @@ PROFILES = {
         "Progressive runs per 90"
     ],
     "Wing-Back": [
-        "Interceptions per 90", "Progressive runs per 90",
+        "Interceptions per 90", "Progressive runs per 90", "Defensive duels per 90",
         "Crosses per 90", "Accurate crosses %", "Shot assists per 90"
     ],
 
