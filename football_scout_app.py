@@ -234,22 +234,8 @@ selected_positions, _ = multiselect_all("Main Position(s)", positions, default_a
 age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
 age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max))
 
-# market value
-if 'Market value (M€)' in filtered.columns:
-    mv_col = 'Market value (M€)'
-else:
-    mv_col = 'Market value' if 'Market value' in filtered.columns else None
-if mv_col is not None:
-    mv_min = float(filtered[mv_col].replace([np.inf, -np.inf], np.nan).dropna().min())
-    mv_max = float(filtered[mv_col].replace([np.inf, -np.inf], np.nan).dropna().max())
-    if np.isfinite(mv_min) and np.isfinite(mv_max):
-        mv_range = st.sidebar.slider(
-            "Market value range" + (" (M€)" if mv_col == 'Market value (M€)' else ""),
-            float(np.floor(mv_min)), float(np.ceil(mv_max)),
-            (float(np.floor(mv_min)), float(np.ceil(mv_max)))
-        )
-    else:
-        mv_col = None
+# --- Market value slider removed ---
+mv_col = None
 
 # minutes threshold (season-aware because we've filtered by season)
 if 'Minutes played' in filtered.columns:
@@ -268,8 +254,7 @@ mask = (
     filtered['Main Position'].isin(selected_positions) &
     filtered['Age'].between(age_range[0], age_range[1])
 )
-if mv_col is not None:
-    mask &= filtered[mv_col].between(mv_range[0], mv_range[1])
+# market value filter removed
 if 'Minutes played' in filtered.columns:
     mask &= filtered['Minutes played'] >= min_minutes
 
@@ -428,7 +413,6 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.warning("No valid metrics for this profile in the current dataset.")
     else:
         st.subheader("Custom Profile")
-        custom_name = st.text_input("Profile name", value="Custom Profile")
         numeric_cols = get_numeric_columns(filtered)
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
         if custom_metrics:
