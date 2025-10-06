@@ -281,12 +281,12 @@ PROFILES = {
     "Sweeper Keeper": [
         "Exits per 90", "Passes per 90", "Accurate passes %",
         "Progressive passes per 90", "Forward passes per 90",
-        "Accurate forward passes %", "Accurate long passes %"
+        "Accurate forward passes %", "Accurate long passes %", "Save rate %"
     ],
     "All-Round Keeper": [
         "Prevented goals per 90", "Save rate %", "Exits per 90",
         "Aerial duels won %", "Passes per 90", "Accurate passes %",
-        "Accurate long passes %", "Save rate %"
+        "Accurate long passes %"
     ],
 
     # Centre-backs / Defenders
