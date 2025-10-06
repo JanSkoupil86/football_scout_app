@@ -110,20 +110,48 @@ def normalize_weights(pcts: np.ndarray) -> np.ndarray:
     return pcts / total
 
 def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, new_col: str) -> pd.DataFrame:
+    """Build a weighted z-score with (a) alias-resolved metrics already chosen, 
+    (b) directional z-scores, and (c) auto-skip of sparse metrics."""
     present = [m for m in metrics if m in df.columns]
     if not present:
         df[new_col] = 0.0
         return df
+
+    # Drop sparse metrics (≥95% zeros/NaNs)
+    usable_metrics = [m for m in present if not _is_sparse_metric(df[m])]
+    skipped_sparse = [m for m in present if m not in usable_metrics]
+
+    if not usable_metrics:
+        df[new_col] = 0.0
+        # Optional UI hint if running in Streamlit
+        try:
+            import streamlit as st
+            st.info(f"All selected metrics for **{new_col}** are too sparse to score.")
+        except Exception:
+            pass
+        return df
+
+    # Align & normalize weights to usable subset
     w_map = {m: w for m, w in zip(metrics, weights)}
-    used_weights = np.array([w_map[m] for m in present], dtype=float)
+    used_weights = np.array([w_map[m] for m in usable_metrics], dtype=float)
     used_weights = normalize_weights(used_weights)
 
+    # Z-score (direction-aware) and aggregate
     z_cols = []
-    for m in present:
-        z = _zscore(df[m].astype(float))
+    for m in usable_metrics:
+        z = _zscore_directional(df[m].astype(float), m)
         z_cols.append(z.values.reshape(-1, 1))
     Z = np.hstack(z_cols)
     df[new_col] = np.round((Z * used_weights.reshape(1, -1)).sum(axis=1), 2)
+
+    # Optional UI notice about skipped sparse metrics
+    if skipped_sparse:
+        try:
+            import streamlit as st
+            st.caption("⚠️ Skipped sparse metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
+        except Exception:
+            pass
+
     return df
 
 # --- Metric alias resolver (e.g., "Save rate %" -> "Save rate, %") ---
