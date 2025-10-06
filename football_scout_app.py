@@ -320,7 +320,7 @@ PROFILES = {
     # Midfielders
     "Defensive Midfielder #6": [
         "Interceptions per 90", "Defensive duels per 90", "Defensive duels won %",
-        "Accurate passes %", "Average pass length",
+        "Accurate passes %", "Average pass length, m",
         # suggestion adds
         "Passes to final third per 90"
     ],
@@ -368,7 +368,7 @@ PROFILES = {
         "Shots per 90"
     ],
     "Target Man #9": [
-        "Received long passes per 90", "Won aerial duels %",
+        "Received long passes per 90", "Aerial duels won, %",
         "Fouls suffered per 90", "Passes to final third per 90", "xG per 90",
         # suggestion adds
         "Aerial duels per 90"
