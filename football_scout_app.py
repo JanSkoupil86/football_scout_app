@@ -482,7 +482,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.caption(f"✅ Added column **{calc_col_name}**.")
         else:
             st.warning("No valid metrics for this profile in the current dataset.")
-    else:
+   else:
     st.subheader("Custom Profile")
 
     # 1) Name FIRST (so it's defined before we use it)
