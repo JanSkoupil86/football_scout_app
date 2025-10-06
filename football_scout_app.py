@@ -84,25 +84,33 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
-# --- Metrics where LOWER values mean better performance
+# Metrics where LOWER is better (will be inverted in z-score)
 LOWER_IS_BETTER = {
     "Conceded goals per 90",
     "Fouls per 90",
     "Turnovers per 90",
     "Miscontrols per 90",
     "Yellow cards per 90",
-    "Red cards per 90"
+    "Red cards per 90",
 }
 
 def _zscore_directional(series: pd.Series, metric_name: str) -> pd.Series:
-    """Compute z-score; invert if lower is better for that metric."""
-    m = series.mean()
-    s = series.std(ddof=0)
-    if pd.isna(s) or s == 0:
-        return pd.Series(np.zeros(len(series)), index=series.index)
-    z = (series - m) / s
+    """Standard z-score; invert if lower is better for that metric."""
+    s = pd.to_numeric(series, errors="coerce")
+    m = s.mean()
+    sd = s.std(ddof=0)
+    if pd.isna(sd) or sd == 0:
+        return pd.Series(np.zeros(len(s)), index=s.index)
+    z = (s - m) / sd
     return -z if metric_name in LOWER_IS_BETTER else z
 
+def _is_sparse_metric(series: pd.Series, zero_nan_ratio_threshold: float = 0.95) -> bool:
+    """True if ≥ threshold of values are 0 or NaN (too sparse to score)."""
+    s = pd.to_numeric(series, errors="coerce")
+    if len(s) == 0:
+        return True
+    zeros_or_nan = s.isna() | (s == 0)
+    return float(zeros_or_nan.mean()) >= zero_nan_ratio_threshold
 def normalize_weights(pcts: np.ndarray) -> np.ndarray:
     total = pcts.sum()
     if total == 0:
