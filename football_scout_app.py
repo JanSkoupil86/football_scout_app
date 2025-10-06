@@ -483,25 +483,40 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
         else:
             st.warning("No valid metrics for this profile in the current dataset.")
     else:
-        st.subheader("Custom Profile")
-        numeric_cols = get_numeric_columns(filtered)
-        custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
-        if custom_metrics:
-            profile_metrics_in_use = custom_metrics.copy()
-            default_pct = max(1, int(100 / len(custom_metrics)))
-            weights_pct = []
-            for i, m in enumerate(custom_metrics, start=1):
-                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}"))
-            weights_pct = np.array(weights_pct, dtype=float)
-            total = weights_pct.sum()
-            if int(total) != 100:
-                st.warning(f"Total weight ≠ 100 (currently {int(total)}). We’ll normalize for the score.")
-            weights = normalize_weights(weights_pct)
-            calc_col_name = f"Score: {custom_name}"
-            filtered = make_profile_score(filtered, custom_metrics, weights, calc_col_name)
-            st.caption(f"✅ Added column **{calc_col_name}**.")
-        else:
-            st.info("Select at least one metric to build a custom profile.")
+    st.subheader("Custom Profile")
+
+    # 1) Name FIRST (so it's defined before we use it)
+    custom_name: str = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
+
+    # 2) Pick metrics (only numeric)
+    numeric_cols = get_numeric_columns(filtered)
+    custom_metrics = st.multiselect(
+        "Pick metrics to include",
+        options=numeric_cols,
+        default=numeric_cols[:5]
+    )
+
+    if custom_metrics:
+        profile_metrics_in_use = custom_metrics.copy()
+
+        # 3) Weight sliders (sum doesn't have to be 100; we normalize)
+        default_pct = max(1, int(100 / len(custom_metrics)))
+        weights_pct = []
+        for i, m in enumerate(custom_metrics, start=1):
+            weights_pct.append(
+                st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}")
+            )
+        weights_pct = np.array(weights_pct, dtype=float)
+        if int(weights_pct.sum()) != 100:
+            st.warning(f"Total weight ≠ 100 (currently {int(weights_pct.sum())}). We’ll normalize for the score.")
+        weights = normalize_weights(weights_pct)
+
+        # 4) Build the score column (name uses custom_name defined ABOVE)
+        calc_col_name = f"Score: {custom_name}"
+        filtered = make_profile_score(filtered, custom_metrics, weights, calc_col_name)
+        st.caption(f"✅ Added column **{calc_col_name}**.")
+    else:
+        st.info("Select at least one metric to build a custom profile.")
 
 # =========================
 # Data table
