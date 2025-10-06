@@ -299,7 +299,7 @@ PROFILES = {
     ],
     "Combative CB / Stopper": [
         "Defensive duels per 90", "Defensive duels won %",
-        "Aerial duels per 90", "Won aerial duels %", "Shots blocked per 90",
+        "Aerial duels per 90", "Won aerial duels, %", "Shots blocked per 90",
         # suggestion adds
         "Interceptions per 90"
     ],
