@@ -84,12 +84,24 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
-def _zscore(series: pd.Series) -> pd.Series:
+# --- Metrics where LOWER values mean better performance
+LOWER_IS_BETTER = {
+    "Conceded goals per 90",
+    "Fouls per 90",
+    "Turnovers per 90",
+    "Miscontrols per 90",
+    "Yellow cards per 90",
+    "Red cards per 90"
+}
+
+def _zscore_directional(series: pd.Series, metric_name: str) -> pd.Series:
+    """Compute z-score; invert if lower is better for that metric."""
     m = series.mean()
     s = series.std(ddof=0)
     if pd.isna(s) or s == 0:
         return pd.Series(np.zeros(len(series)), index=series.index)
-    return (series - m) / s
+    z = (series - m) / s
+    return -z if metric_name in LOWER_IS_BETTER else z
 
 def normalize_weights(pcts: np.ndarray) -> np.ndarray:
     total = pcts.sum()
