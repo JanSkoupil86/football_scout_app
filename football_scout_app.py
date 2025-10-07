@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,18 +11,18 @@ import re
 # Page config
 # =========================
 st.set_page_config(layout="wide", page_title="Advanced Football Scouting App", page_icon="⚽")
-
 st.title("⚽ Advanced Football Player Scouting App — Season-aware Edition")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
-    "Includes season normalization, ALL filters, drag-reorder (optional), 2-decimal rounding, "
-    "custom & built-in profiles (incl. GK), Top-N sorting, a z-score radar chart, and CSV downloads."
+    "Includes season normalization, robust metric aliasing, no market value bar, "
+    "Built-in & Custom profiles with recommended weights, direction-aware z-scores, "
+    "sparse-metric skipping, Top-N tables, scatter & radar, and CSV downloads."
 )
 
 # =========================
-# Utilities
+# Constants & Utilities
 # =========================
-PCT_SUFFIX = ", %"  # dataset columns typically use "..., %" for percentage columns
+PCT_SUFFIX = ", %"  # dataset columns typically use "..., %"
 NON_FEATURE_COLUMNS = {
     'Column1', 'Player', 'Team', 'Team within selected timeframe', 'Position', 'Birth country',
     'Passport country', 'Foot', 'On loan', 'Contract expires', 'League', 'Main Position'
@@ -84,7 +85,31 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
 def get_numeric_columns(df: pd.DataFrame) -> list:
     return [c for c in df.columns if c not in NON_FEATURE_COLUMNS and pd.api.types.is_numeric_dtype(df[c])]
 
-# Metrics where LOWER is better (will be inverted in z-score)
+# ---- Alias resolver (handles commas, spaces, percent signs, minor spelling) ----
+def _norm(s: str) -> str:
+    return re.sub(r'[\s,%–-]+', '', s).lower()
+
+def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
+    col_norm_map = {_norm(c): c for c in columns}
+    resolved, missing = [], []
+    for name in requested:
+        # try exact
+        if name in columns:
+            resolved.append(name); continue
+        # common “%” variants (e.g., "Accurate passes %" -> "Accurate passes, %")
+        alt = name
+        if "%" in name and ", %" not in name:
+            alt = name.replace(" %", ", %").replace("%", ", %")
+            if alt in columns:
+                resolved.append(alt); continue
+        # try normalized match
+        key = _norm(name)
+        if key in col_norm_map:
+            resolved.append(col_norm_map[key]); continue
+        missing.append(name)
+    return resolved, missing
+
+# ---- Direction-aware z-score & sparse detection ----
 LOWER_IS_BETTER = {
     "Conceded goals per 90",
     "Fouls per 90",
@@ -95,7 +120,6 @@ LOWER_IS_BETTER = {
 }
 
 def _zscore_directional(series: pd.Series, metric_name: str) -> pd.Series:
-    """Standard z-score; invert if lower is better for that metric."""
     s = pd.to_numeric(series, errors="coerce")
     m = s.mean()
     sd = s.std(ddof=0)
@@ -111,11 +135,10 @@ def _is_sparse_metric(series: pd.Series, zero_nan_ratio_threshold: float = 0.95)
         return True
     zeros_or_nan = s.isna() | (s == 0)
     return float(zeros_or_nan.mean()) >= zero_nan_ratio_threshold
+
 def normalize_weights(pcts: np.ndarray) -> np.ndarray:
     total = pcts.sum()
-    if total == 0:
-        return np.ones_like(pcts) / len(pcts)
-    return pcts / total
+    return (pcts / total) if total else (np.ones_like(pcts) / len(pcts) if len(pcts) else pcts)
 
 def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray, new_col: str) -> pd.DataFrame:
     """Weighted, direction-aware z-score with sparse-metric skipping."""
@@ -124,111 +147,215 @@ def make_profile_score(df: pd.DataFrame, metrics: list[str], weights: np.ndarray
         df[new_col] = 0.0
         return df
 
-    # Drop sparse metrics (≥95% zeros/NaNs)
     usable_metrics = [m for m in present if not _is_sparse_metric(df[m])]
     skipped_sparse = [m for m in present if m not in usable_metrics]
 
     if not usable_metrics:
         df[new_col] = 0.0
         try:
-            import streamlit as st
             st.info(f"All selected metrics for **{new_col}** are too sparse to score.")
         except Exception:
             pass
         return df
 
-    # Align & normalize weights for the usable subset
     w_map = {m: w for m, w in zip(metrics, weights)}
     used_weights = np.array([w_map[m] for m in usable_metrics], dtype=float)
-    used_weights = used_weights / used_weights.sum() if used_weights.sum() else np.ones_like(used_weights) / len(used_weights)
+    used_weights = normalize_weights(used_weights)
 
-    # Direction-aware z-scores
     z_cols = []
     for m in usable_metrics:
         z = _zscore_directional(df[m], m)
         z_cols.append(z.values.reshape(-1, 1))
     Z = np.hstack(z_cols)
-
     df[new_col] = np.round((Z * used_weights.reshape(1, -1)).sum(axis=1), 2)
 
     if skipped_sparse:
         try:
-            import streamlit as st
             st.caption("⚠️ Skipped sparse metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
         except Exception:
             pass
-
     return df
-
-    # Align & normalize weights to usable subset
-    w_map = {m: w for m, w in zip(metrics, weights)}
-    used_weights = np.array([w_map[m] for m in usable_metrics], dtype=float)
-    used_weights = normalize_weights(used_weights)
-
-    # Z-score (direction-aware) and aggregate
-    z_cols = []
-    for m in usable_metrics:
-        z = _zscore_directional(df[m].astype(float), m)
-        z_cols.append(z.values.reshape(-1, 1))
-    Z = np.hstack(z_cols)
-    df[new_col] = np.round((Z * used_weights.reshape(1, -1)).sum(axis=1), 2)
-
-    # Optional UI notice about skipped sparse metrics
-    if skipped_sparse:
-        try:
-            import streamlit as st
-            st.caption("⚠️ Skipped sparse metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
-        except Exception:
-            pass
-
-    return df
-
-# --- Metric alias resolver (e.g., "Save rate %" -> "Save rate, %") ---
-def _norm(s: str) -> str:
-    return re.sub(r'[\s,%%]+', '', s).lower()
-
-def resolve_metrics_aliases(requested: list[str], columns: list[str]) -> tuple[list[str], list[str]]:
-    col_norm_map = {_norm(c): c for c in columns}
-    resolved, missing = [], []
-    for name in requested:
-        if name in columns:
-            resolved.append(name); continue
-        alt = name.replace(' %', ', %').replace('%', ', %') if '%' in name and ', %' not in name else name
-        if alt in columns:
-            resolved.append(alt); continue
-        key = _norm(name)
-        if key in col_norm_map:
-            resolved.append(col_norm_map[key]); continue
-        missing.append(name)
-    return resolved, missing
-
-# --- Season parsing & normalization ---
-SEASON_RX = re.compile(r'(\d{4})(?:\s*-\s*(\d{2,4}))?$')
-
-def extract_season_label(league_value: str) -> str | None:
-    if not isinstance(league_value, str):
-        return None
-    parts = league_value.strip().split()
-    if not parts:
-        return None
-    tail = parts[-1]
-    return tail if SEASON_RX.fullmatch(tail) else None
-
-def season_start_end(season_label: str) -> tuple[int, int]:
-    m = SEASON_RX.fullmatch(season_label)
-    if not m:
-        return (None, None)
-    start = int(m.group(1))
-    end_raw = m.group(2)
-    if not end_raw:
-        return (start, start)
-    end = int(end_raw)
-    if end < 100:
-        end = 2000 + end if end < 70 else 1900 + end
-    return (start, end)
 
 # =========================
-# File upload
+# Final PROFILES + Default Weights (dataset-aligned)
+# =========================
+PROFILES = {
+    # Goalkeepers
+    "Classic Goalkeeper": [
+        "Save rate, %", "Prevented goals per 90", "Conceded goals per 90",
+        "Exits per 90", "Aerial duels won, %", "Accurate long passes, %"
+    ],
+    "Sweeper Keeper": [
+        "Exits per 90", "Passes per 90", "Accurate passes, %",
+        "Progressive passes per 90", "Forward passes per 90",
+        "Accurate forward passes, %", "Accurate long passes, %"
+    ],
+    "All-Round Keeper": [
+        "Prevented goals per 90", "Save rate, %", "Exits per 90",
+        "Aerial duels won, %", "Passes per 90", "Accurate passes, %", "Accurate long passes, %"
+    ],
+
+    # Centre-Backs
+    "Ball-Playing CB": [
+        "Passes per 90", "Progressive passes per 90",
+        "Accurate progressive passes, %", "Accurate long passes, %", "Interceptions per 90"
+    ],
+    "Combative CB / Stopper": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Aerial duels per 90", "Aerial duels won, %", "Shots blocked per 90", "Interceptions per 90"
+    ],
+    "Libero / Middle Pin CB": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Interceptions per 90", "Accurate passes, %", "Accurate long passes, %", "Progressive passes per 90"
+    ],
+    "Wide CB (in 3)": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Interceptions per 90", "Progressive passes per 90",
+        "Accurate progressive passes, %", "Progressive runs per 90"
+    ],
+
+    # Midfielders
+    "Defensive Midfielder #6": [
+        "Interceptions per 90", "Defensive duels per 90", "Defensive duels won, %",
+        "Accurate passes, %", "Average pass length, m", "Passes to final third per 90"
+    ],
+    "Attacking Midfielder #8": [
+        "Progressive passes per 90", "Accurate progressive passes, %",
+        "Progressive runs per 90", "xA per 90", "Shots per 90"
+    ],
+    "Deep-Lying Playmaker": [
+        "Received passes per 90", "Progressive passes per 90",
+        "Accurate progressive passes, %", "Accurate long passes, %", "Interceptions per 90",
+        "Passes to final third per 90"
+    ],
+    "Box-to-Box Midfielder": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Progressive runs per 90", "Touches in box per 90", "Shots per 90", "xG per 90"
+    ],
+
+    # Wide & Attacking roles
+    "Full-Back": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Interceptions per 90", "Crosses per 90", "Accurate crosses, %", "Progressive runs per 90"
+    ],
+    "Wing-Back": [
+        "Interceptions per 90", "Defensive duels per 90",
+        "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %", "Shot assists per 90"
+    ],
+    "Classic Winger": [
+        "Dribbles per 90", "Successful dribbles, %",
+        "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %", "Shot assists per 90"
+    ],
+    "Inverted Winger": [
+        "Shots per 90", "xG per 90", "Progressive runs per 90",
+        "Shot assists per 90", "xA per 90", "Touches in box per 90"
+    ],
+    "Playmaker #10": [
+        "Progressive passes per 90", "Accurate progressive passes, %",
+        "Deep completions per 90", "Shot assists per 90", "xA per 90", "Shots per 90"
+    ],
+
+    # Forwards
+    "Target Man #9": [
+        "Received long passes per 90", "Aerial duels won, %",
+        "Fouls suffered per 90", "Passes to final third per 90", "xG per 90", "Aerial duels per 90"
+    ],
+    "Poacher": [
+        "Touches in box per 90", "Received passes per 90",
+        "xG per 90", "Non-penalty goals per 90", "Goal conversion, %", "Shots per 90"
+    ],
+    "Pressing Forward": [
+        "Defensive duels per 90", "Defensive duels won, %",
+        "Interceptions per 90", "Shots per 90", "Progressive runs per 90", "xG per 90"
+    ],
+}
+
+DEFAULT_WEIGHTS = {
+    "Classic Goalkeeper": {
+        "Save rate, %": 28, "Prevented goals per 90": 24, "Conceded goals per 90": 8,
+        "Exits per 90": 10, "Aerial duels won, %": 12, "Accurate long passes, %": 18
+    },
+    "Sweeper Keeper": {
+        "Exits per 90": 18, "Passes per 90": 12, "Accurate passes, %": 10,
+        "Progressive passes per 90": 16, "Forward passes per 90": 12,
+        "Accurate forward passes, %": 12, "Accurate long passes, %": 20
+    },
+    "All-Round Keeper": {
+        "Prevented goals per 90": 20, "Save rate, %": 22, "Exits per 90": 14,
+        "Aerial duels won, %": 12, "Passes per 90": 12, "Accurate passes, %": 10, "Accurate long passes, %": 10
+    },
+    "Ball-Playing CB": {
+        "Passes per 90": 18, "Progressive passes per 90": 28,
+        "Accurate progressive passes, %": 22, "Accurate long passes, %": 18, "Interceptions per 90": 14
+    },
+    "Combative CB / Stopper": {
+        "Defensive duels per 90": 24, "Defensive duels won, %": 22,
+        "Aerial duels per 90": 16, "Aerial duels won, %": 16, "Shots blocked per 90": 12, "Interceptions per 90": 10
+    },
+    "Libero / Middle Pin CB": {
+        "Defensive duels per 90": 16, "Defensive duels won, %": 18,
+        "Interceptions per 90": 18, "Accurate passes, %": 16, "Accurate long passes, %": 16, "Progressive passes per 90": 16
+    },
+    "Wide CB (in 3)": {
+        "Defensive duels per 90": 18, "Defensive duels won, %": 18,
+        "Interceptions per 90": 14, "Progressive passes per 90": 22,
+        "Accurate progressive passes, %": 18, "Progressive runs per 90": 10
+    },
+    "Defensive Midfielder #6": {
+        "Interceptions per 90": 24, "Defensive duels per 90": 18, "Defensive duels won, %": 16,
+        "Accurate passes, %": 16, "Average pass length, m": 10, "Passes to final third per 90": 16
+    },
+    "Attacking Midfielder #8": {
+        "Progressive passes per 90": 26, "Accurate progressive passes, %": 18,
+        "Progressive runs per 90": 20, "xA per 90": 18, "Shots per 90": 18
+    },
+    "Deep-Lying Playmaker": {
+        "Received passes per 90": 18, "Progressive passes per 90": 26,
+        "Accurate progressive passes, %": 18, "Accurate long passes, %": 16,
+        "Interceptions per 90": 10, "Passes to final third per 90": 12
+    },
+    "Box-to-Box Midfielder": {
+        "Defensive duels per 90": 16, "Defensive duels won, %": 12,
+        "Progressive runs per 90": 22, "Touches in box per 90": 14,
+        "Shots per 90": 18, "xG per 90": 18
+    },
+    "Full-Back": {
+        "Defensive duels per 90": 18, "Defensive duels won, %": 16,
+        "Interceptions per 90": 14, "Crosses per 90": 18, "Accurate crosses, %": 18, "Progressive runs per 90": 16
+    },
+    "Wing-Back": {
+        "Interceptions per 90": 14, "Defensive duels per 90": 16,
+        "Progressive runs per 90": 20, "Crosses per 90": 16, "Accurate crosses, %": 16, "Shot assists per 90": 18
+    },
+    "Classic Winger": {
+        "Dribbles per 90": 20, "Successful dribbles, %": 16,
+        "Progressive runs per 90": 18, "Crosses per 90": 12, "Accurate crosses, %": 12, "Shot assists per 90": 22
+    },
+    "Inverted Winger": {
+        "Shots per 90": 22, "xG per 90": 22, "Progressive runs per 90": 18,
+        "Shot assists per 90": 18, "xA per 90": 12, "Touches in box per 90": 8
+    },
+    "Playmaker #10": {
+        "Progressive passes per 90": 24, "Accurate progressive passes, %": 18,
+        "Deep completions per 90": 22, "Shot assists per 90": 18, "xA per 90": 14, "Shots per 90": 4
+    },
+    "Target Man #9": {
+        "Received long passes per 90": 18, "Aerial duels won, %": 24,
+        "Fouls suffered per 90": 10, "Passes to final third per 90": 12,
+        "xG per 90": 20, "Aerial duels per 90": 16
+    },
+    "Poacher": {
+        "Touches in box per 90": 20, "Received passes per 90": 10,
+        "xG per 90": 24, "Non-penalty goals per 90": 26, "Goal conversion, %": 12, "Shots per 90": 8
+    },
+    "Pressing Forward": {
+        "Defensive duels per 90": 20, "Defensive duels won, %": 16,
+        "Interceptions per 90": 16, "Shots per 90": 16, "Progressive runs per 90": 16, "xG per 90": 16
+    },
+}
+
+# =========================
+# Upload & Season parsing
 # =========================
 uploaded = st.sidebar.file_uploader("Upload your Football Data CSV", type=["csv"])
 if uploaded is None:
@@ -253,12 +380,33 @@ if 'Column1' in df_raw.columns and df_raw['Column1'].nunique() == len(df_raw):
 
 df = coerce_numeric(df_raw)
 
-# season columns
+# --- Season columns from "League" tail (e.g. "2024-25") ---
+SEASON_RX = re.compile(r'(\d{4})(?:\s*-\s*(\d{2,4}))?$')
+def extract_season_label(league_value: str) -> str | None:
+    if not isinstance(league_value, str):
+        return None
+    parts = league_value.strip().split()
+    if not parts:
+        return None
+    tail = parts[-1]
+    return tail if SEASON_RX.fullmatch(tail) else None
+
+def season_start_end(season_label: str) -> tuple[int, int]:
+    m = SEASON_RX.fullmatch(season_label)
+    if not m:
+        return (None, None)
+    start = int(m.group(1))
+    end_raw = m.group(2)
+    if not end_raw:
+        return (start, start)
+    end = int(end_raw)
+    if end < 100:
+        end = 2000 + end if end < 70 else 1900 + end
+    return (start, end)
+
 df['Season label'] = df['League'].apply(extract_season_label)
 df[['Season start', 'Season end']] = (
-    df['Season label']
-      .apply(lambda s: season_start_end(s) if isinstance(s, str) else (None, None))
-      .apply(pd.Series)
+    df['Season label'].apply(lambda s: season_start_end(s) if isinstance(s, str) else (None, None)).apply(pd.Series)
 )
 df['Season group'] = df['Season start'].fillna(df['Season end']).astype('Int64')
 
@@ -267,10 +415,11 @@ for col in get_numeric_columns(df):
     df[col] = df[col].fillna(0).round(2)
 
 # =========================
-# Sidebar filters (Season first)
+# Sidebar filters
 # =========================
 st.sidebar.header("Filters")
 
+# Seasons first
 st.sidebar.subheader("Season")
 season_groups = sorted(df['Season group'].dropna().unique().tolist())
 selected_groups = st.sidebar.multiselect("Season group (start year)", season_groups, default=season_groups)
@@ -286,27 +435,25 @@ if use_exact_label and selected_labels:
     season_mask &= df['Season label'].isin(selected_labels)
 df = df.loc[season_mask].copy()
 
-# leagues
+# League / Team / Position filters
 leagues = sorted(df['League'].dropna().unique().tolist())
 selected_leagues, _ = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or ALL")
 filtered = df[df['League'].isin(selected_leagues)].copy()
 if filtered.empty:
     st.warning("No players found for selected seasons/leagues."); st.stop()
 
-# teams & positions
 teams = sorted(filtered['Team'].dropna().unique().tolist())
 positions = sorted(filtered['Main Position'].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
 selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
 
-# age range
 age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
 age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max))
 
-# --- Market value slider removed ---
+# market value slider removed
 mv_col = None
 
-# minutes threshold (season-aware because we've filtered by season)
+# minutes threshold
 if 'Minutes played' in filtered.columns:
     min_minutes_max = int(filtered['Minutes played'].max())
     min_minutes = st.sidebar.slider("Minimum minutes this season", 0, max(0, min_minutes_max),
@@ -314,16 +461,13 @@ if 'Minutes played' in filtered.columns:
 else:
     min_minutes = 0
 
-# optional outlier removal for plots
 remove_outliers = st.sidebar.checkbox("Remove outliers (|Z| > 3) — for plots only", value=False)
 
-# apply remaining filters
 mask = (
     filtered['Team'].isin(selected_teams) &
     filtered['Main Position'].isin(selected_positions) &
     filtered['Age'].between(age_range[0], age_range[1])
 )
-# market value filter removed
 if 'Minutes played' in filtered.columns:
     mask &= filtered['Minutes played'] >= min_minutes
 
@@ -341,177 +485,59 @@ if filtered.empty:
 calc_col_name = None
 profile_metrics_in_use: list[str] = []
 
-PROFILES = {
-    # Goalkeepers
-    "Classic Goalkeeper": [
-        "Save rate %", "Prevented goals per 90", "Conceded goals per 90",
-        "Exits per 90", "Aerial duels won %", "Accurate long passes %"
-    ],
-    "Sweeper Keeper": [
-        "Exits per 90", "Passes per 90", "Accurate passes %",
-        "Progressive passes per 90", "Forward passes per 90",
-        "Accurate forward passes %", "Accurate long passes %", "Save rate %"
-    ],
-    "All-Round Keeper": [
-        "Prevented goals per 90", "Save rate %", "Exits per 90",
-        "Aerial duels won %", "Passes per 90", "Accurate passes %",
-        "Accurate long passes %"
-    ],
-
-    # Centre-backs / Defenders
-    "Ball-Playing CB": [
-        "Passes per 90", "Progressive passes per 90",
-        "Accurate progressive passes %", "Accurate long passes %",
-        "Interceptions per 90",
-        # suggestion adds
-        "Forward passes per 90", "Passes to final third per 90"
-    ],
-    "Combative CB / Stopper": [
-        "Defensive duels per 90", "Defensive duels won %",
-        "Aerial duels per 90", "Aerial duels won, %", "Shots blocked per 90",
-        # suggestion adds
-        "Interceptions per 90"
-    ],
-    "Libero / Middle Pin CB": [
-        "Defensive duels per 90", "Defensive duels won %",
-        "Interceptions per 90", "Accurate passes %", "Accurate long passes %",
-        # suggestion adds
-        "Progressive passes per 90"
-    ],
-    "Wide CB (in 3)": [
-        "Defensive duels per 90", "Defensive duels won %",
-        "Interceptions per 90", "Progressive passes per 90",
-        "Accurate progressive passes %",
-        # suggestion adds
-        "Progressive runs per 90"
-    ],
-
-    # Midfielders
-    "Defensive Midfielder #6": [
-        "Interceptions per 90", "Defensive duels per 90", "Defensive duels won %",
-        "Accurate passes %", "Average pass length, m",
-        # suggestion adds
-        "Passes to final third per 90"
-    ],
-    "Deep-Lying Playmaker": [
-        "Received passes per 90", "Progressive passes per 90",
-        "Accurate progressive passes %", "Accurate long passes %",
-        "Interceptions per 90",
-        # suggestion adds
-        "Passes to final third per 90"
-    ],
-    "Box-to-Box Midfielder": [
-        "Defensive duels per 90", "Defensive duels won %",
-        "Progressive runs per 90", "Touches in box per 90", "Shots per 90",
-        # suggestion adds
-        "xG per 90"
-    ],
-
-    # Full/Wing-backs
-    "Full-Back": [
-        "Defensive duels per 90", "Defensive duels won %",
-        "Interceptions per 90", "Crosses per 90", "Accurate crosses %",
-        # suggestion adds
-        "Progressive runs per 90"
-    ],
-    "Wing-Back": [
-        "Interceptions per 90", "Progressive runs per 90", "Defensive duels per 90",
-        "Crosses per 90", "Accurate crosses %", "Shot assists per 90"
-    ],
-
-    # Attackers / Wingers / Forwards
-    "Classic Winger": [
-        "Dribbles per 90", "Successful dribbles, %",
-        "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %",
-        "Shot assists per 90"
-    ],
-    "Inverted Winger": [
-        "Shots per 90", "xG per 90", "Progressive runs per 90",
-        "Shot assists per 90", "xA per 90",
-        # request add
-        "Touches in box per 90"
-    ],
-    "Playmaker #10": [
-        "Progressive passes per 90", "Accurate progressive passes %",
-        "Deep completions per 90", "Shot assists per 90", "xA per 90",
-        "Shots per 90"
-    ],
-    "Target Man #9": [
-        "Received long passes per 90", "Aerial duels won, %",
-        "Fouls suffered per 90", "Passes to final third per 90", "xG per 90",
-        # suggestion adds
-        "Aerial duels per 90"
-    ],
-    "Poacher": [
-        "Touches in box per 90", "Received passes per 90",
-        "xG per 90", "Non-penalty goals per 90", "Goal conversion %", "Shots per 90" 
-    ],
-   "Pressing Forward": [
-    "Defensive duels per 90",
-    "Defensive duels won, %",
-    "Interceptions per 90",
-    "Shots per 90",
-    "Progressive runs per 90",
-    "xG per 90"                      # ← new addition
-],
-}
-
 with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
-    st.caption("Scores are weighted sums of z-scored metrics across the currently filtered players.")
+    st.caption("Scores are weighted sums of direction-aware z-scores across the currently filtered players.")
     mode = st.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
 
     if mode == "Built-in":
         profile = st.selectbox("Choose profile", list(PROFILES.keys()))
         requested_metrics = PROFILES[profile]
-        resolved_metrics, missing = resolve_metrics_aliases(requested_metrics, filtered.columns.tolist())
-        if missing:
-            st.info("Skipped missing metrics: " + ", ".join(missing))
+        # resolve aliases to actual dataset columns
+        resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered.columns.tolist())
+        if missing_names:
+            st.info("Skipped missing metrics: " + ", ".join(missing_names))
         if resolved_metrics:
             profile_metrics_in_use = resolved_metrics.copy()
-            default_pct = max(1, int(100 / len(resolved_metrics)))
+
+            # default weights (fall back to equal if a metric has no default)
+            default_map = DEFAULT_WEIGHTS.get(profile, {})
+            defaults = [default_map.get(m, max(1, int(100/len(resolved_metrics)))) for m in resolved_metrics]
+
             weights_pct = []
-            for i, m in enumerate(resolved_metrics, start=1):
-                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_{profile}_{i}"))
-            weights_pct = np.array(weights_pct, dtype=float)
-            total = weights_pct.sum()
-            if int(total) != 100:
-                st.warning(f"Total weight ≠ 100 (currently {int(total)}). We’ll normalize for the score.")
-            weights = normalize_weights(weights_pct)
-            calc_col_name = f"Score: {profile}"
-            filtered = make_profile_score(filtered, resolved_metrics, weights, calc_col_name)
-            st.caption(f"✅ Added column **{calc_col_name}**.")
-        else:
-            st.warning("No valid metrics for this profile in the current dataset.")
-      else:
-        st.subheader("Custom Profile")
-
-        # 1) Name FIRST (so it's defined before we use it)
-        custom_name: str = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
-
-        # 2) Pick metrics (only numeric)
-        numeric_cols = get_numeric_columns(filtered)
-        custom_metrics = st.multiselect(
-            "Pick metrics to include",
-            options=numeric_cols,
-            default=numeric_cols[:5]
-        )
-
-        if custom_metrics:
-            profile_metrics_in_use = custom_metrics.copy()
-
-            # 3) Weight sliders (sum doesn't have to be 100; we normalize)
-            default_pct = max(1, int(100 / len(custom_metrics)))
-            weights_pct = []
-            for i, m in enumerate(custom_metrics, start=1):
-                weights_pct.append(
-                    st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}")
-                )
+            for i, (m, dflt) in enumerate(zip(resolved_metrics, defaults), start=1):
+                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, int(dflt), 1, key=f"w_{profile}_{i}"))
             weights_pct = np.array(weights_pct, dtype=float)
             if int(weights_pct.sum()) != 100:
                 st.warning(f"Total weight ≠ 100 (currently {int(weights_pct.sum())}). We’ll normalize for the score.")
             weights = normalize_weights(weights_pct)
 
-            # 4) Build the score column (name uses custom_name defined ABOVE)
+            calc_col_name = f"Score: {profile}"
+            filtered = make_profile_score(filtered, resolved_metrics, weights, calc_col_name)
+            st.caption(f"✅ Added column **{calc_col_name}**.")
+        else:
+            st.warning("No valid metrics for this profile in the current dataset.")
+    else:
+        st.subheader("Custom Profile")
+
+        # 1) Name first
+        custom_name: str = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
+
+        # 2) Metrics (numeric only)
+        numeric_cols = get_numeric_columns(filtered)
+        custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols, default=numeric_cols[:5])
+
+        if custom_metrics:
+            profile_metrics_in_use = custom_metrics.copy()
+
+            default_pct = max(1, int(100 / len(custom_metrics)))
+            weights_pct = []
+            for i, m in enumerate(custom_metrics, start=1):
+                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, default_pct, 1, key=f"w_custom_{i}"))
+            weights_pct = np.array(weights_pct, dtype=float)
+            if int(weights_pct.sum()) != 100:
+                st.warning(f"Total weight ≠ 100 (currently {int(weights_pct.sum())}). We’ll normalize for the score.")
+            weights = normalize_weights(weights_pct)
+
             calc_col_name = f"Score: {custom_name}"
             filtered = make_profile_score(filtered, custom_metrics, weights, calc_col_name)
             st.caption(f"✅ Added column **{calc_col_name}**.")
@@ -519,7 +545,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.info("Select at least one metric to build a custom profile.")
 
 # =========================
-# Data table
+# Data table (Top-N)
 # =========================
 st.subheader("Filtered Player Data")
 
@@ -543,13 +569,10 @@ _default_rank = next(
 )
 rank_metric = st.session_state.get('rank_metric', _default_rank)
 
-default_cols = [c for c in [
-    'Season label',  # season badge first
-    'Player', 'Team', 'League', 'Main Position', 'Age',
-    'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
-    'Goals', 'Assists', 'xG', 'xA', 'Minutes played',
-    calc_col_name if calc_col_name and calc_col_name in filtered.columns else None
-] if c and c in filtered.columns]
+ID_COLS = ['Season label','Player','Team','League','Main Position','Age',
+           'Market value (M€)' if 'Market value (M€)' in filtered.columns else 'Market value',
+           'Goals','Assists','xG','xA','Minutes played']
+default_cols = [c for c in ID_COLS + ([calc_col_name] if calc_col_name and calc_col_name in filtered.columns else []) if c in filtered.columns]
 
 exclude_cols = set()
 if 'Market value (M€)' in filtered.columns:
@@ -600,11 +623,10 @@ else:
     with c2:
         y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
     with c3:
-        # include Season label as a color option
         color_by = st.selectbox(
             "Color by",
             options=[o for o in ['Season label', 'Main Position', 'Team', 'League', 'Foot', 'None'] if o == 'None' or o in filtered.columns],
-            index=0 if 'Season label' in filtered.columns else (0 if 'Main Position' in filtered.columns else 0)
+            index=0 if 'Season label' in filtered.columns else 0
         )
 
     size_by = st.selectbox(
@@ -677,9 +699,10 @@ if compare_players:
     comp_metrics = st.multiselect("Metrics for comparison table & radar", options=comp_metric_choices, default=default_comp)
 
     if comp_metrics:
-        ordered_comp_metrics = try_reorder(comp_metrics, key="order_comp_metrics")
-        comp_df = comp_df.round(2)
+        # Optional reordering UI (if streamlit_sortable available)
+        ordered_comp_metrics = comp_metrics
 
+        comp_df = comp_df.round(2)
         st.dataframe(
             comp_df[ordered_comp_metrics].transpose().round(2).style.format("{:.2f}").highlight_max(axis=1, color='#C8E6C9'),
             use_container_width=True
