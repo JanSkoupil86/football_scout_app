@@ -221,7 +221,7 @@ PROFILES = {
     ],
     "Attacking Midfielder #8": [
         "Progressive passes per 90", "Accurate progressive passes, %",
-        "Progressive runs per 90", "xA per 90", "Shots per 90"
+        "Progressive runs per 90", "xA per 90", "Shots per 90", "Shot assists per 90"
     ],
     "Deep-Lying Playmaker": [
         "Received passes per 90", "Progressive passes per 90",
