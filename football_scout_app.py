@@ -242,6 +242,19 @@ PROFILES = {
         "Interceptions per 90", "Defensive duels per 90",
         "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %", "Shot assists per 90"
     ],
+     "Inverted Full-Back": {
+    "Progressive passes per 90": 15,
+    "Progressive runs per 90": 10,
+    "Forward passes per 90": 10,
+    "Accurate passes, %": 10,
+    "Accurate short / medium passes, %": 5,
+    "Smart passes per 90": 5,
+    "Defensive duels won, %": 10,
+    "Interceptions per 90": 10,
+    "Successful defensive actions per 90": 10,
+    "Aerial duels won, %": 5,
+    "xA per 90": 5
+},
     "Classic Winger": [
         "Dribbles per 90", "Successful dribbles, %",
         "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %", "Shot assists per 90"
