@@ -354,6 +354,17 @@ DEFAULT_WEIGHTS = {
     },
 }
 
+# --- NEW: map default weights to resolved names (after aliasing) ---
+def _defaults_for_resolved(profile_name: str, resolved_metric_names: list[str]) -> list[int]:
+    """Map DEFAULT_WEIGHTS[profile] to the resolved dataset column names.
+    Falls back to equal split for metrics missing in DEFAULT_WEIGHTS."""
+    dm = DEFAULT_WEIGHTS.get(profile_name, {})
+    dm_norm = {_norm(k): v for k, v in dm.items()}
+    if not resolved_metric_names:
+        return []
+    equal = max(1, int(100 / len(resolved_metric_names)))
+    return [int(dm_norm.get(_norm(m), equal)) for m in resolved_metric_names]
+
 # =========================
 # Upload & Season parsing
 # =========================
@@ -450,10 +461,7 @@ selected_positions, _ = multiselect_all("Main Position(s)", positions, default_a
 age_min, age_max = int(filtered['Age'].min()), int(filtered['Age'].max())
 age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max))
 
-# market value slider removed
-mv_col = None
-
-# minutes threshold
+# minutes threshold (market value slider intentionally removed)
 if 'Minutes played' in filtered.columns:
     min_minutes_max = int(filtered['Minutes played'].max())
     min_minutes = st.sidebar.slider("Minimum minutes this season", 0, max(0, min_minutes_max),
@@ -480,7 +488,7 @@ if filtered.empty:
     st.warning("No players match the selected filters."); st.stop()
 
 # =========================
-# Player Profiles (Built-in + Custom)
+# Player Profiles (Built-in + Custom)  — with PRESET %
 # =========================
 calc_col_name = None
 profile_metrics_in_use: list[str] = []
@@ -492,20 +500,49 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
     if mode == "Built-in":
         profile = st.selectbox("Choose profile", list(PROFILES.keys()))
         requested_metrics = PROFILES[profile]
-        # resolve aliases to actual dataset columns
+
+        # Resolve aliases to actual dataset columns
         resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered.columns.tolist())
         if missing_names:
             st.info("Skipped missing metrics: " + ", ".join(missing_names))
+
         if resolved_metrics:
             profile_metrics_in_use = resolved_metrics.copy()
 
-            # default weights (fall back to equal if a metric has no default)
-            default_map = DEFAULT_WEIGHTS.get(profile, {})
-            defaults = [default_map.get(m, max(1, int(100/len(resolved_metrics)))) for m in resolved_metrics]
+            # --- preset % stored per profile (persist across switches) ---
+            ss_key = f"preset::{profile}"
+            if ss_key not in st.session_state:
+                st.session_state[ss_key] = {
+                    "metrics": resolved_metrics[:],
+                    "weights": _defaults_for_resolved(profile, resolved_metrics)
+                }
+            else:
+                state = st.session_state[ss_key]
+                # If metrics set changed due to aliasing/filtering, reseed while keeping any matching edits
+                if state.get("metrics") != resolved_metrics:
+                    old_map = {m: w for m, w in zip(state["metrics"], state["weights"])}
+                    new_defaults = _defaults_for_resolved(profile, resolved_metrics)
+                    new_weights = [int(old_map.get(m, d)) for m, d in zip(resolved_metrics, new_defaults)]
+                    st.session_state[ss_key] = {"metrics": resolved_metrics[:], "weights": new_weights}
 
+            state = st.session_state[ss_key]
+
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                if st.button("Reset weights to defaults"):
+                    state["weights"] = _defaults_for_resolved(profile, resolved_metrics)
+
+            # Sliders seeded with PRESETs (not equal splits)
             weights_pct = []
-            for i, (m, dflt) in enumerate(zip(resolved_metrics, defaults), start=1):
-                weights_pct.append(st.slider(f"Weight %: {m}", 0, 100, int(dflt), 1, key=f"w_{profile}_{i}"))
+            for i, (m, dflt) in enumerate(zip(state["metrics"], state["weights"]), start=1):
+                if m not in filtered.columns:
+                    st.warning(f"Missing column: **{m}** — ignored for scoring.")
+                w = st.slider(f"Weight %: {m}", 0, 100, int(dflt), 1, key=f"w_{profile}_{i}")
+                weights_pct.append(w)
+
+            # Persist edits
+            st.session_state[ss_key]["weights"] = [int(w) for w in weights_pct]
+
             weights_pct = np.array(weights_pct, dtype=float)
             if int(weights_pct.sum()) != 100:
                 st.warning(f"Total weight ≠ 100 (currently {int(weights_pct.sum())}). We’ll normalize for the score.")
@@ -516,6 +553,7 @@ with st.sidebar.expander("Player profiles (calculated z-score)", expanded=True):
             st.caption(f"✅ Added column **{calc_col_name}**.")
         else:
             st.warning("No valid metrics for this profile in the current dataset.")
+
     else:
         st.subheader("Custom Profile")
 
