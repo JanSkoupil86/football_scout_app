@@ -745,40 +745,41 @@ else:
     plot_df[y_axis] = plot_df[y_axis].round(2)
     show_labels = st.checkbox("Show player labels on chart", value=False)
 
-     fig = px.scatter(
-        plot_df,
-        x=x_axis,
-        y=y_axis,
-        hover_name="Player" if 'Player' in plot_df.columns else None,
-        color=None if color_by == 'None' else color_by,
-        size=None if size_by == 'None' else size_by,
-        text=plot_df['Player'] if show_labels and 'Player' in plot_df.columns else None,
-        title=f"{y_axis} vs. {x_axis} by Player",
-        template="plotly_white",
-        height=620,
-    )
+    fig = px.scatter(
+    plot_df,
+    x=x_axis,
+    y=y_axis,
+    hover_name="Player" if 'Player' in plot_df.columns else None,
+    color=None if color_by == 'None' else color_by,
+    size=None if size_by == 'None' else size_by,
+    text=plot_df['Player'] if show_labels and 'Player' in plot_df.columns else None,
+    title=f"{y_axis} vs. {x_axis} by Player",
+    template="plotly_white",
+    height=620,
+)
 
-    # Bigger points + labels
-    fig.update_traces(
-        marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
-        textposition="top center",
-        textfont=dict(size=16, color="black"),
-        hovertemplate="Player: %{hovertext}<br>"
-                      + x_axis + ": %{x:.2f}<br>"
-                      + y_axis + ": %{y:.2f}<extra></extra>",
-        cliponaxis=False,
-    )
+# Bigger points + labels
+fig.update_traces(
+    marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
+    textposition="top center",
+    textfont=dict(size=16, color="black"),
+    hovertemplate="Player: %{hovertext}<br>"
+                  + x_axis + ": %{x:.2f}<br>"
+                  + y_axis + ": %{y:.2f}<extra></extra>",
+    cliponaxis=False,
+)
 
-    # Bigger axes, legend, and title
-    fig.update_layout(
-        font=dict(size=14),
-        title_font=dict(size=20),
-        legend=dict(font=dict(size=12)),
-        xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
-        yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
-    )
+# Bigger axes, legend, and title
+fig.update_layout(
+    font=dict(size=14),
+    title_font=dict(size=20),
+    legend=dict(font=dict(size=12)),
+    xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+    yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+)
 
-    st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
+
 # =========================
 # Player comparison + Radar (z-score across filtered set)
 # =========================
