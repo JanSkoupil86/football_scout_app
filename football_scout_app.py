@@ -198,26 +198,53 @@ PROFILES = {
     ],
 
     # 🛡️ CENTRE-BACKS
-    "Ball-Playing CB": [
-        "Progressive passes per 90", "Accurate progressive passes, %", "Accurate long passes, %",
-        "Passes per 90", "Forward passes per 90", "Interceptions per 90",
-        "Defensive duels per 90", "Defensive duels won, %", "Aerial duels won, %",
-        "Successful defensive actions per 90"
+     "Ball-Playing CB": [
+        "Progressive passes per 90",
+        "Accurate progressive passes, %",
+        "Forward passes per 90",
+        "Accurate passes, %",
+        "Accurate long passes, %",
+        "Passes per 90",
+        "Average pass length, m",
+        "Interceptions per 90",
+        "Defensive duels won, %",
+        "Aerial duels won, %"
     ],
     "Combative CB / Stopper": [
-        "Defensive duels per 90", "Defensive duels won, %", "Aerial duels per 90", "Aerial duels won, %",
-        "Shots blocked per 90", "Interceptions per 90", "Fouls per 90",
-        "Successful defensive actions per 90", "Passes per 90", "Accurate passes, %"
+        "Defensive duels per 90",
+        "Defensive duels won, %",
+        "Aerial duels per 90",
+        "Aerial duels won, %",
+        "Shots blocked per 90",
+        "Interceptions per 90",
+        "Clearances per 90",
+        "Fouls per 90",
+        "Successful defensive actions per 90",
+        "Passes per 90"
     ],
     "Libero / Middle Pin CB": [
-        "Progressive passes per 90", "Accurate passes, %", "Accurate long passes, %",
-        "Passes to final third per 90", "Interceptions per 90", "Defensive duels per 90",
-        "Defensive duels won, %", "Deep completions per 90", "Aerial duels won, %", "Passes per 90"
+        "Progressive passes per 90",
+        "Accurate long passes, %",
+        "Passes to final third per 90",
+        "Accurate passes, %",
+        "Deep completions per 90",
+        "Smart passes per 90",
+        "xA per 90",
+        "Interceptions per 90",
+        "Aerial duels won, %",
+        "Defensive duels won, %"
     ],
     "Wide CB (in 3)": [
-        "Defensive duels per 90", "Defensive duels won, %", "Progressive runs per 90",
-        "Progressive passes per 90", "Accurate progressive passes, %", "Interceptions per 90",
-        "Aerial duels won, %", "Successful defensive actions per 90", "Deep completions per 90", "Crosses per 90"
+        "Defensive duels per 90",
+        "Defensive duels won, %",
+        "Progressive runs per 90",
+        "Interceptions per 90",
+        "Aerial duels won, %",
+        "Successful defensive actions per 90",
+        "Crosses per 90",
+        "Accurate crosses, %",
+        "Touches in box per 90",
+        "Progressive passes per 90"
     ],
 
     # ⚙️ MIDFIELDERS
@@ -317,25 +344,52 @@ DEFAULT_WEIGHTS = {
 
     # 🛡️ CENTRE-BACKS
     "Ball-Playing CB": {
-        "Progressive passes per 90": 20, "Accurate progressive passes, %": 20, "Accurate long passes, %": 10,
-        "Passes per 90": 10, "Forward passes per 90": 10, "Interceptions per 90": 10,
-        "Defensive duels per 90": 5, "Defensive duels won, %": 5, "Aerial duels won, %": 5,
-        "Successful defensive actions per 90": 5
+        "Progressive passes per 90": 20,
+        "Accurate progressive passes, %": 15,
+        "Forward passes per 90": 10,
+        "Accurate passes, %": 10,
+        "Accurate long passes, %": 10,
+        "Passes per 90": 10,
+        "Average pass length, m": 5,
+        "Interceptions per 90": 10,
+        "Defensive duels won, %": 5,
+        "Aerial duels won, %": 5
     },
     "Combative CB / Stopper": {
-        "Defensive duels per 90": 20, "Defensive duels won, %": 20, "Aerial duels per 90": 15,
-        "Aerial duels won, %": 15, "Shots blocked per 90": 10, "Interceptions per 90": 10,
-        "Fouls per 90": 5, "Successful defensive actions per 90": 5, "Passes per 90": 0, "Accurate passes, %": 0
+        "Defensive duels per 90": 20,
+        "Defensive duels won, %": 20,
+        "Aerial duels per 90": 15,
+        "Aerial duels won, %": 15,
+        "Shots blocked per 90": 10,
+        "Interceptions per 90": 5,
+        "Clearances per 90": 5,
+        "Fouls per 90": 5,
+        "Successful defensive actions per 90": 5,
+        "Passes per 90": 0
     },
     "Libero / Middle Pin CB": {
-        "Progressive passes per 90": 20, "Accurate passes, %": 10, "Accurate long passes, %": 10,
-        "Passes to final third per 90": 15, "Interceptions per 90": 10, "Defensive duels per 90": 10,
-        "Defensive duels won, %": 5, "Deep completions per 90": 10, "Aerial duels won, %": 5, "Passes per 90": 5
+        "Progressive passes per 90": 20,
+        "Accurate long passes, %": 15,
+        "Passes to final third per 90": 10,
+        "Accurate passes, %": 10,
+        "Deep completions per 90": 10,
+        "Smart passes per 90": 10,
+        "xA per 90": 5,
+        "Interceptions per 90": 10,
+        "Aerial duels won, %": 5,
+        "Defensive duels won, %": 5
     },
     "Wide CB (in 3)": {
-        "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Progressive runs per 90": 15,
-        "Progressive passes per 90": 15, "Accurate progressive passes, %": 10, "Interceptions per 90": 10,
-        "Aerial duels won, %": 5, "Successful defensive actions per 90": 10, "Deep completions per 90": 5, "Crosses per 90": 5
+        "Defensive duels per 90": 15,
+        "Defensive duels won, %": 10,
+        "Progressive runs per 90": 15,
+        "Interceptions per 90": 10,
+        "Aerial duels won, %": 5,
+        "Successful defensive actions per 90": 10,
+        "Crosses per 90": 10,
+        "Accurate crosses, %": 10,
+        "Touches in box per 90": 5,
+        "Progressive passes per 90": 10
     },
 
     # ⚙️ MIDFIELDERS
