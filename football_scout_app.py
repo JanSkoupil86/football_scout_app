@@ -185,15 +185,21 @@ PROFILES = {
         "Save rate, %", "Prevented goals per 90", "Conceded goals per 90",
         "Exits per 90", "Aerial duels won, %", "Accurate long passes, %"
     ],
-    "Sweeper Keeper": [
-        "Exits per 90", "Passes per 90", "Accurate passes, %",
-        "Progressive passes per 90", "Forward passes per 90",
-        "Accurate forward passes, %", "Accurate long passes, %"
-    ],
-    "All-Round Keeper": [
-        "Prevented goals per 90", "Save rate, %", "Exits per 90",
-        "Aerial duels won, %", "Passes per 90", "Accurate passes, %", "Accurate long passes, %"
-    ],
+   "Sweeper Keeper": [
+    "Exits per 90",
+    "Aerial duels per 90",
+    "Aerial duels won, %",
+    "Prevented goals per 90",
+    "Save rate, %",
+    "Progressive passes per 90",
+    "Forward passes per 90",
+    "Accurate long passes, %"
+],
+   "Build-Up Keeper": [
+    "Accurate passes, %", "Accurate long passes, %",
+    "Progressive passes per 90", "Forward passes per 90",
+    "Save rate, %", "Prevented goals per 90", "Exits per 90"
+],
 
     # Centre-Backs
     "Ball-Playing CB": [
@@ -238,6 +244,18 @@ PROFILES = {
         "Defensive duels per 90", "Defensive duels won, %",
         "Interceptions per 90", "Crosses per 90", "Accurate crosses, %", "Progressive runs per 90"
     ],
+    "Inverted Full-Back": [
+    "Progressive passes per 90",
+    "Progressive runs per 90",
+    "Forward passes per 90",
+    "Accurate passes, %",
+    "Accurate short / medium passes, %",
+    "Smart passes per 90",
+    "Defensive duels won, %",
+    "Interceptions per 90",
+    "Successful defensive actions per 90",
+    "Aerial duels won, %"
+],
     "Wing-Back": [
         "Interceptions per 90", "Defensive duels per 90",
         "Progressive runs per 90", "Crosses per 90", "Accurate crosses, %", "Shot assists per 90"
@@ -272,18 +290,28 @@ PROFILES = {
 
 DEFAULT_WEIGHTS = {
     "Classic Goalkeeper": {
-        "Save rate, %": 28, "Prevented goals per 90": 24, "Conceded goals per 90": 8,
-        "Exits per 90": 10, "Aerial duels won, %": 12, "Accurate long passes, %": 18
+        "Save rate, %": 30, "Prevented goals per 90": 25, "Conceded goals per 90": 5,
+        "Exits per 90": 10, "Aerial duels won, %": 10, "Accurate long passes, %": 20
     },
-    "Sweeper Keeper": {
-        "Exits per 90": 18, "Passes per 90": 12, "Accurate passes, %": 10,
-        "Progressive passes per 90": 16, "Forward passes per 90": 12,
-        "Accurate forward passes, %": 12, "Accurate long passes, %": 20
-    },
-    "All-Round Keeper": {
-        "Prevented goals per 90": 20, "Save rate, %": 22, "Exits per 90": 14,
-        "Aerial duels won, %": 12, "Passes per 90": 12, "Accurate passes, %": 10, "Accurate long passes, %": 10
-    },
+   "Sweeper Keeper": {
+    "Exits per 90": 25,                    # still the defining stat
+    "Aerial duels per 90": 10,             # adds defensive presence
+    "Aerial duels won, %": 10,             # success rate for high-line sweeps
+    "Prevented goals per 90": 10,          # still some shot-stopping
+    "Save rate, %": 10,
+    "Progressive passes per 90": 15,       # keeps link to build-up
+    "Forward passes per 90": 10,
+    "Accurate long passes, %": 10          # long distribution, not short buildup
+},
+    "Build-Up Keeper": {
+    "Accurate passes, %": 25,
+    "Accurate long passes, %": 20,
+    "Progressive passes per 90": 20,
+    "Forward passes per 90": 15,
+    "Save rate, %": 10,
+    "Prevented goals per 90": 5,
+    "Exits per 90": 5
+},
     "Ball-Playing CB": {
         "Passes per 90": 18, "Progressive passes per 90": 28,
         "Accurate progressive passes, %": 22, "Accurate long passes, %": 18, "Interceptions per 90": 14
@@ -323,6 +351,18 @@ DEFAULT_WEIGHTS = {
         "Defensive duels per 90": 18, "Defensive duels won, %": 16,
         "Interceptions per 90": 14, "Crosses per 90": 18, "Accurate crosses, %": 18, "Progressive runs per 90": 16
     },
+    "Inverted Full-Back": {
+    "Progressive passes per 90": 20,
+    "Progressive runs per 90": 15,
+    "Forward passes per 90": 10,
+    "Accurate passes, %": 10,
+    "Accurate short / medium passes, %": 5,
+    "Smart passes per 90": 5,
+    "Defensive duels won, %": 10,
+    "Interceptions per 90": 10,
+    "Successful defensive actions per 90": 10,
+    "Aerial duels won, %": 5
+},
     "Wing-Back": {
         "Interceptions per 90": 14, "Defensive duels per 90": 16,
         "Progressive runs per 90": 20, "Crosses per 90": 16, "Accurate crosses, %": 16, "Shot assists per 90": 18
