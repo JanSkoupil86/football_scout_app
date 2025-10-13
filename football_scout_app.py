@@ -758,12 +758,16 @@ else:
         height=620,
     )
     fig.update_traces(
-        marker=dict(line=dict(width=1, color='DarkSlateGrey')),
-        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
-        textposition="top center",
-        textfont=dict(size=12),
-        cliponaxis=False,
-    )
+    marker=dict(size=16, line=dict(width=1.5, color='DarkSlateGrey')),
+    hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
+    textposition="top center",
+    textfont=dict(size=16, color="black"),
+    cliponaxis=False,
+)
+fig.update_layout(
+    font=dict(size=14),
+    title_font=dict(size=20),
+)
     st.plotly_chart(fig, use_container_width=True)
 
 # =========================
