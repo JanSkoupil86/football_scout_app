@@ -298,60 +298,61 @@ PROFILES = {
 }
 
 DEFAULT_WEIGHTS = {
-    # --------------- GK ---------------
+    # 🧤 GOALKEEPERS
     "Classic Goalkeeper": {
-        "Save rate, %": 30, "Prevented goals per 90": 20, "Conceded goals per 90": 5, "Shots against per 90": 10,
+        "Save rate, %": 25, "Prevented goals per 90": 20, "Conceded goals per 90": 5, "Shots against per 90": 10,
         "Aerial duels won, %": 10, "Exits per 90": 5, "Aerial duels per 90": 5,
-        "Accurate long passes, %": 5, "Accurate passes, %": 5, "Average pass length, m": 5
+        "Accurate long passes, %": 10, "Accurate passes, %": 5, "Average pass length, m": 5
     },
     "Sweeper Keeper": {
-        "Exits per 90": 25, "Aerial duels per 90": 10, "Aerial duels won, %": 10, "Shots against per 90": 5,
+        "Exits per 90": 20, "Aerial duels per 90": 10, "Aerial duels won, %": 10, "Shots against per 90": 5,
         "Prevented goals per 90": 10, "Save rate, %": 10, "Progressive passes per 90": 10,
-        "Forward passes per 90": 10, "Accurate long passes, %": 5, "Passes to final third per 90": 5
+        "Forward passes per 90": 10, "Accurate long passes, %": 10, "Passes to final third per 90": 5
     },
     "Build-Up Keeper": {
-        "Accurate passes, %": 25, "Accurate long passes, %": 15, "Progressive passes per 90": 15, "Forward passes per 90": 10,
-        "Passes to final third per 90": 10, "Average pass length, m": 10, "Passes per 90": 5,
-        "Save rate, %": 5, "Prevented goals per 90": 5, "Exits per 90": 0  # keep as 0 if you prefer 9 active metrics = 95 -> normalize in UI
+        "Accurate passes, %": 20, "Accurate long passes, %": 15, "Progressive passes per 90": 15,
+        "Forward passes per 90": 10, "Passes to final third per 90": 10, "Average pass length, m": 10,
+        "Passes per 90": 5, "Save rate, %": 5, "Prevented goals per 90": 5, "Exits per 90": 5
     },
 
-    # --------------- CB ---------------
+    # 🛡️ CENTRE-BACKS
     "Ball-Playing CB": {
-        "Passes per 90": 10, "Progressive passes per 90": 25, "Accurate progressive passes, %": 20, "Accurate long passes, %": 10,
-        "Forward passes per 90": 10, "Interceptions per 90": 10, "Defensive duels per 90": 5,
-        "Defensive duels won, %": 5, "Aerial duels won, %": 5, "Successful defensive actions per 90": 0
+        "Progressive passes per 90": 20, "Accurate progressive passes, %": 20, "Accurate long passes, %": 10,
+        "Passes per 90": 10, "Forward passes per 90": 10, "Interceptions per 90": 10,
+        "Defensive duels per 90": 5, "Defensive duels won, %": 5, "Aerial duels won, %": 5,
+        "Successful defensive actions per 90": 5
     },
     "Combative CB / Stopper": {
-        "Defensive duels per 90": 20, "Defensive duels won, %": 20, "Aerial duels per 90": 15, "Aerial duels won, %": 15,
-        "Shots blocked per 90": 10, "Interceptions per 90": 10, "Fouls per 90": 5,
-        "Successful defensive actions per 90": 5, "Passes per 90": 0, "Accurate passes, %": 0
+        "Defensive duels per 90": 20, "Defensive duels won, %": 20, "Aerial duels per 90": 15,
+        "Aerial duels won, %": 15, "Shots blocked per 90": 10, "Interceptions per 90": 10,
+        "Fouls per 90": 5, "Successful defensive actions per 90": 5, "Passes per 90": 0, "Accurate passes, %": 0
     },
     "Libero / Middle Pin CB": {
-        "Progressive passes per 90": 20, "Accurate passes, %": 10, "Accurate long passes, %": 15, "Passes to final third per 90": 15,
-        "Interceptions per 90": 10, "Defensive duels per 90": 5, "Defensive duels won, %": 5,
-        "Deep completions per 90": 10, "Aerial duels won, %": 5, "Passes per 90": 5
+        "Progressive passes per 90": 20, "Accurate passes, %": 10, "Accurate long passes, %": 10,
+        "Passes to final third per 90": 15, "Interceptions per 90": 10, "Defensive duels per 90": 10,
+        "Defensive duels won, %": 5, "Deep completions per 90": 10, "Aerial duels won, %": 5, "Passes per 90": 5
     },
     "Wide CB (in 3)": {
-        "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Progressive runs per 90": 15, "Progressive passes per 90": 15,
-        "Accurate progressive passes, %": 10, "Interceptions per 90": 10, "Aerial duels won, %": 5,
-        "Successful defensive actions per 90": 10, "Deep completions per 90": 5, "Crosses per 90": 5
+        "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Progressive runs per 90": 15,
+        "Progressive passes per 90": 15, "Accurate progressive passes, %": 10, "Interceptions per 90": 10,
+        "Aerial duels won, %": 5, "Successful defensive actions per 90": 10, "Deep completions per 90": 5, "Crosses per 90": 5
     },
 
-    # --------------- MID ---------------
+    # ⚙️ MIDFIELDERS
     "Defensive Midfielder #6": {
-        "Interceptions per 90": 20, "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Successful defensive actions per 90": 10,
-        "Accurate passes, %": 10, "Forward passes per 90": 10, "Passes to final third per 90": 10,
-        "Progressive passes per 90": 10, "Average pass length, m": 5, "Aerial duels won, %": 0
+        "Interceptions per 90": 20, "Defensive duels per 90": 15, "Defensive duels won, %": 10,
+        "Successful defensive actions per 90": 10, "Accurate passes, %": 10, "Forward passes per 90": 10,
+        "Passes to final third per 90": 10, "Progressive passes per 90": 10, "Average pass length, m": 5, "Aerial duels won, %": 0
     },
     "Attacking Midfielder #8": {
-        "Progressive passes per 90": 15, "Accurate progressive passes, %": 10, "Progressive runs per 90": 15, "xA per 90": 15,
-        "Shots per 90": 15, "Touches in box per 90": 10, "Interceptions per 90": 5,
+        "Progressive passes per 90": 15, "Accurate progressive passes, %": 10, "Progressive runs per 90": 15,
+        "xA per 90": 15, "Shots per 90": 15, "Touches in box per 90": 10, "Interceptions per 90": 5,
         "Key passes per 90": 5, "Deep completions per 90": 5, "Successful attacking actions per 90": 5
     },
     "Deep-Lying Playmaker": {
-        "Received passes per 90": 10, "Passes per 90": 10, "Progressive passes per 90": 20, "Accurate progressive passes, %": 15,
-        "Accurate long passes, %": 10, "Forward passes per 90": 10, "Passes to final third per 90": 10,
-        "Interceptions per 90": 5, "Defensive duels per 90": 5, "Aerial duels won, %": 5
+        "Progressive passes per 90": 20, "Accurate progressive passes, %": 15, "Received passes per 90": 10,
+        "Accurate long passes, %": 10, "Forward passes per 90": 10, "Passes per 90": 10,
+        "Passes to final third per 90": 10, "Interceptions per 90": 5, "Defensive duels per 90": 5, "Aerial duels won, %": 5
     },
     "Box-to-Box Midfielder": {
         "Progressive runs per 90": 20, "xG per 90": 15, "Shots per 90": 15, "Interceptions per 90": 10,
@@ -359,7 +360,7 @@ DEFAULT_WEIGHTS = {
         "Successful attacking actions per 90": 10, "Forward passes per 90": 5, "Passes to final third per 90": 0
     },
 
-    # -------- WIDE & ATTACKING ROLES --------
+    # 🌊 WIDE / ATTACKING ROLES
     "Full-Back": {
         "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Interceptions per 90": 10, "Crosses per 90": 10,
         "Accurate crosses, %": 10, "Progressive runs per 90": 15, "Progressive passes per 90": 10,
@@ -391,24 +392,23 @@ DEFAULT_WEIGHTS = {
         "Progressive runs per 90": 5, "Successful attacking actions per 90": 5
     },
 
-    # --------------- FWD ---------------
+    # ⚡ FORWARDS
     "Target Man #9": {
         "Aerial duels per 90": 20, "Aerial duels won, %": 15, "Received long passes per 90": 10, "Passes to final third per 90": 10,
-        "Fouls suffered per 90": 10, "xG per 90": 10, "Shots per 90": 5,
-        "Non-penalty goals per 90": 5, "Touches in box per 90": 5, "Received passes per 90": 10
+        "Fouls suffered per 90": 10, "xG per 90": 10, "Shots per 90": 5, "Non-penalty goals per 90": 5,
+        "Touches in box per 90": 5, "Received passes per 90": 10
     },
     "Poacher": {
-        "Non-penalty goals per 90": 30, "xG per 90": 20, "Shots per 90": 10, "Goal conversion, %": 10,
+        "Non-penalty goals per 90": 25, "xG per 90": 20, "Shots per 90": 10, "Goal conversion, %": 10,
         "Touches in box per 90": 10, "Received passes per 90": 5, "xA per 90": 5,
-        "Progressive runs per 90": 5, "Key passes per 90": 0, "Successful attacking actions per 90": 5
+        "Progressive runs per 90": 5, "Key passes per 90": 5, "Successful attacking actions per 90": 5
     },
     "Pressing Forward": {
         "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Interceptions per 90": 15, "Successful defensive actions per 90": 10,
-        "Progressive runs per 90": 10, "Shots per 90": 15, "xG per 90": 10,
-        "xA per 90": 5, "Touches in box per 90": 5, "Successful attacking actions per 90": 5
+        "Progressive runs per 90": 10, "Shots per 90": 10, "xG per 90": 10, "xA per 90": 5,
+        "Touches in box per 90": 10, "Successful attacking actions per 90": 5
     }
 }
-
 # --- NEW: map default weights to resolved names (after aliasing) ---
 def _defaults_for_resolved(profile_name: str, resolved_metric_names: list[str]) -> list[int]:
     """Map DEFAULT_WEIGHTS[profile] to the resolved dataset column names.
