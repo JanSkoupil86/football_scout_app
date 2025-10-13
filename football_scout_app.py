@@ -217,10 +217,10 @@ PROFILES = {
         "Aerial duels won, %",
         "Shots blocked per 90",
         "Interceptions per 90",
-        "Clearances per 90",
         "Fouls per 90",
         "Successful defensive actions per 90",
-        "Passes per 90"
+        "Passes per 90",
+        "Accurate passes, %"
     ],
     "Libero / Middle Pin CB": [
         "Progressive passes per 90",
@@ -362,10 +362,10 @@ DEFAULT_WEIGHTS = {
         "Aerial duels won, %": 15,
         "Shots blocked per 90": 10,
         "Interceptions per 90": 5,
-        "Clearances per 90": 5,
         "Fouls per 90": 5,
         "Successful defensive actions per 90": 5,
-        "Passes per 90": 0
+        "Passes per 90": 0,
+        "Accurate passes, %": 0
     },
     "Libero / Middle Pin CB": {
         "Progressive passes per 90": 20,
