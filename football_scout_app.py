@@ -322,6 +322,30 @@ PROFILES = {
         "Successful defensive actions per 90", "Progressive runs per 90", "Shots per 90",
         "xG per 90", "xA per 90", "Touches in box per 90", "Successful attacking actions per 90"
     ],
+     "Creative Forward / False 9": [
+        "Progressive passes per 90",
+        "Accurate progressive passes, %",
+        "Deep completions per 90",
+        "Key passes per 90",
+        "xA per 90",
+        "Progressive runs per 90",
+        "Received passes per 90",
+        "Shots per 90",
+        "xG per 90",
+        "Touches in box per 90"
+    ],
+     "Wide Forward / Inside 9": [
+        "Progressive runs per 90",
+        "Dribbles per 90",
+        "Successful dribbles, %",
+        "Shots per 90",
+        "xG per 90",
+        "xA per 90",
+        "Touches in box per 90",
+        "Deep completions per 90",
+        "Key passes per 90",
+        "Successful attacking actions per 90"
+    ],
 }
 
 DEFAULT_WEIGHTS = {
@@ -461,6 +485,30 @@ DEFAULT_WEIGHTS = {
         "Defensive duels per 90": 15, "Defensive duels won, %": 10, "Interceptions per 90": 15, "Successful defensive actions per 90": 10,
         "Progressive runs per 90": 10, "Shots per 90": 10, "xG per 90": 10, "xA per 90": 5,
         "Touches in box per 90": 10, "Successful attacking actions per 90": 5
+    },
+    "Creative Forward / False 9": {
+        "Progressive passes per 90": 15,
+        "Accurate progressive passes, %": 10,
+        "Deep completions per 90": 10,
+        "Key passes per 90": 15,
+        "xA per 90": 10,
+        "Progressive runs per 90": 10,
+        "Received passes per 90": 5,
+        "Shots per 90": 10,
+        "xG per 90": 10,
+        "Touches in box per 90": 5
+    }, 
+      "Wide Forward / Inside 9": {
+        "Progressive runs per 90": 15,
+        "Dribbles per 90": 10,
+        "Successful dribbles, %": 10,
+        "Shots per 90": 15,
+        "xG per 90": 15,
+        "xA per 90": 10,
+        "Touches in box per 90": 10,
+        "Deep completions per 90": 5,
+        "Key passes per 90": 5,
+        "Successful attacking actions per 90": 5
     }
 }
 # --- NEW: map default weights to resolved names (after aliasing) ---
