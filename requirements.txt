@@ -1,6 +1,6 @@
 pandas
 numpy
 plotly
-streamlit
+streamlit==1.36.0
 kaleido
 altair==4.2.2
