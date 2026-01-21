@@ -3,3 +3,4 @@ numpy
 plotly
 streamlit
 kaleido
+altair==4.2.2
