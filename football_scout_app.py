@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from io import StringIO
+from io import BytesIO, StringIO
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -61,6 +61,20 @@ LOWER_IS_BETTER = {
 }
 
 SEASON_RX = re.compile(r"(\d{4})(?:\s*-\s*(\d{2,4}))?$")
+
+
+# =========================
+# Session state (persist score across reruns)
+# =========================
+if "active_profile" not in st.session_state:
+    st.session_state["active_profile"] = None
+# active_profile structure:
+# {
+#   "calc_col": str,
+#   "metrics": list[str],
+#   "weights_pct": list[int]
+# }
+
 
 # =========================
 # Profiles
@@ -342,7 +356,6 @@ PROFILES: Dict[str, List[str]] = {
 }
 
 DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
-    # 🧤 GOALKEEPERS
     "Classic Goalkeeper": {
         "Save rate, %": 25,
         "Prevented goals per 90": 20,
@@ -379,8 +392,6 @@ DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
         "Prevented goals per 90": 5,
         "Exits per 90": 5,
     },
-
-    # 🛡️ CENTRE-BACKS
     "Ball-Playing CB": {
         "Progressive passes per 90": 20,
         "Accurate progressive passes, %": 15,
@@ -429,8 +440,6 @@ DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
         "Touches in box per 90": 5,
         "Progressive passes per 90": 10,
     },
-
-    # ⚙️ MIDFIELDERS
     "Defensive Midfielder #6": {
         "Interceptions per 90": 20,
         "Defensive duels per 90": 15,
@@ -479,8 +488,6 @@ DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
         "Forward passes per 90": 5,
         "Passes to final third per 90": 0,
     },
-
-    # 🌊 WIDE / ATTACKING ROLES
     "Full-Back": {
         "Defensive duels per 90": 15,
         "Defensive duels won, %": 10,
@@ -553,8 +560,6 @@ DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
         "Progressive runs per 90": 5,
         "Successful attacking actions per 90": 5,
     },
-
-    # ⚡ FORWARDS
     "Target Man #9": {
         "Aerial duels per 90": 20,
         "Aerial duels won, %": 15,
@@ -646,8 +651,6 @@ def load_csv(file_bytes: bytes, filename: str) -> pd.DataFrame:
     except UnicodeDecodeError:
         return pd.read_csv(StringIO(file_bytes.decode("latin-1")))
     except Exception:
-        # fallback: pandas can sometimes read bytes directly
-        from io import BytesIO
         bio = BytesIO(file_bytes)
         try:
             return pd.read_csv(bio)
@@ -660,7 +663,8 @@ def parse_market_value(series: pd.Series) -> pd.Series:
     """Parse '€12.5m', '€800k', '12,000,000' into float (EUR M)."""
     if pd.api.types.is_numeric_dtype(series):
         s = pd.to_numeric(series, errors="coerce")
-        if s.max(skipna=True) and s.max(skipna=True) > 1e6:
+        mx = s.max(skipna=True)
+        if pd.notna(mx) and mx > 1e6:
             return s / 1e6
         return s
 
@@ -686,18 +690,15 @@ def parse_market_value(series: pd.Series) -> pd.Series:
 
 @st.cache_data(show_spinner=False)
 def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Coerce numeric columns + create season fields. Cached to avoid repeated work on widget reruns."""
+    """Coerce numeric columns + create season fields."""
     df = df_raw.copy()
 
-    # drop unique row id
     if "Column1" in df.columns and df["Column1"].nunique(dropna=False) == len(df):
         df = df.drop(columns=["Column1"])
 
-    # Market value
     if "Market value" in df.columns:
         df["Market value (M€)"] = parse_market_value(df["Market value"])
 
-    # Coerce numeric
     for col in df.columns:
         if col in NON_FEATURE_COLUMNS or col == "Market value":
             continue
@@ -707,7 +708,6 @@ def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
             if not pd.api.types.is_numeric_dtype(df[col]):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Season parsing from League tail (e.g., "2024-25")
     def extract_season_label(league_value: object) -> str | None:
         if not isinstance(league_value, str):
             return None
@@ -740,7 +740,6 @@ def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_numeric_columns(df: pd.DataFrame) -> List[str]:
-    # numeric only, excluding NON_FEATURE_COLUMNS
     numeric = df.select_dtypes(include="number").columns
     numeric = [c for c in numeric if c not in NON_FEATURE_COLUMNS and c != "Market value"]
     return numeric
@@ -774,9 +773,8 @@ def normalize_weights(pcts: np.ndarray) -> np.ndarray:
 
 
 def sparse_mask(X: pd.DataFrame, threshold: float = 0.95) -> pd.Series:
-    """True for metrics that are too sparse (>= threshold zeros/NaNs)."""
     zeros_or_nan = X.isna() | (X == 0)
-    return (zeros_or_nan.mean(axis=0) >= threshold)
+    return zeros_or_nan.mean(axis=0) >= threshold
 
 
 def make_profile_score_vectorized(
@@ -793,9 +791,7 @@ def make_profile_score_vectorized(
         out[new_col] = 0.0
         return out, [], metrics
 
-    # numeric coercion only for selected
     X = df[present].apply(pd.to_numeric, errors="coerce")
-
     sparse = sparse_mask(X, threshold=sparse_threshold)
     usable_metrics = [m for m in present if not bool(sparse.get(m, False))]
     skipped_sparse = [m for m in present if m not in usable_metrics]
@@ -805,19 +801,17 @@ def make_profile_score_vectorized(
         out[new_col] = 0.0
         return out, [], skipped_sparse
 
-    # map original weights (aligned to metrics list) onto usable_metrics
     w_map = {m: float(w) for m, w in zip(metrics, weights)}
     used_w = np.array([w_map.get(m, 0.0) for m in usable_metrics], dtype=float)
     used_w = normalize_weights(used_w)
 
     Xu = X[usable_metrics]
     means = Xu.mean(axis=0)
-    stds = Xu.std(axis=0, ddof=0).replace(0, np.nan)
+    stds = Xu.std(ddof=0, axis=0).replace(0, np.nan)
 
     Z = (Xu - means) / stds
     Z = Z.fillna(0.0)
 
-    # direction flip
     flip_cols = [c for c in usable_metrics if c in LOWER_IS_BETTER]
     if flip_cols:
         Z[flip_cols] = -Z[flip_cols]
@@ -873,7 +867,7 @@ df_all = preprocess(df_raw)
 # =========================
 st.sidebar.header("Filters")
 
-# Season filtering first (fast, reduces downstream work)
+# Season
 season_groups = sorted([x for x in df_all["Season group"].dropna().unique().tolist()])
 selected_groups = st.sidebar.multiselect("Season group (start year)", season_groups, default=season_groups)
 
@@ -883,13 +877,13 @@ if use_exact_label:
     season_labels = sorted(df_all["Season label"].dropna().unique().tolist())
     selected_labels = st.sidebar.multiselect("Season label(s)", season_labels, default=season_labels)
 
-season_mask = df_all["Season group"].isin(selected_groups) if selected_groups else pd.Series([True] * len(df_all), index=df_all.index)
+season_mask = df_all["Season group"].isin(selected_groups) if selected_groups else pd.Series(True, index=df_all.index)
 if use_exact_label and selected_labels:
     season_mask = season_mask & df_all["Season label"].isin(selected_labels)
 
 df_season = df_all.loc[season_mask]
 
-# League / Team / Position filters
+# League
 leagues = sorted(df_season["League"].dropna().unique().tolist())
 selected_leagues, _ = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or ALL")
 
@@ -898,19 +892,21 @@ if df_league.empty:
     st.warning("No players found for selected seasons/leagues.")
     st.stop()
 
+# Team / Position
 teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
 selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
 
 # Age
-age_min = int(pd.to_numeric(df_league["Age"], errors="coerce").min(skipna=True) or 0)
-age_max = int(pd.to_numeric(df_league["Age"], errors="coerce").max(skipna=True) or 0)
+age_series = pd.to_numeric(df_league["Age"], errors="coerce")
+age_min = int(age_series.min(skipna=True) or 0)
+age_max = int(age_series.max(skipna=True) or 0)
 if age_max < age_min:
     age_min, age_max = 0, 0
 age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max)) if age_max >= age_min else (0, 0)
 
-# Minutes threshold
+# Minutes
 min_minutes = 0
 if "Minutes played" in df_league.columns:
     mm = pd.to_numeric(df_league["Minutes played"], errors="coerce")
@@ -934,67 +930,52 @@ if "Minutes played" in df_league.columns:
 
 filtered_base = df_league.loc[mask]
 st.sidebar.markdown(f"**Players matching filters: {len(filtered_base)}**")
-
 if filtered_base.empty:
     st.warning("No players match the selected filters.")
     st.stop()
 
-# numeric cols computed once
 numeric_cols_base = get_numeric_columns(filtered_base)
 
 # =========================
-# Profile builder (FORM to prevent rerun storms)
+# Profile builder (FORM)
 # =========================
 st.sidebar.header("Player profiles (z-score)")
 
-calc_col_name: str | None = None
-profile_metrics_in_use: List[str] = []
-filtered = filtered_base  # will become a copy only when we add score column
+# Clear active profile button (outside the form)
+if st.sidebar.button("Clear active profile"):
+    st.session_state["active_profile"] = None
+    st.rerun()
 
 with st.sidebar.form("profile_form"):
     st.caption("Scores are weighted sums of direction-aware z-scores across the currently filtered players.")
     mode = st.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
-
-    profile_name = None
-    custom_name = None
-    requested_metrics: List[str] = []
-    resolved_metrics: List[str] = []
-    weights_pct: List[int] = []
-    missing_names: List[str] = []
-    skipped_sparse_preview: List[str] = []
 
     if mode == "Built-in":
         profile_name = st.selectbox("Choose profile", list(PROFILES.keys()))
         requested_metrics = PROFILES[profile_name]
         resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
 
-        # session_state storage per profile for weights (stable)
-        ss_key = f"preset::{profile_name}"
-        if ss_key not in st.session_state:
-            st.session_state[ss_key] = {
+        # persist per-profile slider defaults in session_state
+        preset_key = f"preset::{profile_name}"
+        if preset_key not in st.session_state:
+            st.session_state[preset_key] = {
                 "metrics": resolved_metrics[:],
                 "weights": defaults_for_resolved(profile_name, resolved_metrics),
             }
         else:
-            state = st.session_state[ss_key]
+            state = st.session_state[preset_key]
             if state.get("metrics") != resolved_metrics:
                 old_map = {m: int(w) for m, w in zip(state.get("metrics", []), state.get("weights", []))}
                 new_defaults = defaults_for_resolved(profile_name, resolved_metrics)
                 new_weights = [int(old_map.get(m, d)) for m, d in zip(resolved_metrics, new_defaults)]
-                st.session_state[ss_key] = {"metrics": resolved_metrics[:], "weights": new_weights}
+                st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": new_weights}
 
-        state = st.session_state[ss_key]
+        state = st.session_state[preset_key]
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            reset = st.form_submit_button("Reset weights to defaults")
-        with c2:
-            st.write("")  # spacer
-
-        if reset:
+        if st.form_submit_button("Reset weights to defaults"):
             state["weights"] = defaults_for_resolved(profile_name, resolved_metrics)
 
-        st.caption("Edit weights (stable keys per metric).")
+        weights_pct: List[int] = []
         for m, dflt in zip(state.get("metrics", []), state.get("weights", [])):
             w = st.slider(
                 f"Weight %: {m}",
@@ -1011,24 +992,23 @@ with st.sidebar.form("profile_form"):
         if submitted:
             if missing_names:
                 st.info("Skipped missing metrics: " + ", ".join(missing_names))
-
             if not resolved_metrics:
                 st.warning("No valid metrics for this profile in the current dataset.")
             else:
-                profile_metrics_in_use = resolved_metrics[:]
-                weights = normalize_weights(np.array(weights_pct, dtype=float))
-                if int(np.sum(weights_pct)) != 100:
-                    st.warning(f"Total weight ≠ 100 (currently {int(np.sum(weights_pct))}). Normalizing for the score.")
-                calc_col_name = f"Score: {profile_name}"
+                # Persist active profile config so score survives all reruns
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {profile_name}",
+                    "metrics": resolved_metrics[:],
+                    "weights_pct": [int(x) for x in weights_pct],
+                }
 
     else:
         st.subheader("Custom Profile")
         custom_name = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
-        # custom metrics from numeric only
         custom_metrics = st.multiselect("Pick metrics to include", options=numeric_cols_base, default=numeric_cols_base[:5])
 
+        weights_pct = []
         if custom_metrics:
-            profile_metrics_in_use = custom_metrics[:]
             default_pct = max(1, int(100 / len(custom_metrics)))
             for m in custom_metrics:
                 w = st.slider(
@@ -1044,26 +1024,42 @@ with st.sidebar.form("profile_form"):
         submitted = st.form_submit_button("Apply profile")
 
         if submitted:
-            if not profile_metrics_in_use:
+            if not custom_metrics:
                 st.info("Select at least one metric to build a custom profile.")
             else:
-                weights = normalize_weights(np.array(weights_pct, dtype=float))
-                if int(np.sum(weights_pct)) != 100:
-                    st.warning(f"Total weight ≠ 100 (currently {int(np.sum(weights_pct))}). Normalizing for the score.")
-                calc_col_name = f"Score: {custom_name}"
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {custom_name}",
+                    "metrics": custom_metrics[:],
+                    "weights_pct": [int(x) for x in weights_pct],
+                }
 
-# Apply profile scoring ONLY after form submit produced a calc_col_name
-if calc_col_name and profile_metrics_in_use:
-    # only now do we copy to add the computed column
+# =========================
+# Apply active profile on EVERY rerun (fixes disappearing score)
+# =========================
+active = st.session_state.get("active_profile")
+calc_col_name: str | None = None
+profile_metrics_in_use: List[str] = []
+
+if active and active.get("metrics"):
+    calc_col_name = str(active.get("calc_col", "Score"))
+    profile_metrics_in_use = list(active.get("metrics", []))
+    weights_pct_arr = np.array(active.get("weights_pct", []), dtype=float)
+
+    # if weights mismatch metrics length (e.g., metrics changed), fall back to equal weights
+    if len(weights_pct_arr) != len(profile_metrics_in_use) or len(profile_metrics_in_use) == 0:
+        weights = np.ones(len(profile_metrics_in_use), dtype=float) / max(1, len(profile_metrics_in_use))
+    else:
+        weights = normalize_weights(weights_pct_arr)
+
     filtered, usable_metrics, skipped_sparse = make_profile_score_vectorized(
         filtered_base,
         profile_metrics_in_use,
-        normalize_weights(np.array(weights_pct, dtype=float)) if "weights_pct" in locals() and len(weights_pct) else np.ones(len(profile_metrics_in_use)) / max(1, len(profile_metrics_in_use)),
+        weights,
         calc_col_name,
     )
+
     if skipped_sparse:
         st.caption("⚠️ Skipped sparse metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
-    st.sidebar.caption(f"✅ Added column **{calc_col_name}**.")
 else:
     filtered = filtered_base
 
@@ -1074,7 +1070,6 @@ numeric_cols = get_numeric_columns(filtered)
 # =========================
 st.subheader("Filtered Player Data")
 
-# columns to show (no early rounding / filling; do it only for display)
 ID_COLS = [
     "Season label",
     "Player",
@@ -1099,7 +1094,6 @@ if calc_col_name and calc_col_name in filtered.columns:
 
 selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
-# safer default rank metric selection
 rank_candidates = [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
 rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
 default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
@@ -1109,14 +1103,16 @@ if not selected_display_cols:
 elif default_rank is None:
     st.warning("No numerical columns available to sort Top-N.")
 else:
-    rank_by = st.selectbox("Sort Top-N rows by", options=numeric_cols, index=numeric_cols.index(default_rank) if default_rank in numeric_cols else 0)
+    rank_by = st.selectbox(
+        "Sort Top-N rows by",
+        options=numeric_cols,
+        index=numeric_cols.index(default_rank) if default_rank in numeric_cols else 0,
+    )
     row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
 
     table_df = filtered.sort_values(by=rank_by, ascending=False).head(row_limit)[selected_display_cols].copy()
-
-    # round only numeric columns for display
     for c in table_df.select_dtypes(include="number").columns:
-        table_df[c] = table_df[c].round(2)
+        table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
 
     st.dataframe(table_df.reset_index(drop=True), use_container_width=True)
 
@@ -1180,7 +1176,6 @@ else:
                 z = (s - float(s.mean())) / sd
                 plot_df = plot_df.loc[z.abs() <= 3]
 
-    # display rounding only
     plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
     plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
 
@@ -1233,7 +1228,14 @@ if compare_players and "Player" in filtered.columns:
         default_comp = [calc_col_name] + default_comp
 
     if not default_comp:
-        fallback = ["Goals per 90", "Assists per 90", "xG per 90", "xA per 90", "Successful defensive actions per 90", "Duels won, %"]
+        fallback = [
+            "Goals per 90",
+            "Assists per 90",
+            "xG per 90",
+            "xA per 90",
+            "Successful defensive actions per 90",
+            "Duels won, %",
+        ]
         if calc_col_name and calc_col_name in comp_metric_choices:
             fallback = [calc_col_name] + fallback
         default_comp = [m for m in fallback if m in comp_metric_choices] or comp_metric_choices[:6]
@@ -1241,13 +1243,12 @@ if compare_players and "Player" in filtered.columns:
     comp_metrics = st.multiselect("Metrics for comparison table & radar", options=comp_metric_choices, default=default_comp)
 
     if comp_metrics:
-        # comparison table (fast)
         show_table = comp_df[comp_metrics].copy()
         for c in show_table.columns:
             show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+
         st.dataframe(show_table.T, use_container_width=True)
 
-        # radar uses z-scores across filtered set
         base = filtered.set_index("Player")
         baseX = base[comp_metrics].apply(pd.to_numeric, errors="coerce")
         means = baseX.mean(axis=0)
@@ -1255,12 +1256,10 @@ if compare_players and "Player" in filtered.columns:
 
         theta = comp_metrics
         fig_radar = go.Figure()
-
         for player in compare_players:
             row = show_table.loc[player, comp_metrics].apply(pd.to_numeric, errors="coerce")
             z = ((row - means) / stds).fillna(0.0)
 
-            # direction flip for radar too
             for m in theta:
                 if m in LOWER_IS_BETTER:
                     z[m] = -z[m]
@@ -1285,7 +1284,6 @@ if compare_players and "Player" in filtered.columns:
         )
         st.plotly_chart(fig_radar, use_container_width=True)
 
-        # download
         csv_buf2 = StringIO()
         show_table[comp_metrics].to_csv(csv_buf2)
         st.download_button(
