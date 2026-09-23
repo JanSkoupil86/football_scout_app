@@ -1503,11 +1503,11 @@ def single_player_wheel(
         scale_text = [str(v) for v in scale_ticks]
     else:
         raw_z = p["Z-score"].to_numpy(dtype=float)
-        clipped = np.clip(raw_z, -3.0, 3.0)
-        marker_r = perf_inner + ((clipped + 3.0) / 6.0) * perf_span
+        clipped = np.clip(raw_z, -2.0, 2.0)
+        marker_r = perf_inner + ((clipped + 2.0) / 4.0) * perf_span
         value_text = [f"{v:+.2f}" for v in raw_z]
-        scale_ticks = [-3, -2, -1, 0, 1, 2, 3]
-        scale_r = [perf_inner + ((v + 3.0) / 6.0) * perf_span for v in scale_ticks]
+        scale_ticks = [-2, -1, 0, 1, 2]
+        scale_r = [perf_inner + ((v + 2.0) / 4.0) * perf_span for v in scale_ticks]
         scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
 
     # Neutral reference rings across the performance annulus.
@@ -1598,25 +1598,7 @@ def single_player_wheel(
         )
     )
 
-    # KPI family labels outside the tiles.
-    group_label_theta = []
-    group_label_text = []
-    for group in groups:
-        positions = [theta[i] for i, g in enumerate(group_seq) if g == group]
-        group_label_theta.append(float(np.mean(positions)))
-        group_label_text.append(f"<b>{group.upper()}</b>")
-
-    fig.add_trace(
-        go.Scatterpolar(
-            r=[91.5] * len(groups),
-            theta=group_label_theta,
-            mode="text",
-            text=group_label_text,
-            textfont=dict(size=10, color="#34495E"),
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
+    # KPI group names are intentionally shown only in the legend.
 
     # Centre content.
     centre_text = (
@@ -1637,7 +1619,7 @@ def single_player_wheel(
     )
 
     # Scale key in the lower-left, avoiding radial-axis clutter.
-    key = "Percentile: 0–100" if scale_mode == "Percentile" else "Z-score: −3 to +3 · 0 = benchmark mean"
+    key = "Percentile: 0–100" if scale_mode == "Percentile" else "Z-score: −2 to +2 · 0 = benchmark mean"
     fig.add_annotation(
         x=0.01, y=0.01,
         xref="paper", yref="paper",
@@ -2236,7 +2218,7 @@ else:
             ["Percentile", "Z-score"],
             horizontal=True,
             key="single_profile_scale",
-            help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean and is direction-aware.",
+            help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean, displayed from −2 to +2, and is direction-aware.",
         )
 
         benchmark_mode = st.radio(
