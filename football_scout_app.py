@@ -1911,8 +1911,8 @@ def multi_player_profile_wheel(
     fig = go.Figure()
 
     # Same KPI band as the single-player wheel.
-    band_inner = 78.0
-    band_outer = 86.0
+    band_inner = 80.0
+    band_outer = 90.0
     band_len = band_outer - band_inner
     for group in groups:
         idx = [i for i, g in enumerate(group_seq) if g == group]
@@ -1935,7 +1935,7 @@ def multi_player_profile_wheel(
 
     # Same z-score performance annulus as the single-player wheel.
     perf_inner = 20.0
-    perf_outer = 74.0
+    perf_outer = 76.0
     perf_span = perf_outer - perf_inner
     ring_theta = np.linspace(0, 360, 361)
 
@@ -2006,27 +2006,27 @@ def multi_player_profile_wheel(
         )
 
     # Centre context mirrors the single-player chart.
-    centre_text = f"<b>{profile_name}</b><br><span style='font-size:11px'>Multi-Player Comparison</span>"
+    centre_text = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
     fig.add_annotation(
         x=0.5, y=0.5,
         xref="paper", yref="paper",
         text=centre_text,
         showarrow=False,
         align="center",
-        font=dict(size=15, color="#17202A"),
+        font=dict(size=14, color="#17202A"),
         bgcolor="rgba(255,255,255,0.94)",
         bordercolor="rgba(120,130,140,0.22)",
         borderwidth=1,
-        borderpad=10,
+        borderpad=8,
     )
 
     fig.add_annotation(
-        x=0.01, y=0.01,
+        x=0.5, y=-0.055,
         xref="paper", yref="paper",
         text="Z-score: −2 to +2 · 0 = benchmark mean",
         showarrow=False,
-        xanchor="left",
-        yanchor="bottom",
+        xanchor="center",
+        yanchor="top",
         font=dict(size=10, color="#6B7785"),
     )
 
@@ -2035,26 +2035,26 @@ def multi_player_profile_wheel(
             text=f"<b>{profile_name}</b><br><sup>Multi-Player Role Comparison</sup>",
             x=0.5,
             xanchor="center",
-            y=0.985,
-            font=dict(size=20, color="#17202A"),
+            y=0.995,
+            font=dict(size=22, color="#17202A"),
         ),
         template="plotly_white",
-        height=920,
-        margin=dict(l=180, r=180, t=132, b=125),
+        height=900,
+        margin=dict(l=105, r=105, t=185, b=95),
         paper_bgcolor="white",
         plot_bgcolor="white",
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.025,
+            y=1.105,
             xanchor="center",
             x=0.5,
             title_text="",
-            font=dict(size=10),
+            font=dict(size=12),
         ),
         polar=dict(
             bgcolor="white",
-            radialaxis=dict(range=[0, 96], visible=False),
+            radialaxis=dict(range=[0, 93], visible=False),
             angularaxis=dict(
                 tickmode="array",
                 tickvals=theta,
@@ -2062,7 +2062,7 @@ def multi_player_profile_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=11, color="#566270"),
+                tickfont=dict(size=12, color="#566270"),
                 showline=False,
             ),
         ),
@@ -2075,7 +2075,7 @@ def multi_player_profile_wheel(
         f"<span style='color:{group_colors[g]}'><b>■ {g}</b></span>" for g in groups
     )
     fig.add_annotation(
-        x=0.5, y=1.055,
+        x=0.5, y=1.035,
         xref="paper", yref="paper",
         text=kpi_text,
         showarrow=False,
