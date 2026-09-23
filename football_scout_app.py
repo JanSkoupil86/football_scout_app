@@ -355,6 +355,304 @@ PROFILES: Dict[str, List[str]] = {
     ],
 }
 
+
+# =========================
+# Single-player percentile profiles
+# =========================
+# These are deliberately separate from the weighted recruitment-score profiles.
+# Each tuple is: (KPI group, requested Wyscout metric).
+SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
+    "Classic Goalkeeper": [
+        ("Shot Stopping", "Save rate, %"),
+        ("Shot Stopping", "Prevented goals per 90"),
+        ("Shot Stopping", "Conceded goals per 90"),
+        ("Shot Stopping", "Shots against per 90"),
+        ("Area Control", "Exits per 90"),
+        ("Area Control", "Aerial duels per 90.1"),
+        ("Distribution", "Passes per 90"),
+        ("Distribution", "Accurate passes, %"),
+        ("Distribution", "Long passes per 90"),
+        ("Distribution", "Accurate long passes, %"),
+    ],
+    "Sweeper Keeper": [
+        ("Sweeping", "Exits per 90"),
+        ("Sweeping", "Back passes received as GK per 90"),
+        ("Build-Up", "Passes per 90"),
+        ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Forward passes per 90"),
+        ("Build-Up", "Accurate forward passes, %"),
+        ("Distribution", "Long passes per 90"),
+        ("Distribution", "Accurate long passes, %"),
+        ("Shot Stopping", "Save rate, %"),
+        ("Shot Stopping", "Prevented goals per 90"),
+    ],
+    "Build-Up Keeper": [
+        ("Shot Stopping", "Prevented goals per 90"),
+        ("Shot Stopping", "Save rate, %"),
+        ("Sweeping", "Exits per 90"),
+        ("Build-Up", "Back passes received as GK per 90"),
+        ("Build-Up", "Passes per 90"),
+        ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Forward passes per 90"),
+        ("Build-Up", "Accurate forward passes, %"),
+        ("Distribution", "Long passes per 90"),
+        ("Distribution", "Accurate long passes, %"),
+    ],
+    "Ball-Playing CB": [
+        ("Build-Up", "Passes per 90"),
+        ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Forward passes per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Range", "Long passes per 90"),
+        ("Range", "Accurate long passes, %"),
+        ("Defending", "Interceptions per 90"),
+        ("Defending", "Defensive duels won, %"),
+    ],
+    "Combative CB / Stopper": [
+        ("Defending", "Successful defensive actions per 90"),
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+        ("Defending", "Interceptions per 90"),
+        ("Aggression", "PAdj Sliding tackles"),
+        ("Aggression", "Shots blocked per 90"),
+        ("Aggression", "Fouls per 90"),
+        ("Aerial", "Aerial duels per 90"),
+        ("Aerial", "Aerial duels won, %"),
+        ("Security", "Accurate passes, %"),
+    ],
+    "Libero / Middle Pin CB": [
+        ("Build-Up", "Passes per 90"),
+        ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Forward passes per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Range", "Accurate long passes, %"),
+        ("Defending", "PAdj Interceptions"),
+        ("Defending", "Defensive duels won, %"),
+        ("Aerial", "Aerial duels won, %"),
+    ],
+    "Wide CB (in 3)": [
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+        ("Defending", "PAdj Interceptions"),
+        ("Carrying", "Progressive runs per 90"),
+        ("Carrying", "Successful dribbles, %"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Distribution", "Forward passes per 90"),
+        ("Distribution", "Accurate long passes, %"),
+    ],
+    "Defensive Midfielder #6": [
+        ("Ball Winning", "PAdj Interceptions"),
+        ("Ball Winning", "Defensive duels per 90"),
+        ("Ball Winning", "Defensive duels won, %"),
+        ("Availability", "Received passes per 90"),
+        ("Availability", "Passes per 90"),
+        ("Security", "Accurate passes, %"),
+        ("Progression", "Forward passes per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+    ],
+    "Deep-Lying Playmaker": [
+        ("Involvement", "Received passes per 90"),
+        ("Involvement", "Passes per 90"),
+        ("Progression", "Forward passes per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Range", "Long passes per 90"),
+        ("Range", "Accurate long passes, %"),
+        ("Creation", "Smart passes per 90"),
+        ("Creation", "xA per 90"),
+    ],
+    "Box-to-Box Midfielder": [
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+        ("Defending", "PAdj Interceptions"),
+        ("Progression", "Progressive runs per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Final Third", "Touches in box per 90"),
+        ("Final Third", "Shots per 90"),
+        ("Final Third", "xG per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "xA per 90"),
+    ],
+    "Playmaker #10": [
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Chance Creation", "xA per 90"),
+        ("Chance Creation", "Shot assists per 90"),
+        ("Chance Creation", "Key passes per 90"),
+        ("Chance Creation", "Smart passes per 90"),
+        ("Chance Creation", "Deep completions per 90"),
+        ("Final Third", "Passes to penalty area per 90"),
+        ("Final Third", "Touches in box per 90"),
+        ("Final Third", "Shots per 90"),
+    ],
+    "Attacking Midfielder #8": [
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Progressive runs per 90"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Key passes per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Final Third", "Shots per 90"),
+        ("Final Third", "Touches in box per 90"),
+        ("Defending", "Interceptions per 90"),
+        ("Attack", "Successful attacking actions per 90"),
+    ],
+    "Full-Back": [
+        ("Defending", "Successful defensive actions per 90"),
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+        ("Defending", "PAdj Interceptions"),
+        ("Progression", "Progressive runs per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Final Third", "Crosses per 90"),
+        ("Final Third", "Accurate crosses, %"),
+        ("Final Third", "Passes to penalty area per 90"),
+        ("Final Third", "Shot assists per 90"),
+    ],
+    "Wing-Back": [
+        ("Progression", "Progressive runs per 90"),
+        ("Progression", "Accelerations per 90"),
+        ("Progression", "Dribbles per 90"),
+        ("Progression", "Successful dribbles, %"),
+        ("Delivery", "Crosses per 90"),
+        ("Delivery", "Accurate crosses, %"),
+        ("Delivery", "Crosses to goalie box per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "xA per 90"),
+        ("Defending", "Defensive duels won, %"),
+    ],
+    "Inverted Full-Back": [
+        ("Build-Up", "Received passes per 90"),
+        ("Build-Up", "Passes per 90"),
+        ("Build-Up", "Accurate passes, %"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Carrying", "Progressive runs per 90"),
+        ("Defending", "PAdj Interceptions"),
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+    ],
+    "Classic Winger": [
+        ("1v1", "Dribbles per 90"),
+        ("1v1", "Successful dribbles, %"),
+        ("1v1", "Offensive duels won, %"),
+        ("Progression", "Progressive runs per 90"),
+        ("Progression", "Accelerations per 90"),
+        ("Delivery", "Crosses per 90"),
+        ("Delivery", "Accurate crosses, %"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Passes to penalty area per 90"),
+    ],
+    "Inverted Winger": [
+        ("Scoring", "Non-penalty goals per 90"),
+        ("Scoring", "xG per 90"),
+        ("Scoring", "Shots per 90"),
+        ("Box Threat", "Touches in box per 90"),
+        ("1v1 / Carrying", "Dribbles per 90"),
+        ("1v1 / Carrying", "Successful dribbles, %"),
+        ("1v1 / Carrying", "Progressive runs per 90"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "Passes to penalty area per 90"),
+    ],
+    "Target Man #9": [
+        ("Aerial", "Aerial duels per 90"),
+        ("Aerial", "Aerial duels won, %"),
+        ("Aerial", "Head goals per 90"),
+        ("Reference Play", "Received long passes per 90"),
+        ("Reference Play", "Received passes per 90"),
+        ("Reference Play", "Fouls suffered per 90"),
+        ("Box Threat", "Touches in box per 90"),
+        ("Box Threat", "xG per 90"),
+        ("Box Threat", "Shots per 90"),
+        ("Box Threat", "Non-penalty goals per 90"),
+    ],
+    "Poacher": [
+        ("Scoring", "Non-penalty goals per 90"),
+        ("Scoring", "xG per 90"),
+        ("Scoring", "Shots per 90"),
+        ("Scoring", "Shots on target, %"),
+        ("Scoring", "Goal conversion, %"),
+        ("Box Presence", "Touches in box per 90"),
+        ("Box Presence", "Received passes per 90"),
+        ("Movement / Threat", "Progressive runs per 90"),
+        ("Secondary Creation", "xA per 90"),
+        ("Secondary Creation", "Shot assists per 90"),
+    ],
+    "Pressing Forward": [
+        ("Defensive Work", "Successful defensive actions per 90"),
+        ("Defensive Work", "Defensive duels per 90"),
+        ("Defensive Work", "Defensive duels won, %"),
+        ("Defensive Work", "Interceptions per 90"),
+        ("Mobility", "Accelerations per 90"),
+        ("Mobility", "Progressive runs per 90"),
+        ("Attack", "Touches in box per 90"),
+        ("Attack", "Shots per 90"),
+        ("Attack", "xG per 90"),
+        ("Attack", "Non-penalty goals per 90"),
+    ],
+    "Creative Forward / False 9": [
+        ("Link Play", "Received passes per 90"),
+        ("Link Play", "Passes per 90"),
+        ("Link Play", "Accurate passes, %"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "Key passes per 90"),
+        ("Creation", "Smart passes per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Threat", "Touches in box per 90"),
+        ("Threat", "xG per 90"),
+    ],
+    "Wide Forward / Inside 9": [
+        ("Scoring", "Non-penalty goals per 90"),
+        ("Scoring", "xG per 90"),
+        ("Scoring", "Shots per 90"),
+        ("Box Threat", "Touches in box per 90"),
+        ("Carrying", "Progressive runs per 90"),
+        ("Carrying", "Dribbles per 90"),
+        ("Carrying", "Successful dribbles, %"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "Passes to penalty area per 90"),
+    ],
+}
+
+ROLE_POSITION_HINTS: Dict[str, List[str]] = {
+    "Classic Goalkeeper": ["GK"],
+    "Sweeper Keeper": ["GK"],
+    "Build-Up Keeper": ["GK"],
+    "Ball-Playing CB": ["CB"],
+    "Combative CB / Stopper": ["CB"],
+    "Libero / Middle Pin CB": ["CB"],
+    "Wide CB (in 3)": ["CB"],
+    "Defensive Midfielder #6": ["DMF", "CMF"],
+    "Deep-Lying Playmaker": ["DMF", "CMF"],
+    "Box-to-Box Midfielder": ["CMF", "DMF", "AMF"],
+    "Attacking Midfielder #8": ["CMF", "AMF"],
+    "Playmaker #10": ["AMF", "CMF"],
+    "Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Wing-Back": ["LWB", "RWB", "LB", "RB"],
+    "Inverted Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Classic Winger": ["LW", "RW", "LWF", "RWF", "LMF", "RMF"],
+    "Inverted Winger": ["LW", "RW", "LWF", "RWF", "LMF", "RMF"],
+    "Target Man #9": ["CF", "ST"],
+    "Poacher": ["CF", "ST"],
+    "Pressing Forward": ["CF", "ST"],
+    "Creative Forward / False 9": ["CF", "ST", "AMF"],
+    "Wide Forward / Inside 9": ["CF", "ST", "LW", "RW", "LWF", "RWF"],
+}
+
 DEFAULT_WEIGHTS: Dict[str, Dict[str, int]] = {
     "Classic Goalkeeper": {
         "Save rate, %": 25,
@@ -832,6 +1130,188 @@ def defaults_for_resolved(profile_name: str, resolved_metric_names: List[str]) -
     return [int(dm_norm.get(norm_key(m), equal)) for m in resolved_metric_names]
 
 
+
+def percentile_rank_against_population(
+    population: pd.Series,
+    player_value: float,
+    lower_is_better: bool = False,
+) -> float:
+    """Percentile rank in [0, 100], with ties handled by average rank."""
+    s = pd.to_numeric(population, errors="coerce").dropna()
+    if s.empty or pd.isna(player_value):
+        return np.nan
+    less = float((s < player_value).sum())
+    equal = float((s == player_value).sum())
+    pct = 100.0 * (less + 0.5 * equal) / len(s)
+    if lower_is_better:
+        pct = 100.0 - pct
+    return float(np.clip(pct, 0.0, 100.0))
+
+
+def position_family_mask(series: pd.Series, role_name: str) -> pd.Series:
+    """Best-effort position-relevant benchmark using Main Position text."""
+    hints = ROLE_POSITION_HINTS.get(role_name, [])
+    if not hints:
+        return pd.Series(True, index=series.index)
+
+    def matches(value: object) -> bool:
+        s = str(value).upper().strip()
+        # Wyscout exports vary: CB, RCB, LCB, Centre Back, etc.
+        if "GK" in hints:
+            return "GK" in s or "GOALKEEP" in s
+        if "CB" in hints:
+            return any(x in s for x in ["CB", "CENTRE BACK", "CENTER BACK"])
+        if any(x in hints for x in ["LB", "RB", "LWB", "RWB"]):
+            return any(x in s for x in ["LB", "RB", "LWB", "RWB", "FULL BACK", "WING BACK"])
+        if any(x in hints for x in ["DMF", "CMF", "AMF"]):
+            return any(x in s for x in ["DMF", "CMF", "AMF", "DM", "CM", "AM", "MIDFIELD"])
+        if any(x in hints for x in ["LW", "RW", "LWF", "RWF", "LMF", "RMF"]):
+            return any(x in s for x in ["LW", "RW", "LWF", "RWF", "LMF", "RMF", "WINGER"])
+        if any(x in hints for x in ["CF", "ST"]):
+            return any(x in s for x in ["CF", "ST", "CENTRE FORWARD", "CENTER FORWARD", "STRIKER"])
+        return any(h in s for h in hints)
+
+    return series.apply(matches)
+
+
+def build_single_player_profile(
+    player_row: pd.Series,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Return KPI group, resolved metric, raw value and directional percentile."""
+    requested = SINGLE_PLAYER_PROFILES[role_name]
+    records = []
+    missing = []
+
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], benchmark_df.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+        metric = resolved[0]
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        pct = percentile_rank_against_population(
+            benchmark_df[metric],
+            value,
+            lower_is_better=metric in LOWER_IS_BETTER,
+        )
+        if pd.isna(value) or pd.isna(pct):
+            continue
+        records.append(
+            {
+                "KPI Group": group,
+                "Metric": metric,
+                "Raw Value": float(value),
+                "Percentile": float(pct),
+            }
+        )
+
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: str) -> go.Figure:
+    """Circular percentile bar chart. KPI groups use separate Plotly palette colors."""
+    if profile_df.empty:
+        return go.Figure()
+
+    groups = profile_df["KPI Group"].drop_duplicates().tolist()
+    palette = px.colors.qualitative.Set2 + px.colors.qualitative.Pastel
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    labels = profile_df["Metric"].tolist()
+    n = len(labels)
+    width = 360.0 / n
+    theta = np.arange(n) * width
+
+    fig = go.Figure()
+    for group in groups:
+        sub = profile_df[profile_df["KPI Group"] == group]
+        idx = sub.index.to_list()
+        positions = [profile_df.index.get_loc(i) * width for i in idx]
+        custom = np.column_stack(
+            [
+                sub["Raw Value"].to_numpy(dtype=float),
+                sub["Percentile"].to_numpy(dtype=float),
+                sub["Metric"].astype(str).to_numpy(),
+                sub["KPI Group"].astype(str).to_numpy(),
+            ]
+        )
+        fig.add_trace(
+            go.Barpolar(
+                r=sub["Percentile"].to_list(),
+                theta=positions,
+                width=[width * 0.94] * len(sub),
+                name=group,
+                marker_color=group_colors[group],
+                marker_line_color="white",
+                marker_line_width=1.5,
+                opacity=0.92,
+                customdata=custom,
+                hovertemplate=(
+                    "<b>%{customdata[2]}</b><br>"
+                    "KPI: %{customdata[3]}<br>"
+                    "Raw value: %{customdata[0]:.2f}<br>"
+                    "Percentile: %{customdata[1]:.0f}<extra></extra>"
+                ),
+            )
+        )
+
+    # Percentile number labels.
+    fig.add_trace(
+        go.Scatterpolar(
+            r=np.maximum(profile_df["Percentile"].to_numpy(dtype=float) - 5, 7),
+            theta=theta,
+            mode="text",
+            text=[f"<b>{int(round(x))}</b>" for x in profile_df["Percentile"]],
+            textfont=dict(size=14, color="black"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{player_name}</b><br><sup>{subtitle}</sup>",
+            x=0.5,
+            xanchor="center",
+            font=dict(size=22),
+        ),
+        template="plotly_white",
+        height=860,
+        margin=dict(l=110, r=110, t=125, b=80),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="center",
+            x=0.5,
+            title_text="",
+        ),
+        polar=dict(
+            bgcolor="white",
+            radialaxis=dict(
+                range=[0, 100],
+                tickvals=[20, 40, 60, 80, 100],
+                ticktext=["20", "40", "60", "80", "100"],
+                gridcolor="rgba(120,120,120,0.20)",
+                showline=False,
+            ),
+            angularaxis=dict(
+                tickmode="array",
+                tickvals=theta,
+                ticktext=labels,
+                direction="clockwise",
+                rotation=90,
+                gridcolor="white",
+                tickfont=dict(size=12),
+            ),
+        ),
+        barmode="overlay",
+    )
+    return fig
+
+
 # =========================
 # Upload
 # =========================
@@ -1212,90 +1692,254 @@ else:
     st.plotly_chart(fig, use_container_width=True)
 
 # =========================
-# Compare players + Radar (no Pandas Styler)
+# Player comparison visualizations
 # =========================
-st.subheader("Compare Selected Players")
+st.subheader("Player Comparison")
 
-player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
-compare_players = st.multiselect("Players to compare (max 5 recommended)", options=player_options, default=[])
+comparison_mode = st.radio(
+    "Visualization mode",
+    ["Multi-Player Radar", "Single-Player Profile"],
+    horizontal=True,
+    key="comparison_visualization_mode",
+)
 
-if compare_players and "Player" in filtered.columns:
-    comp_df = filtered.loc[filtered["Player"].isin(compare_players)].set_index("Player")
+if comparison_mode == "Multi-Player Radar":
+    # Existing comparison logic preserved.
+    player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+    compare_players = st.multiselect(
+        "Players to compare (max 5 recommended)",
+        options=player_options,
+        default=[],
+        key="multi_compare_players",
+    )
 
-    comp_metric_choices = get_numeric_columns(filtered)
-    default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
-    if calc_col_name and calc_col_name in comp_metric_choices:
-        default_comp = [calc_col_name] + default_comp
+    if compare_players and "Player" in filtered.columns:
+        comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
+        # If a player has more than one row after filtering, keep the row with most minutes.
+        if "Minutes played" in comp_rows.columns:
+            comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
+            comp_rows = comp_rows.sort_values("_cmp_minutes", ascending=False).drop_duplicates("Player")
+            comp_rows = comp_rows.drop(columns="_cmp_minutes")
+        else:
+            comp_rows = comp_rows.drop_duplicates("Player")
+        comp_df = comp_rows.set_index("Player")
 
-    if not default_comp:
-        fallback = [
-            "Goals per 90",
-            "Assists per 90",
-            "xG per 90",
-            "xA per 90",
-            "Successful defensive actions per 90",
-            "Duels won, %",
-        ]
+        comp_metric_choices = get_numeric_columns(filtered)
+        default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
         if calc_col_name and calc_col_name in comp_metric_choices:
-            fallback = [calc_col_name] + fallback
-        default_comp = [m for m in fallback if m in comp_metric_choices] or comp_metric_choices[:6]
+            default_comp = [calc_col_name] + default_comp
 
-    comp_metrics = st.multiselect("Metrics for comparison table & radar", options=comp_metric_choices, default=default_comp)
+        if not default_comp:
+            fallback = [
+                "Goals per 90",
+                "Assists per 90",
+                "xG per 90",
+                "xA per 90",
+                "Successful defensive actions per 90",
+                "Duels won, %",
+            ]
+            if calc_col_name and calc_col_name in comp_metric_choices:
+                fallback = [calc_col_name] + fallback
+            default_comp = [m for m in fallback if m in comp_metric_choices] or comp_metric_choices[:6]
 
-    if comp_metrics:
-        show_table = comp_df[comp_metrics].copy()
-        for c in show_table.columns:
-            show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+        comp_metrics = st.multiselect(
+            "Metrics for comparison table & radar",
+            options=comp_metric_choices,
+            default=default_comp,
+            key="multi_compare_metrics",
+        )
 
-        st.dataframe(show_table.T, use_container_width=True)
+        if comp_metrics:
+            show_table = comp_df[comp_metrics].copy()
+            for c in show_table.columns:
+                show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
 
-        base = filtered.set_index("Player")
-        baseX = base[comp_metrics].apply(pd.to_numeric, errors="coerce")
-        means = baseX.mean(axis=0)
-        stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
+            st.dataframe(show_table.T, use_container_width=True)
 
-        theta = comp_metrics
-        fig_radar = go.Figure()
-        for player in compare_players:
-            row = show_table.loc[player, comp_metrics].apply(pd.to_numeric, errors="coerce")
-            z = ((row - means) / stds).fillna(0.0)
+            baseX = filtered[comp_metrics].apply(pd.to_numeric, errors="coerce")
+            means = baseX.mean(axis=0)
+            stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
 
-            for m in theta:
-                if m in LOWER_IS_BETTER:
-                    z[m] = -z[m]
+            theta = comp_metrics
+            fig_radar = go.Figure()
+            for player in compare_players:
+                if player not in show_table.index:
+                    continue
+                row = show_table.loc[player, comp_metrics]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                row = row.apply(pd.to_numeric, errors="coerce")
+                z = ((row - means) / stds).fillna(0.0)
 
-            r = z.to_list()
-            fig_radar.add_trace(
-                go.Scatterpolar(
-                    r=r + [r[0]],
-                    theta=theta + [theta[0]],
-                    fill="toself",
-                    name=player,
-                    text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
-                    hoverinfo="text",
+                for m in theta:
+                    if m in LOWER_IS_BETTER:
+                        z[m] = -z[m]
+
+                r = z.to_list()
+                if not r:
+                    continue
+                fig_radar.add_trace(
+                    go.Scatterpolar(
+                        r=r + [r[0]],
+                        theta=theta + [theta[0]],
+                        fill="toself",
+                        name=player,
+                        text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
+                        hoverinfo="text",
+                    )
                 )
+
+            fig_radar.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
+                showlegend=True,
+                template="plotly_white",
+                height=640,
+            )
+            st.plotly_chart(fig_radar, use_container_width=True)
+
+            csv_buf2 = StringIO()
+            show_table[comp_metrics].to_csv(csv_buf2)
+            st.download_button(
+                "⬇️ Download comparison (CSV)",
+                data=csv_buf2.getvalue(),
+                file_name="player_comparison.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Select metrics to compare players.")
+    else:
+        st.info("Select players above to compare their stats and see a radar chart.")
+
+else:
+    st.markdown("#### Single-Player Percentile Profile")
+    st.caption(
+        "Percentiles are direction-aware and calculated against a position-relevant benchmark. "
+        "The weighted recruitment profile score is not changed by this visualization."
+    )
+
+    # Use the current season/league/minutes universe as the benchmark source,
+    # but do NOT apply the sidebar team/age/position filters to the benchmark.
+    benchmark_source = df_league.copy()
+    if "Minutes played" in benchmark_source.columns:
+        benchmark_source = benchmark_source.loc[
+            pd.to_numeric(benchmark_source["Minutes played"], errors="coerce") >= min_minutes
+        ].copy()
+
+    single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+
+    if not single_player_options:
+        st.info("No players are available for the current filters.")
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            single_player = st.selectbox(
+                "Player",
+                options=single_player_options,
+                key="single_profile_player",
+            )
+        with c2:
+            single_role = st.selectbox(
+                "Role / profile",
+                options=list(SINGLE_PLAYER_PROFILES.keys()),
+                key="single_profile_role",
             )
 
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
-            showlegend=True,
-            template="plotly_white",
-            height=640,
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
+        player_rows = filtered.loc[filtered["Player"] == single_player].copy()
+        if "Minutes played" in player_rows.columns:
+            player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
+            player_rows = player_rows.sort_values("_single_minutes", ascending=False)
+        player_row = player_rows.iloc[0]
 
-        csv_buf2 = StringIO()
-        show_table[comp_metrics].to_csv(csv_buf2)
-        st.download_button(
-            "⬇️ Download comparison (CSV)",
-            data=csv_buf2.getvalue(),
-            file_name="player_comparison.csv",
-            mime="text/csv",
+        benchmark_mode = st.radio(
+            "Benchmark population",
+            ["Position-relevant — selected leagues", "Same Main Position — selected leagues", "All filtered players"],
+            horizontal=True,
+            key="single_benchmark_mode",
         )
-    else:
-        st.info("Select metrics to compare players.")
-else:
-    st.info("Select players above to compare their stats and see a radar chart.")
+
+        if benchmark_mode == "Position-relevant — selected leagues":
+            if "Main Position" in benchmark_source.columns:
+                pos_mask = position_family_mask(benchmark_source["Main Position"], single_role)
+                benchmark_df = benchmark_source.loc[pos_mask].copy()
+            else:
+                benchmark_df = benchmark_source.copy()
+            benchmark_desc = f"position-relevant players in selected leagues · minimum {min_minutes} minutes"
+
+        elif benchmark_mode == "Same Main Position — selected leagues":
+            if "Main Position" in benchmark_source.columns:
+                player_pos = player_row.get("Main Position")
+                benchmark_df = benchmark_source.loc[benchmark_source["Main Position"] == player_pos].copy()
+                benchmark_desc = f"{player_pos} in selected leagues · minimum {min_minutes} minutes"
+            else:
+                benchmark_df = benchmark_source.copy()
+                benchmark_desc = f"selected leagues · minimum {min_minutes} minutes"
+
+        else:
+            benchmark_df = filtered.copy()
+            benchmark_desc = f"current filtered player population · minimum {min_minutes} minutes"
+
+        # If position parsing is too restrictive for a particular export, fall back safely.
+        if len(benchmark_df) < 5:
+            st.warning(
+                "The selected position benchmark contains fewer than 5 players. "
+                "Using the current filtered population instead."
+            )
+            benchmark_df = filtered.copy()
+            benchmark_desc = f"current filtered player population · minimum {min_minutes} minutes"
+
+        profile_df, missing_single_metrics = build_single_player_profile(
+            player_row=player_row,
+            benchmark_df=benchmark_df,
+            role_name=single_role,
+        )
+
+        team = str(player_row.get("Team", "")).strip()
+        league = str(player_row.get("League", "")).strip()
+        season = str(player_row.get("Season label", "")).strip()
+        player_position = str(player_row.get("Main Position", "")).strip()
+
+        header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
+        st.markdown(f"### {single_player}" + (f" — {' | '.join(header_bits)}" if header_bits else ""))
+
+        info1, info2, info3 = st.columns(3)
+        info1.metric("Benchmark players", f"{len(benchmark_df):,}")
+        info2.metric("Metrics displayed", f"{len(profile_df)}")
+        info3.metric("Role", single_role)
+
+        if missing_single_metrics:
+            st.caption(
+                "Unavailable in this dataset and skipped: "
+                + ", ".join(missing_single_metrics)
+            )
+
+        if profile_df.empty:
+            st.warning("None of the selected role metrics contain usable values for this player/benchmark.")
+        else:
+            subtitle_parts = [single_role, benchmark_desc]
+            if season and season.lower() != "none" and season.lower() != "nan":
+                subtitle_parts.append(f"Season {season}")
+            subtitle = " | ".join(subtitle_parts)
+
+            fig_single = single_player_wheel(
+                profile_df=profile_df.reset_index(drop=True),
+                player_name=single_player,
+                subtitle=subtitle,
+            )
+            st.plotly_chart(fig_single, use_container_width=True)
+
+            profile_table = profile_df.copy()
+            profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
+            profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
+            st.dataframe(profile_table, use_container_width=True, hide_index=True)
+
+            csv_single = StringIO()
+            profile_table.to_csv(csv_single, index=False)
+            st.download_button(
+                "⬇️ Download single-player profile (CSV)",
+                data=csv_single.getvalue(),
+                file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
+                mime="text/csv",
+            )
 
 st.markdown("---")
 st.markdown("Developed with ❤️ using Streamlit & Plotly | Season-aware ✨")
