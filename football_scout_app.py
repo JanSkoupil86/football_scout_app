@@ -408,7 +408,7 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Progression", "Accurate progressive passes, %"),
         ("Distribution", "Long passes per 90"),
         ("Distribution", "Accurate long passes, %"),
-        ("Distribution", "Average pass length, m"),
+        ("Shot Stopping", "xG against per 90"),
         ("Sweeping", "Exits per 90"),
         ("Shot Stopping", "Save rate, %"),
         ("Shot Stopping", "Prevented goals per 90"),
@@ -748,6 +748,28 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Creation", "Deep completions per 90"),
     ],
 }
+
+def validate_single_player_metric_design() -> List[str]:
+    """
+    Single-player performance wheel policy:
+    use per-90, percentage, xG/xA per-90, or possession-adjusted metrics.
+    Returns any profile metrics that violate the policy.
+    """
+    invalid = []
+    for role, items in SINGLE_PLAYER_PROFILES.items():
+        for _, metric in items:
+            allowed = (
+                "per 90" in metric
+                or "%" in metric
+                or metric.startswith("PAdj ")
+            )
+            if not allowed:
+                invalid.append(f"{role}: {metric}")
+    return invalid
+
+
+SINGLE_PLAYER_METRIC_POLICY_ISSUES = validate_single_player_metric_design()
+
 
 ROLE_POSITION_HINTS: Dict[str, List[str]] = {
     "Classic Goalkeeper": ["GK"],
@@ -1386,63 +1408,62 @@ def single_player_wheel(
 
     # Presentation aliases only; underlying Wyscout columns remain untouched.
     display_aliases = {
-        "Save rate, %": "Save Rate",
-        "Prevented goals per 90": "Goals Prevented",
-        "Conceded goals per 90": "Goals Conceded",
-        "Shots against per 90": "Shots Faced",
-        "xG against per 90": "xGA",
-        "Exits per 90": "Exits",
-        "Aerial duels per 90.1": "Aerial Duels",
-        "Aerial duels per 90": "Aerial Duels",
-        "Aerial duels won, %": "Aerial Duel %",
-        "Passes per 90": "Passes",
-        "Accurate passes, %": "Pass Accuracy",
-        "Long passes per 90": "Long Passes",
-        "Accurate long passes, %": "Long Pass Accuracy",
-        "Back passes received as GK per 90": "GK Back Passes Received",
-        "Forward passes per 90": "Forward Passes",
-        "Accurate forward passes, %": "Forward Pass Accuracy",
-        "Progressive passes per 90": "Progressive Passes",
-        "Accurate progressive passes, %": "Progressive Pass Accuracy",
-        "Passes to final third per 90": "Final Third Passes",
-        "Received passes per 90": "Passes Received",
-        "Progressive runs per 90": "Progressive Runs",
-        "Interceptions per 90": "Interceptions",
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
         "PAdj Interceptions": "PAdj Interceptions",
-        "Successful defensive actions per 90": "Defensive Actions",
-        "Defensive duels per 90": "Defensive Duels",
-        "Defensive duels won, %": "Defensive Duel %",
-        "PAdj Sliding tackles": "PAdj Tackles",
-        "Sliding tackles per 90": "Sliding Tackles",
-        "Shots blocked per 90": "Shots Blocked",
-        "Fouls per 90": "Fouls",
-        "Yellow cards per 90": "Yellow Cards",
-        "Dribbles per 90": "Dribbles",
-        "Successful dribbles, %": "Dribble Success",
-        "Accelerations per 90": "Accelerations",
-        "Crosses per 90": "Crosses",
-        "Accurate crosses, %": "Cross Accuracy",
-        "Crosses to goalie box per 90": "Box Crosses",
-        "Passes to penalty area per 90": "Penalty Area Passes",
-        "Shot assists per 90": "Shot Assists",
-        "xA per 90": "xA",
-        "xG per 90": "xG",
-        "Shots per 90": "Shots",
-        "Touches in box per 90": "Box Touches",
-        "Non-penalty goals per 90": "Non-Penalty Goals",
-        "Successful attacking actions per 90": "Attacking Actions",
-        "Smart passes per 90": "Smart Passes",
-        "Key passes per 90": "Key Passes",
-        "Deep completions per 90": "Deep Completions",
-        "Through passes per 90": "Through Passes",
-        "Offensive duels per 90": "Offensive Duels",
-        "Offensive duels won, %": "Offensive Duel %",
-        "Goal conversion, %": "Goal Conversion",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90",
+        "Yellow cards per 90": "Yellow Cards /90",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
         "Shots on target, %": "Shots on Target %",
-        "Head goals per 90": "Headed Goals",
-        "Received long passes per 90": "Long Passes Received",
-        "Fouls suffered per 90": "Fouls Won",
-        "Average pass length, m": "Avg Pass Length",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
     }
     labels = [display_aliases.get(m, m) for m in p["Metric"]]
     p["Display Metric"] = labels
@@ -2175,8 +2196,13 @@ if comparison_mode == "Multi-Player Radar":
 
 else:
     st.markdown("#### Single-Player Role Profile")
+    if SINGLE_PLAYER_METRIC_POLICY_ISSUES:
+        st.warning(
+            "Single-player profile metric policy issue: "
+            + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
+        )
     st.caption(
-        "15 role-specific metrics grouped by KPI family. Percentiles and z-scores use the same benchmark and are direction-aware. "
+        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. Percentiles and z-scores use the same benchmark and are direction-aware. "
         "The weighted recruitment profile score is not changed by this visualization."
     )
 
