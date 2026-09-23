@@ -1800,6 +1800,293 @@ def single_player_wheel(
     return fig
 
 
+def multi_player_profile_wheel(
+    raw_table: pd.DataFrame,
+    z_table: pd.DataFrame,
+    players: List[str],
+    profile_name: str,
+    metrics: List[str],
+    kpi_lookup: Dict[str, str],
+) -> go.Figure:
+    """
+    Multi-player version of the fixed-radius scouting wheel.
+
+    It deliberately mirrors the single-player profile:
+    - identical KPI band architecture;
+    - identical metric order and KPI gaps;
+    - identical -2 to +2 z-score mapping;
+    - multiple players shown as lines + markers rather than overlapping fills.
+    """
+    if not players or not metrics:
+        return go.Figure()
+
+    display_aliases = {
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90",
+        "Yellow cards per 90": "Yellow Cards /90",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+
+    labels = [display_aliases.get(m, m) for m in metrics]
+    groups = []
+    for m in metrics:
+        g = kpi_lookup.get(m, "Profile")
+        if g not in groups:
+            groups.append(g)
+
+    palette = [
+        "#4E79A7", "#59A14F", "#F28E2B", "#E15759",
+        "#76B7B2", "#B07AA1", "#EDC948", "#9C755F",
+    ]
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    group_seq = [kpi_lookup.get(m, "Profile") for m in metrics]
+    n = len(metrics)
+    gap_units = 0.48
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
+
+    theta = []
+    cursor = 0.0
+    for i in range(n):
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.90
+
+    fig = go.Figure()
+
+    # Same KPI band as the single-player wheel.
+    band_inner = 78.0
+    band_outer = 86.0
+    band_len = band_outer - band_inner
+    for group in groups:
+        idx = [i for i, g in enumerate(group_seq) if g == group]
+        fig.add_trace(
+            go.Barpolar(
+                r=[band_len] * len(idx),
+                base=[band_inner] * len(idx),
+                theta=[float(theta[i]) for i in idx],
+                width=[width] * len(idx),
+                marker_color=group_colors[group],
+                marker_line_color="white",
+                marker_line_width=1.2,
+                opacity=0.88,
+                name=group,
+                legendgroup=f"kpi_{group}",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Same z-score performance annulus as the single-player wheel.
+    perf_inner = 20.0
+    perf_outer = 74.0
+    perf_span = perf_outer - perf_inner
+    ring_theta = np.linspace(0, 360, 361)
+
+    for tick in [-2, -1, 0, 1, 2]:
+        rv = perf_inner + ((tick + 2.0) / 4.0) * perf_span
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[rv] * len(ring_theta),
+                theta=ring_theta,
+                mode="lines",
+                line=dict(
+                    color="rgba(45,55,65,0.62)" if tick == 0 else "rgba(120,130,140,0.16)",
+                    width=2.8 if tick == 0 else 1,
+                ),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Metric spokes stay neutral so several player traces remain readable.
+    for angle in theta:
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[perf_inner, perf_outer],
+                theta=[angle, angle],
+                mode="lines",
+                line=dict(color="rgba(120,130,140,0.20)", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Multi-player performance: no fills, only lines + markers.
+    # Plotly assigns a distinct player color automatically.
+    for player in players:
+        if player not in z_table.index:
+            continue
+
+        z = pd.to_numeric(z_table.loc[player, metrics], errors="coerce").fillna(0.0)
+        raw = pd.to_numeric(raw_table.loc[player, metrics], errors="coerce")
+        clipped = z.clip(lower=-2.0, upper=2.0).to_numpy(dtype=float)
+        marker_r = perf_inner + ((clipped + 2.0) / 4.0) * perf_span
+
+        custom = np.column_stack([
+            raw.to_numpy(dtype=float),
+            z.to_numpy(dtype=float),
+            np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
+            np.array(labels, dtype=object),
+        ])
+
+        fig.add_trace(
+            go.Scatterpolar(
+                r=list(marker_r) + [float(marker_r[0])],
+                theta=list(theta) + [float(theta[0])],
+                mode="lines+markers",
+                name=player,
+                line=dict(width=3),
+                marker=dict(size=9, line=dict(color="white", width=1.4)),
+                customdata=np.vstack([custom, custom[0]]),
+                hovertemplate=(
+                    "<b>%{fullData.name}</b><br>"
+                    "%{customdata[3]}<br>"
+                    "KPI: %{customdata[2]}<br>"
+                    "Raw value: %{customdata[0]:.2f}<br>"
+                    "Z-score: %{customdata[1]:+.2f}<extra></extra>"
+                ),
+            )
+        )
+
+    # Centre context mirrors the single-player chart.
+    centre_text = f"<b>{profile_name}</b><br><span style='font-size:11px'>Multi-Player Comparison</span>"
+    fig.add_annotation(
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
+        text=centre_text,
+        showarrow=False,
+        align="center",
+        font=dict(size=15, color="#17202A"),
+        bgcolor="rgba(255,255,255,0.94)",
+        bordercolor="rgba(120,130,140,0.22)",
+        borderwidth=1,
+        borderpad=10,
+    )
+
+    fig.add_annotation(
+        x=0.01, y=0.01,
+        xref="paper", yref="paper",
+        text="Z-score: −2 to +2 · 0 = benchmark mean",
+        showarrow=False,
+        xanchor="left",
+        yanchor="bottom",
+        font=dict(size=10, color="#6B7785"),
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{profile_name}</b><br><sup>Multi-Player Role Comparison</sup>",
+            x=0.5,
+            xanchor="center",
+            y=0.985,
+            font=dict(size=20, color="#17202A"),
+        ),
+        template="plotly_white",
+        height=920,
+        margin=dict(l=180, r=180, t=132, b=125),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.025,
+            xanchor="center",
+            x=0.5,
+            title_text="",
+            font=dict(size=10),
+        ),
+        polar=dict(
+            bgcolor="white",
+            radialaxis=dict(range=[0, 96], visible=False),
+            angularaxis=dict(
+                tickmode="array",
+                tickvals=theta,
+                ticktext=labels,
+                direction="clockwise",
+                rotation=90,
+                gridcolor="rgba(255,255,255,0)",
+                tickfont=dict(size=11, color="#566270"),
+                showline=False,
+            ),
+        ),
+        barmode="overlay",
+    )
+
+    # KPI legend, matching the single-player visual language, is kept separate
+    # from the player legend so player colours remain unambiguous.
+    kpi_text = "  ·  ".join(
+        f"<span style='color:{group_colors[g]}'><b>■ {g}</b></span>" for g in groups
+    )
+    fig.add_annotation(
+        x=0.5, y=1.055,
+        xref="paper", yref="paper",
+        text=kpi_text,
+        showarrow=False,
+        xanchor="center",
+        yanchor="bottom",
+        font=dict(size=11),
+    )
+
+    return fig
+
+
 # =========================
 # Upload
 # =========================
@@ -2395,155 +2682,34 @@ if comparison_mode == "Multi-Player Radar":
 
         st.dataframe(table_for_display, use_container_width=True)
 
-        # Conventional overlaid radar remains best for comparing multiple players.
-        # KPI groups from the canonical role definition are added as perimeter
-        # annotations plus separator spokes so the structure matches the
-        # single-player role profile without distorting player polygons.
-        theta_labels = [radar_display_aliases.get(m, m) for m in comp_metrics]
-        fig_radar = go.Figure()
-
-        for player in available_players:
-            z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
-            raw_values = pd.to_numeric(show_table.loc[player, comp_metrics], errors="coerce")
-
-            # Match the single-player z-score display range while preserving
-            # uncapped values in hover text.
-            plotted = z.clip(lower=-2.0, upper=2.0).to_list()
-            if not plotted:
-                continue
-
-            hover_text = []
-            for metric, label, raw, zval in zip(comp_metrics, theta_labels, raw_values, z):
-                kpi = radar_kpi_lookup.get(metric)
-                kpi_text = f"<br>KPI: {kpi}" if kpi else ""
-                raw_text = "n/a" if pd.isna(raw) else f"{float(raw):.2f}"
-                hover_text.append(
-                    f"{player}<br>{label}{kpi_text}<br>Raw: {raw_text}<br>Z-score: {float(zval):+.2f}"
-                )
-
-            fig_radar.add_trace(
-                go.Scatterpolar(
-                    r=plotted + [plotted[0]],
-                    theta=theta_labels + [theta_labels[0]],
-                    fill="toself",
-                    name=player,
-                    text=hover_text + [hover_text[0]],
-                    hoverinfo="text",
-                )
-            )
-
-        # Build contiguous KPI spans from the selected profile's canonical metric order.
-        kpi_spans = []
+        # Multi-player role wheel: same architecture as the single-player profile.
         if radar_metric_mode == "Profile metrics" and selected_radar_profile:
-            ordered_kpis = [radar_kpi_lookup.get(m, "") for m in comp_metrics]
-            if ordered_kpis:
-                span_start = 0
-                current_kpi = ordered_kpis[0]
-                for i in range(1, len(ordered_kpis) + 1):
-                    next_kpi = ordered_kpis[i] if i < len(ordered_kpis) else None
-                    if next_kpi != current_kpi:
-                        kpi_spans.append((current_kpi, span_start, i - 1))
-                        if i < len(ordered_kpis):
-                            span_start = i
-                            current_kpi = next_kpi
-
-        # Separator spokes at KPI boundaries. These are visual guides only.
-        n_axes = len(theta_labels)
-        if n_axes and kpi_spans:
-            for _kpi, span_start, _span_end in kpi_spans:
-                # Boundary lies halfway between the preceding and first axis of the group.
-                boundary_deg = ((span_start - 0.5) * 360.0 / n_axes) % 360.0
-                fig_radar.add_trace(
-                    go.Scatterpolar(
-                        r=[-2.0, 2.0],
-                        theta=[boundary_deg, boundary_deg],
-                        mode="lines",
-                        line=dict(width=2, dash="dot"),
-                        opacity=0.45,
-                        hoverinfo="skip",
-                        showlegend=False,
-                    )
-                )
-
-        radar_title = (
-            f"{selected_radar_profile} — Multi-Player Role Comparison"
-            if selected_radar_profile
-            else "Multi-Player Custom Metric Comparison"
-        )
-
-        fig_radar.update_layout(
-            title=radar_title,
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[-2, 2],
-                    tickvals=[-2, -1, 0, 1, 2],
-                    ticktext=["-2", "-1", "0", "+1", "+2"],
-                ),
-                angularaxis=dict(
-                    tickfont=dict(size=11),
-                    direction="clockwise",
-                    rotation=90,
-                ),
-            ),
-            showlegend=True,
-            template="plotly_white",
-            height=800,
-            margin=dict(l=115, r=115, t=135, b=115),
-        )
-
-        # KPI labels around the perimeter, positioned at the midpoint of each
-        # contiguous KPI span. Paper coordinates keep them outside the metric labels.
-        if n_axes and kpi_spans:
-            import math
-            for kpi_name, span_start, span_end in kpi_spans:
-                if not kpi_name:
-                    continue
-                mid_index = (span_start + span_end) / 2.0
-                # Plotly angular axis starts at the configured rotation (90°)
-                # and moves clockwise.
-                angle_deg = 90.0 - (mid_index * 360.0 / n_axes)
-                angle_rad = math.radians(angle_deg)
-
-                radius = 0.60
-                x = 0.5 + radius * math.cos(angle_rad)
-                y = 0.5 + radius * math.sin(angle_rad)
-
-                # Anchor text away from the chart for cleaner perimeter placement.
-                if x > 0.56:
-                    xanchor = "left"
-                elif x < 0.44:
-                    xanchor = "right"
-                else:
-                    xanchor = "center"
-
-                if y > 0.56:
-                    yanchor = "bottom"
-                elif y < 0.44:
-                    yanchor = "top"
-                else:
-                    yanchor = "middle"
-
-                fig_radar.add_annotation(
-                    x=x,
-                    y=y,
-                    xref="paper",
-                    yref="paper",
-                    text=f"<b>{kpi_name}</b>",
-                    showarrow=False,
-                    xanchor=xanchor,
-                    yanchor=yanchor,
-                    font=dict(size=13),
-                    bgcolor="rgba(255,255,255,0.82)",
-                    borderpad=3,
-                )
+            fig_radar = multi_player_profile_wheel(
+                raw_table=show_table,
+                z_table=z_table,
+                players=available_players,
+                profile_name=selected_radar_profile,
+                metrics=comp_metrics,
+                kpi_lookup=radar_kpi_lookup,
+            )
+        else:
+            # Custom mode has no canonical KPI groups, so use one neutral group.
+            custom_kpi_lookup = {m: "Custom Metrics" for m in comp_metrics}
+            fig_radar = multi_player_profile_wheel(
+                raw_table=show_table,
+                z_table=z_table,
+                players=available_players,
+                profile_name="Custom Metrics",
+                metrics=comp_metrics,
+                kpi_lookup=custom_kpi_lookup,
+            )
 
         st.plotly_chart(fig_radar, use_container_width=True)
 
         st.caption(
-            "Radar geometry is unweighted: all 15 role dimensions are shown equally. KPI labels and separator spokes follow the same canonical groups as the single-player profile. "
-            "Built-in Profile Score uses the reviewed default weights. Z-scores are direction-aware "
-            "and benchmarked against the current filtered player population."
+            "Multi-player comparison now uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
+            "the same 15 metrics, KPI bands, metric order, KPI gaps and −2 to +2 direction-aware z-score scale. "
+            "Player traces use lines and markers without fills so comparisons remain readable. Profile Score weighting remains separate from wheel geometry."
         )
 
         csv_export = show_table.copy()
