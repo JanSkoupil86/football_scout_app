@@ -1485,9 +1485,9 @@ def single_player_wheel(
     theta = np.array(theta, dtype=float)
     width = unit * 0.90
 
-    # Fixed-radius KPI band: same length for every metric.
-    band_inner = 72.0
-    band_outer = 84.0
+    # Thin fixed-radius KPI band: supporting context, while the inner profile is the focal layer.
+    band_inner = 78.0
+    band_outer = 86.0
     band_len = band_outer - band_inner
 
     fig = go.Figure()
@@ -1510,9 +1510,9 @@ def single_player_wheel(
             )
         )
 
-    # Performance scale occupies a fixed inner annulus.
-    perf_inner = 28.0
-    perf_outer = 68.0
+    # Enlarged performance annulus so the player profile is visually dominant.
+    perf_inner = 20.0
+    perf_outer = 74.0
     perf_span = perf_outer - perf_inner
 
     if scale_mode == "Percentile":
@@ -1553,7 +1553,7 @@ def single_player_wheel(
                 r=[zero_r] * len(ring_theta),
                 theta=ring_theta,
                 mode="lines",
-                line=dict(color="rgba(45,55,65,0.55)", width=2),
+                line=dict(color="rgba(45,55,65,0.68)", width=2.8),
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -1575,8 +1575,8 @@ def single_player_wheel(
                 r=[perf_inner, marker_r[i]],
                 theta=[theta[i], theta[i]],
                 mode="lines",
-                line=dict(color=group_colors[group_seq[i]], width=3),
-                opacity=0.48,
+                line=dict(color=group_colors[group_seq[i]], width=3.5),
+                opacity=0.62,
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -1590,7 +1590,7 @@ def single_player_wheel(
             theta=theta,
             mode="markers",
             marker=dict(
-                size=13,
+                size=15,
                 color=marker_colors,
                 line=dict(color="white", width=2),
             ),
@@ -1609,7 +1609,7 @@ def single_player_wheel(
     # Numerical result sits in the fixed KPI tile rather than collapsing toward centre.
     fig.add_trace(
         go.Scatterpolar(
-            r=[78.0] * n,
+            r=[82.0] * n,
             theta=theta,
             mode="text",
             text=[f"<b>{v}</b>" for v in value_text],
@@ -1622,9 +1622,10 @@ def single_player_wheel(
     # KPI group names are intentionally shown only in the legend.
 
     # Centre content.
+    role_label = subtitle.split("|")[0].strip() if subtitle else ""
     centre_text = (
         f"<b>{player_name}</b>"
-        f"<br><span style='font-size:12px'>{scale_mode}</span>"
+        + (f"<br><span style='font-size:11px'>{role_label}</span>" if role_label else "")
     )
     fig.add_annotation(
         x=0.5, y=0.5,
@@ -1632,11 +1633,11 @@ def single_player_wheel(
         text=centre_text,
         showarrow=False,
         align="center",
-        font=dict(size=17, color="#17202A"),
+        font=dict(size=16, color="#17202A"),
         bgcolor="rgba(255,255,255,0.94)",
         bordercolor="rgba(120,130,140,0.22)",
         borderwidth=1,
-        borderpad=14,
+        borderpad=11,
     )
 
     # Scale key in the lower-left, avoiding radial-axis clutter.
@@ -1661,13 +1662,13 @@ def single_player_wheel(
         ),
         template="plotly_white",
         height=920,
-        margin=dict(l=175, r=175, t=145, b=135),
+        margin=dict(l=180, r=180, t=132, b=125),
         paper_bgcolor="white",
         plot_bgcolor="white",
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.055,
+            y=1.025,
             xanchor="center",
             x=0.5,
             title_text="",
@@ -1686,7 +1687,7 @@ def single_player_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=10, color="#566270"),
+                tickfont=dict(size=11, color="#566270"),
                 showline=False,
             ),
         ),
