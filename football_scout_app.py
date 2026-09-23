@@ -1363,232 +1363,302 @@ def single_player_wheel(
     scale_mode: str = "Percentile",
 ) -> go.Figure:
     """
-    Circular role profile.
-    Percentile: bars grow 0 -> 100 from the centre.
-    Z-score: a true zero ring sits at radius 3; positive values grow outward,
-    negative values grow inward toward the centre. Display is clipped to ±3.
+    Fixed-radius scouting wheel.
+
+    Design principle:
+    - every metric receives equal visual space;
+    - KPI groups are structural coloured bands, not variable-length wedges;
+    - performance is shown by a dot on a fixed radial scale;
+    - percentile and z-score therefore remain readable even for low values;
+    - the centre is reserved for player/profile context.
     """
     if profile_df.empty:
         return go.Figure()
 
-    profile_df = profile_df.reset_index(drop=True).copy()
-    groups = profile_df["KPI Group"].drop_duplicates().tolist()
+    p = profile_df.reset_index(drop=True).copy()
+    groups = p["KPI Group"].drop_duplicates().tolist()
 
-    # Muted professional palette with stable KPI-group colours.
     palette = [
         "#4E79A7", "#59A14F", "#F28E2B", "#E15759",
         "#76B7B2", "#B07AA1", "#EDC948", "#9C755F",
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
-    labels = profile_df["Metric"].tolist()
-    group_sequence = profile_df["KPI Group"].tolist()
-    n = len(labels)
+    # Presentation aliases only; underlying Wyscout columns remain untouched.
+    display_aliases = {
+        "Save rate, %": "Save Rate",
+        "Prevented goals per 90": "Goals Prevented",
+        "Conceded goals per 90": "Goals Conceded",
+        "Shots against per 90": "Shots Faced",
+        "xG against per 90": "xGA",
+        "Exits per 90": "Exits",
+        "Aerial duels per 90.1": "Aerial Duels",
+        "Aerial duels per 90": "Aerial Duels",
+        "Aerial duels won, %": "Aerial Duel %",
+        "Passes per 90": "Passes",
+        "Accurate passes, %": "Pass Accuracy",
+        "Long passes per 90": "Long Passes",
+        "Accurate long passes, %": "Long Pass Accuracy",
+        "Back passes received as GK per 90": "GK Back Passes Received",
+        "Forward passes per 90": "Forward Passes",
+        "Accurate forward passes, %": "Forward Pass Accuracy",
+        "Progressive passes per 90": "Progressive Passes",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy",
+        "Passes to final third per 90": "Final Third Passes",
+        "Received passes per 90": "Passes Received",
+        "Progressive runs per 90": "Progressive Runs",
+        "Interceptions per 90": "Interceptions",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions",
+        "Defensive duels per 90": "Defensive Duels",
+        "Defensive duels won, %": "Defensive Duel %",
+        "PAdj Sliding tackles": "PAdj Tackles",
+        "Sliding tackles per 90": "Sliding Tackles",
+        "Shots blocked per 90": "Shots Blocked",
+        "Fouls per 90": "Fouls",
+        "Yellow cards per 90": "Yellow Cards",
+        "Dribbles per 90": "Dribbles",
+        "Successful dribbles, %": "Dribble Success",
+        "Accelerations per 90": "Accelerations",
+        "Crosses per 90": "Crosses",
+        "Accurate crosses, %": "Cross Accuracy",
+        "Crosses to goalie box per 90": "Box Crosses",
+        "Passes to penalty area per 90": "Penalty Area Passes",
+        "Shot assists per 90": "Shot Assists",
+        "xA per 90": "xA",
+        "xG per 90": "xG",
+        "Shots per 90": "Shots",
+        "Touches in box per 90": "Box Touches",
+        "Non-penalty goals per 90": "Non-Penalty Goals",
+        "Successful attacking actions per 90": "Attacking Actions",
+        "Smart passes per 90": "Smart Passes",
+        "Key passes per 90": "Key Passes",
+        "Deep completions per 90": "Deep Completions",
+        "Through passes per 90": "Through Passes",
+        "Offensive duels per 90": "Offensive Duels",
+        "Offensive duels won, %": "Offensive Duel %",
+        "Goal conversion, %": "Goal Conversion",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals",
+        "Received long passes per 90": "Long Passes Received",
+        "Fouls suffered per 90": "Fouls Won",
+        "Average pass length, m": "Avg Pass Length",
+    }
+    labels = [display_aliases.get(m, m) for m in p["Metric"]]
+    p["Display Metric"] = labels
 
-    # Wider gaps between KPI families than between individual metrics.
-    gap_units = 0.55
-    boundaries = sum(
-        1 for i in range(1, n)
-        if group_sequence[i] != group_sequence[i - 1]
-    )
-    unit_width = 360.0 / (n + boundaries * gap_units)
+    n = len(p)
+    # Keep each metric equal-width, but insert a small angular gap at KPI boundaries.
+    group_seq = p["KPI Group"].tolist()
+    gap_units = 0.48
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
 
-    theta_list = []
+    theta = []
     cursor = 0.0
     for i in range(n):
-        if i > 0 and group_sequence[i] != group_sequence[i - 1]:
-            cursor += gap_units * unit_width
-        theta_list.append(cursor)
-        cursor += unit_width
-    theta = np.array(theta_list, dtype=float)
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.90
 
-    # Slightly narrower bars create clean white separators.
-    bar_width = unit_width * 0.88
+    # Fixed-radius KPI band: same length for every metric.
+    band_inner = 72.0
+    band_outer = 84.0
+    band_len = band_outer - band_inner
 
     fig = go.Figure()
 
+    for group in groups:
+        idx = p.index[p["KPI Group"] == group].tolist()
+        positions = [float(theta[i]) for i in idx]
+        fig.add_trace(
+            go.Barpolar(
+                r=[band_len] * len(idx),
+                base=[band_inner] * len(idx),
+                theta=positions,
+                width=[width] * len(idx),
+                marker_color=group_colors[group],
+                marker_line_color="white",
+                marker_line_width=1.2,
+                opacity=0.88,
+                name=group,
+                hoverinfo="skip",
+            )
+        )
+
+    # Performance scale occupies a fixed inner annulus.
+    perf_inner = 28.0
+    perf_outer = 68.0
+    perf_span = perf_outer - perf_inner
+
     if scale_mode == "Percentile":
-        for group in groups:
-            sub = profile_df[profile_df["KPI Group"] == group]
-            idx = sub.index.to_list()
-            positions = [float(theta[i]) for i in idx]
-
-            custom = np.column_stack([
-                sub["Raw Value"].to_numpy(dtype=float),
-                sub["Percentile"].to_numpy(dtype=float),
-                sub["Z-score"].to_numpy(dtype=float),
-                sub["Metric"].astype(str).to_numpy(),
-                sub["KPI Group"].astype(str).to_numpy(),
-            ])
-
-            fig.add_trace(
-                go.Barpolar(
-                    r=sub["Percentile"].to_numpy(dtype=float),
-                    theta=positions,
-                    width=[bar_width] * len(sub),
-                    base=0,
-                    name=group,
-                    marker_color=group_colors[group],
-                    marker_line_color="white",
-                    marker_line_width=1.4,
-                    opacity=0.90,
-                    customdata=custom,
-                    hovertemplate=(
-                        "<b>%{customdata[3]}</b><br>"
-                        "KPI: %{customdata[4]}<br>"
-                        "Raw value: %{customdata[0]:.2f}<br>"
-                        "Percentile: %{customdata[1]:.0f}<br>"
-                        "Z-score: %{customdata[2]:+.2f}<extra></extra>"
-                    ),
-                )
-            )
-
-        value_r = np.clip(
-            profile_df["Percentile"].to_numpy(dtype=float) - 5.0,
-            7.0,
-            96.0,
-        )
-        value_text = [
-            f"<b>{int(round(v))}</b>"
-            for v in profile_df["Percentile"].to_numpy(dtype=float)
-        ]
-        radial_range = [0, 100]
-        radial_tickvals = [20, 40, 60, 80, 100]
-        radial_ticktext = ["20", "40", "60", "80", "100"]
-
+        values = np.clip(p["Percentile"].to_numpy(dtype=float), 0, 100)
+        marker_r = perf_inner + (values / 100.0) * perf_span
+        value_text = [f"{int(round(v))}" for v in values]
+        scale_ticks = [0, 25, 50, 75, 100]
+        scale_r = [perf_inner + (v / 100.0) * perf_span for v in scale_ticks]
+        scale_text = [str(v) for v in scale_ticks]
     else:
-        # True z-score geometry:
-        # radius 3 = z 0
-        # z +3 ends at radius 6
-        # z -3 ends at radius 0
-        # Positive bars start at zero and extend outward.
-        # Negative bars start at their negative endpoint and extend outward to zero,
-        # so the wedge occupies the correct side of the zero baseline.
-        z_clipped = np.clip(
-            profile_df["Z-score"].to_numpy(dtype=float),
-            -3.0,
-            3.0,
-        )
+        raw_z = p["Z-score"].to_numpy(dtype=float)
+        clipped = np.clip(raw_z, -3.0, 3.0)
+        marker_r = perf_inner + ((clipped + 3.0) / 6.0) * perf_span
+        value_text = [f"{v:+.2f}" for v in raw_z]
+        scale_ticks = [-3, -2, -1, 0, 1, 2, 3]
+        scale_r = [perf_inner + ((v + 3.0) / 6.0) * perf_span for v in scale_ticks]
+        scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
 
-        for group in groups:
-            sub = profile_df[profile_df["KPI Group"] == group]
-            idx = sub.index.to_list()
-            positions = [float(theta[i]) for i in idx]
-            zvals = np.clip(sub["Z-score"].to_numpy(dtype=float), -3.0, 3.0)
-
-            bases = np.where(zvals >= 0.0, 3.0, 3.0 + zvals)
-            lengths = np.abs(zvals)
-
-            custom = np.column_stack([
-                sub["Raw Value"].to_numpy(dtype=float),
-                sub["Percentile"].to_numpy(dtype=float),
-                sub["Z-score"].to_numpy(dtype=float),
-                sub["Metric"].astype(str).to_numpy(),
-                sub["KPI Group"].astype(str).to_numpy(),
-            ])
-
-            fig.add_trace(
-                go.Barpolar(
-                    r=lengths,
-                    base=bases,
-                    theta=positions,
-                    width=[bar_width] * len(sub),
-                    name=group,
-                    marker_color=group_colors[group],
-                    marker_line_color="white",
-                    marker_line_width=1.4,
-                    opacity=0.90,
-                    customdata=custom,
-                    hovertemplate=(
-                        "<b>%{customdata[3]}</b><br>"
-                        "KPI: %{customdata[4]}<br>"
-                        "Raw value: %{customdata[0]:.2f}<br>"
-                        "Percentile: %{customdata[1]:.0f}<br>"
-                        "Z-score: %{customdata[2]:+.2f}<extra></extra>"
-                    ),
-                )
-            )
-
-        # Put the value label close to the actual endpoint of each wedge.
-        endpoints = 3.0 + z_clipped
-        value_r = np.where(
-            z_clipped >= 0,
-            np.minimum(endpoints - 0.18, 5.82),
-            np.maximum(endpoints + 0.18, 0.18),
-        )
-        value_text = [
-            f"<b>{v:+.2f}</b>"
-            for v in profile_df["Z-score"].to_numpy(dtype=float)
-        ]
-        radial_range = [0, 6]
-        radial_tickvals = [0, 1, 2, 3, 4, 5, 6]
-        radial_ticktext = ["-3", "-2", "-1", "0", "+1", "+2", "+3"]
-
-        # Strong zero baseline.
-        zero_theta = np.linspace(0, 360, 361)
+    # Neutral reference rings across the performance annulus.
+    ring_theta = np.linspace(0, 360, 361)
+    for rv in scale_r:
         fig.add_trace(
             go.Scatterpolar(
-                r=[3.0] * len(zero_theta),
-                theta=zero_theta,
+                r=[rv] * len(ring_theta),
+                theta=ring_theta,
                 mode="lines",
-                line=dict(color="rgba(45,45,45,0.72)", width=2.4),
+                line=dict(color="rgba(120,130,140,0.16)", width=1),
                 hoverinfo="skip",
                 showlegend=False,
             )
         )
 
-    # Values on wedges.
+    # Stronger neutral reference in z-score mode.
+    if scale_mode == "Z-score":
+        zero_r = perf_inner + 0.5 * perf_span
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[zero_r] * len(ring_theta),
+                theta=ring_theta,
+                mode="lines",
+                line=dict(color="rgba(45,55,65,0.55)", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    custom = np.column_stack([
+        p["Raw Value"].to_numpy(dtype=float),
+        p["Percentile"].to_numpy(dtype=float),
+        p["Z-score"].to_numpy(dtype=float),
+        p["Metric"].astype(str).to_numpy(),
+        p["KPI Group"].astype(str).to_numpy(),
+        p["Display Metric"].astype(str).to_numpy(),
+    ])
+
+    # Thin spokes make it easy to associate marker, number and metric.
+    for i in range(n):
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[perf_inner, marker_r[i]],
+                theta=[theta[i], theta[i]],
+                mode="lines",
+                line=dict(color=group_colors[group_seq[i]], width=3),
+                opacity=0.48,
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Performance markers: the primary quantitative encoding.
+    marker_colors = [group_colors[g] for g in group_seq]
     fig.add_trace(
         go.Scatterpolar(
-            r=value_r,
+            r=marker_r,
+            theta=theta,
+            mode="markers",
+            marker=dict(
+                size=13,
+                color=marker_colors,
+                line=dict(color="white", width=2),
+            ),
+            customdata=custom,
+            hovertemplate=(
+                "<b>%{customdata[5]}</b><br>"
+                "KPI: %{customdata[4]}<br>"
+                "Raw value: %{customdata[0]:.2f}<br>"
+                "Percentile: %{customdata[1]:.0f}<br>"
+                "Z-score: %{customdata[2]:+.2f}<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+
+    # Numerical result sits in the fixed KPI tile rather than collapsing toward centre.
+    fig.add_trace(
+        go.Scatterpolar(
+            r=[78.0] * n,
             theta=theta,
             mode="text",
-            text=value_text,
-            textfont=dict(size=12, color="#17202A"),
+            text=[f"<b>{v}</b>" for v in value_text],
+            textfont=dict(size=11, color="white"),
             hoverinfo="skip",
             showlegend=False,
         )
     )
 
-    # KPI group labels positioned around the outer perimeter.
+    # KPI family labels outside the tiles.
     group_label_theta = []
     group_label_text = []
     for group in groups:
-        positions = [
-            theta[i]
-            for i, g in enumerate(group_sequence)
-            if g == group
-        ]
-        if positions:
-            group_label_theta.append(float(np.mean(positions)))
-            group_label_text.append(f"<b>{group}</b>")
-
-    group_label_radius = 109 if scale_mode == "Percentile" else 6.55
+        positions = [theta[i] for i, g in enumerate(group_seq) if g == group]
+        group_label_theta.append(float(np.mean(positions)))
+        group_label_text.append(f"<b>{group.upper()}</b>")
 
     fig.add_trace(
         go.Scatterpolar(
-            r=[group_label_radius] * len(group_label_theta),
+            r=[91.5] * len(groups),
             theta=group_label_theta,
             mode="text",
             text=group_label_text,
-            textfont=dict(size=11, color="#34495E"),
+            textfont=dict(size=10, color="#34495E"),
             hoverinfo="skip",
             showlegend=False,
         )
     )
 
-    # Shorter title; benchmark context moves into subtitle.
+    # Centre content.
+    centre_text = (
+        f"<b>{player_name}</b>"
+        f"<br><span style='font-size:12px'>{scale_mode}</span>"
+    )
+    fig.add_annotation(
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
+        text=centre_text,
+        showarrow=False,
+        align="center",
+        font=dict(size=17, color="#17202A"),
+        bgcolor="rgba(255,255,255,0.94)",
+        bordercolor="rgba(120,130,140,0.22)",
+        borderwidth=1,
+        borderpad=14,
+    )
+
+    # Scale key in the lower-left, avoiding radial-axis clutter.
+    key = "Percentile: 0–100" if scale_mode == "Percentile" else "Z-score: −3 to +3 · 0 = benchmark mean"
+    fig.add_annotation(
+        x=0.01, y=0.01,
+        xref="paper", yref="paper",
+        text=key,
+        showarrow=False,
+        xanchor="left",
+        yanchor="bottom",
+        font=dict(size=10, color="#6B7785"),
+    )
+
     fig.update_layout(
         title=dict(
             text=f"<b>{player_name}</b><br><sup>{subtitle}</sup>",
             x=0.5,
             xanchor="center",
             y=0.985,
-            font=dict(size=21, color="#17202A"),
+            font=dict(size=20, color="#17202A"),
         ),
         template="plotly_white",
-        height=900,
-        margin=dict(l=150, r=150, t=150, b=115),
+        height=920,
+        margin=dict(l=175, r=175, t=145, b=135),
         paper_bgcolor="white",
         plot_bgcolor="white",
         legend=dict(
@@ -1598,19 +1668,13 @@ def single_player_wheel(
             xanchor="center",
             x=0.5,
             title_text="",
-            font=dict(size=11),
+            font=dict(size=10),
         ),
         polar=dict(
             bgcolor="white",
             radialaxis=dict(
-                range=radial_range,
-                tickvals=radial_tickvals,
-                ticktext=radial_ticktext,
-                tickfont=dict(size=10, color="#7B8794"),
-                gridcolor="rgba(110,120,130,0.18)",
-                gridwidth=1,
-                showline=False,
-                angle=90,
+                range=[0, 96],
+                visible=False,
             ),
             angularaxis=dict(
                 tickmode="array",
@@ -1619,7 +1683,7 @@ def single_player_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=10, color="#5F6B7A"),
+                tickfont=dict(size=10, color="#566270"),
                 showline=False,
             ),
         ),
@@ -2224,7 +2288,6 @@ else:
         player_position = str(player_row.get("Main Position", "")).strip()
 
         header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
-        st.markdown(f"### {single_player}" + (f" — {' | '.join(header_bits)}" if header_bits else ""))
 
         info1, info2, info3 = st.columns(3)
         info1.metric("Benchmark players", f"{len(benchmark_df):,}")
