@@ -362,20 +362,28 @@ PROFILES: Dict[str, List[str]] = {
 # These are deliberately separate from the weighted recruitment-score profiles.
 # Each tuple is: (KPI group, requested Wyscout metric).
 SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
+    # 🧤 GOALKEEPERS
     "Classic Goalkeeper": [
         ("Shot Stopping", "Save rate, %"),
         ("Shot Stopping", "Prevented goals per 90"),
         ("Shot Stopping", "Conceded goals per 90"),
         ("Shot Stopping", "Shots against per 90"),
+        ("Shot Stopping", "Clean sheets"),
         ("Area Control", "Exits per 90"),
         ("Area Control", "Aerial duels per 90.1"),
+        ("Area Control", "Aerial duels won, %"),
         ("Distribution", "Passes per 90"),
         ("Distribution", "Accurate passes, %"),
         ("Distribution", "Long passes per 90"),
         ("Distribution", "Accurate long passes, %"),
+        ("Build-Up", "Back passes received as GK per 90"),
+        ("Build-Up", "Forward passes per 90"),
+        ("Build-Up", "Accurate forward passes, %"),
     ],
     "Sweeper Keeper": [
         ("Sweeping", "Exits per 90"),
+        ("Sweeping", "Aerial duels per 90.1"),
+        ("Sweeping", "Aerial duels won, %"),
         ("Sweeping", "Back passes received as GK per 90"),
         ("Build-Up", "Passes per 90"),
         ("Build-Up", "Accurate passes, %"),
@@ -383,200 +391,293 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Build-Up", "Accurate forward passes, %"),
         ("Distribution", "Long passes per 90"),
         ("Distribution", "Accurate long passes, %"),
+        ("Distribution", "Progressive passes per 90"),
         ("Shot Stopping", "Save rate, %"),
         ("Shot Stopping", "Prevented goals per 90"),
+        ("Shot Stopping", "Conceded goals per 90"),
+        ("Shot Stopping", "Shots against per 90"),
     ],
     "Build-Up Keeper": [
-        ("Shot Stopping", "Prevented goals per 90"),
-        ("Shot Stopping", "Save rate, %"),
-        ("Sweeping", "Exits per 90"),
         ("Build-Up", "Back passes received as GK per 90"),
         ("Build-Up", "Passes per 90"),
         ("Build-Up", "Accurate passes, %"),
         ("Build-Up", "Forward passes per 90"),
         ("Build-Up", "Accurate forward passes, %"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Passes to final third per 90"),
+        ("Progression", "Accurate progressive passes, %"),
         ("Distribution", "Long passes per 90"),
         ("Distribution", "Accurate long passes, %"),
+        ("Distribution", "Average pass length, m"),
+        ("Sweeping", "Exits per 90"),
+        ("Shot Stopping", "Save rate, %"),
+        ("Shot Stopping", "Prevented goals per 90"),
+        ("Shot Stopping", "Conceded goals per 90"),
     ],
+
+    # 🛡️ CENTRE-BACKS
     "Ball-Playing CB": [
         ("Build-Up", "Passes per 90"),
         ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Received passes per 90"),
         ("Build-Up", "Forward passes per 90"),
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Passes to final third per 90"),
+        ("Progression", "Progressive runs per 90"),
         ("Range", "Long passes per 90"),
         ("Range", "Accurate long passes, %"),
         ("Defending", "Interceptions per 90"),
-        ("Defending", "Defensive duels won, %"),
-    ],
-    "Combative CB / Stopper": [
-        ("Defending", "Successful defensive actions per 90"),
         ("Defending", "Defensive duels per 90"),
         ("Defending", "Defensive duels won, %"),
-        ("Defending", "Interceptions per 90"),
-        ("Aggression", "PAdj Sliding tackles"),
-        ("Aggression", "Shots blocked per 90"),
-        ("Aggression", "Fouls per 90"),
+        ("Defending", "Aerial duels won, %"),
+        ("Defending", "Successful defensive actions per 90"),
+    ],
+    "Combative CB / Stopper": [
+        ("Ground Defending", "Successful defensive actions per 90"),
+        ("Ground Defending", "Defensive duels per 90"),
+        ("Ground Defending", "Defensive duels won, %"),
+        ("Ground Defending", "PAdj Sliding tackles"),
+        ("Ground Defending", "Interceptions per 90"),
+        ("Ground Defending", "PAdj Interceptions"),
         ("Aerial", "Aerial duels per 90"),
         ("Aerial", "Aerial duels won, %"),
-        ("Security", "Accurate passes, %"),
+        ("Box Defence", "Shots blocked per 90"),
+        ("Box Defence", "Sliding tackles per 90"),
+        ("Aggression / Discipline", "Fouls per 90"),
+        ("Aggression / Discipline", "Yellow cards per 90"),
+        ("Possession Security", "Passes per 90"),
+        ("Possession Security", "Accurate passes, %"),
+        ("Possession Security", "Accurate long passes, %"),
     ],
     "Libero / Middle Pin CB": [
+        ("Build-Up", "Received passes per 90"),
         ("Build-Up", "Passes per 90"),
         ("Build-Up", "Accurate passes, %"),
         ("Build-Up", "Forward passes per 90"),
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Passes to final third per 90"),
-        ("Range", "Accurate long passes, %"),
-        ("Defending", "PAdj Interceptions"),
-        ("Defending", "Defensive duels won, %"),
-        ("Aerial", "Aerial duels won, %"),
+        ("Progression", "Deep completions per 90"),
+        ("Distribution", "Long passes per 90"),
+        ("Distribution", "Accurate long passes, %"),
+        ("Defensive Control", "PAdj Interceptions"),
+        ("Defensive Control", "Defensive duels won, %"),
+        ("Defensive Control", "Aerial duels won, %"),
+        ("Defensive Control", "Successful defensive actions per 90"),
+        ("Defensive Control", "Shots blocked per 90"),
     ],
     "Wide CB (in 3)": [
         ("Defending", "Defensive duels per 90"),
         ("Defending", "Defensive duels won, %"),
         ("Defending", "PAdj Interceptions"),
+        ("Defending", "Successful defensive actions per 90"),
         ("Carrying", "Progressive runs per 90"),
+        ("Carrying", "Dribbles per 90"),
         ("Carrying", "Successful dribbles, %"),
+        ("Carrying", "Accelerations per 90"),
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Passes to final third per 90"),
-        ("Distribution", "Forward passes per 90"),
-        ("Distribution", "Accurate long passes, %"),
+        ("Progression", "Forward passes per 90"),
+        ("Wide Contribution", "Crosses per 90"),
+        ("Wide Contribution", "Passes to penalty area per 90"),
+        ("Wide Contribution", "Accurate long passes, %"),
     ],
+
+    # ⚙️ MIDFIELDERS
     "Defensive Midfielder #6": [
         ("Ball Winning", "PAdj Interceptions"),
+        ("Ball Winning", "Interceptions per 90"),
         ("Ball Winning", "Defensive duels per 90"),
         ("Ball Winning", "Defensive duels won, %"),
+        ("Ball Winning", "Successful defensive actions per 90"),
         ("Availability", "Received passes per 90"),
         ("Availability", "Passes per 90"),
-        ("Security", "Accurate passes, %"),
+        ("Availability", "Accurate passes, %"),
         ("Progression", "Forward passes per 90"),
+        ("Progression", "Accurate forward passes, %"),
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Passes to final third per 90"),
-    ],
-    "Deep-Lying Playmaker": [
-        ("Involvement", "Received passes per 90"),
-        ("Involvement", "Passes per 90"),
-        ("Progression", "Forward passes per 90"),
-        ("Progression", "Progressive passes per 90"),
-        ("Progression", "Accurate progressive passes, %"),
-        ("Progression", "Passes to final third per 90"),
-        ("Range", "Long passes per 90"),
-        ("Range", "Accurate long passes, %"),
-        ("Creation", "Smart passes per 90"),
-        ("Creation", "xA per 90"),
-    ],
-    "Box-to-Box Midfielder": [
-        ("Defending", "Defensive duels per 90"),
-        ("Defending", "Defensive duels won, %"),
-        ("Defending", "PAdj Interceptions"),
-        ("Progression", "Progressive runs per 90"),
-        ("Progression", "Progressive passes per 90"),
-        ("Final Third", "Touches in box per 90"),
-        ("Final Third", "Shots per 90"),
-        ("Final Third", "xG per 90"),
-        ("Creation", "Shot assists per 90"),
-        ("Creation", "xA per 90"),
-    ],
-    "Playmaker #10": [
-        ("Progression", "Progressive passes per 90"),
-        ("Progression", "Accurate progressive passes, %"),
-        ("Chance Creation", "xA per 90"),
-        ("Chance Creation", "Shot assists per 90"),
-        ("Chance Creation", "Key passes per 90"),
-        ("Chance Creation", "Smart passes per 90"),
-        ("Chance Creation", "Deep completions per 90"),
-        ("Final Third", "Passes to penalty area per 90"),
-        ("Final Third", "Touches in box per 90"),
-        ("Final Third", "Shots per 90"),
+        ("Mobility / Security", "Progressive runs per 90"),
+        ("Mobility / Security", "Aerial duels won, %"),
     ],
     "Attacking Midfielder #8": [
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Progressive runs per 90"),
+        ("Progression", "Passes to final third per 90"),
         ("Creation", "xA per 90"),
         ("Creation", "Key passes per 90"),
         ("Creation", "Shot assists per 90"),
+        ("Creation", "Smart passes per 90"),
         ("Final Third", "Shots per 90"),
         ("Final Third", "Touches in box per 90"),
+        ("Final Third", "Passes to penalty area per 90"),
+        ("Final Third", "xG per 90"),
         ("Defending", "Interceptions per 90"),
+        ("Defending", "Defensive duels won, %"),
         ("Attack", "Successful attacking actions per 90"),
     ],
-    "Full-Back": [
+    "Deep-Lying Playmaker": [
+        ("Involvement", "Received passes per 90"),
+        ("Involvement", "Passes per 90"),
+        ("Involvement", "Accurate passes, %"),
+        ("Progression", "Forward passes per 90"),
+        ("Progression", "Accurate forward passes, %"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Accurate progressive passes, %"),
+        ("Progression", "Passes to final third per 90"),
+        ("Range", "Long passes per 90"),
+        ("Range", "Accurate long passes, %"),
+        ("Range", "Smart passes per 90"),
+        ("Creation", "Key passes per 90"),
+        ("Creation", "xA per 90"),
+        ("Defensive Contribution", "PAdj Interceptions"),
+        ("Defensive Contribution", "Defensive duels won, %"),
+    ],
+    "Box-to-Box Midfielder": [
         ("Defending", "Successful defensive actions per 90"),
         ("Defending", "Defensive duels per 90"),
         ("Defending", "Defensive duels won, %"),
         ("Defending", "PAdj Interceptions"),
         ("Progression", "Progressive runs per 90"),
         ("Progression", "Progressive passes per 90"),
-        ("Final Third", "Crosses per 90"),
-        ("Final Third", "Accurate crosses, %"),
-        ("Final Third", "Passes to penalty area per 90"),
-        ("Final Third", "Shot assists per 90"),
-    ],
-    "Wing-Back": [
-        ("Progression", "Progressive runs per 90"),
         ("Progression", "Accelerations per 90"),
-        ("Progression", "Dribbles per 90"),
-        ("Progression", "Successful dribbles, %"),
+        ("Creation", "xA per 90"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "Key passes per 90"),
+        ("Final Third", "Touches in box per 90"),
+        ("Final Third", "Shots per 90"),
+        ("Final Third", "xG per 90"),
+        ("Final Third", "Non-penalty goals per 90"),
+        ("Final Third", "Successful attacking actions per 90"),
+    ],
+    "Playmaker #10": [
+        ("Ball Progression", "Progressive passes per 90"),
+        ("Ball Progression", "Accurate progressive passes, %"),
+        ("Ball Progression", "Progressive runs per 90"),
+        ("Chance Creation", "xA per 90"),
+        ("Chance Creation", "Shot assists per 90"),
+        ("Chance Creation", "Key passes per 90"),
+        ("Chance Creation", "Smart passes per 90"),
+        ("Chance Creation", "Deep completions per 90"),
+        ("Final-Third Distribution", "Passes to final third per 90"),
+        ("Final-Third Distribution", "Passes to penalty area per 90"),
+        ("Final-Third Distribution", "Through passes per 90"),
+        ("Attacking Threat", "Touches in box per 90"),
+        ("Attacking Threat", "Shots per 90"),
+        ("Attacking Threat", "xG per 90"),
+        ("Attacking Threat", "Successful attacking actions per 90"),
+    ],
+
+    # 🌊 FULL-BACKS / WING-BACKS
+    "Full-Back": [
+        ("Defending", "Successful defensive actions per 90"),
+        ("Defending", "Defensive duels per 90"),
+        ("Defending", "Defensive duels won, %"),
+        ("Defending", "PAdj Interceptions"),
+        ("Defending", "Aerial duels won, %"),
+        ("Progression", "Progressive runs per 90"),
+        ("Progression", "Progressive passes per 90"),
+        ("Progression", "Forward passes per 90"),
+        ("Progression", "Accelerations per 90"),
         ("Delivery", "Crosses per 90"),
         ("Delivery", "Accurate crosses, %"),
         ("Delivery", "Crosses to goalie box per 90"),
+        ("Creation", "Passes to penalty area per 90"),
         ("Creation", "Shot assists per 90"),
         ("Creation", "xA per 90"),
+    ],
+    "Wing-Back": [
+        ("Running / Progression", "Progressive runs per 90"),
+        ("Running / Progression", "Accelerations per 90"),
+        ("Running / Progression", "Dribbles per 90"),
+        ("Running / Progression", "Successful dribbles, %"),
+        ("Delivery", "Crosses per 90"),
+        ("Delivery", "Accurate crosses, %"),
+        ("Delivery", "Crosses to goalie box per 90"),
+        ("Delivery", "Passes to penalty area per 90"),
+        ("Creation / Threat", "Shot assists per 90"),
+        ("Creation / Threat", "xA per 90"),
+        ("Creation / Threat", "Touches in box per 90"),
+        ("Creation / Threat", "Successful attacking actions per 90"),
+        ("Defending", "Defensive duels per 90"),
         ("Defending", "Defensive duels won, %"),
+        ("Defending", "PAdj Interceptions"),
     ],
     "Inverted Full-Back": [
         ("Build-Up", "Received passes per 90"),
         ("Build-Up", "Passes per 90"),
         ("Build-Up", "Accurate passes, %"),
+        ("Build-Up", "Forward passes per 90"),
         ("Progression", "Progressive passes per 90"),
         ("Progression", "Accurate progressive passes, %"),
         ("Progression", "Passes to final third per 90"),
-        ("Carrying", "Progressive runs per 90"),
-        ("Defending", "PAdj Interceptions"),
-        ("Defending", "Defensive duels per 90"),
-        ("Defending", "Defensive duels won, %"),
+        ("Progression", "Progressive runs per 90"),
+        ("Central Creation", "Smart passes per 90"),
+        ("Central Creation", "xA per 90"),
+        ("Defensive Control", "PAdj Interceptions"),
+        ("Defensive Control", "Defensive duels per 90"),
+        ("Defensive Control", "Defensive duels won, %"),
+        ("Defensive Control", "Successful defensive actions per 90"),
+        ("Defensive Control", "Interceptions per 90"),
     ],
+
+    # ⚡ WINGERS
     "Classic Winger": [
         ("1v1", "Dribbles per 90"),
         ("1v1", "Successful dribbles, %"),
+        ("1v1", "Offensive duels per 90"),
         ("1v1", "Offensive duels won, %"),
-        ("Progression", "Progressive runs per 90"),
-        ("Progression", "Accelerations per 90"),
+        ("Running", "Progressive runs per 90"),
+        ("Running", "Accelerations per 90"),
         ("Delivery", "Crosses per 90"),
         ("Delivery", "Accurate crosses, %"),
+        ("Delivery", "Crosses to goalie box per 90"),
+        ("Delivery", "Passes to penalty area per 90"),
         ("Creation", "Shot assists per 90"),
         ("Creation", "xA per 90"),
-        ("Creation", "Passes to penalty area per 90"),
+        ("Creation", "Key passes per 90"),
+        ("Threat", "Touches in box per 90"),
+        ("Threat", "Successful attacking actions per 90"),
     ],
     "Inverted Winger": [
         ("Scoring", "Non-penalty goals per 90"),
         ("Scoring", "xG per 90"),
         ("Scoring", "Shots per 90"),
+        ("Scoring", "Shots on target, %"),
+        ("Scoring", "Goal conversion, %"),
         ("Box Threat", "Touches in box per 90"),
         ("1v1 / Carrying", "Dribbles per 90"),
         ("1v1 / Carrying", "Successful dribbles, %"),
         ("1v1 / Carrying", "Progressive runs per 90"),
+        ("1v1 / Carrying", "Accelerations per 90"),
         ("Creation", "xA per 90"),
         ("Creation", "Shot assists per 90"),
+        ("Creation", "Key passes per 90"),
         ("Creation", "Passes to penalty area per 90"),
+        ("Creation", "Deep completions per 90"),
     ],
+
+    # 🎯 FORWARDS
     "Target Man #9": [
         ("Aerial", "Aerial duels per 90"),
         ("Aerial", "Aerial duels won, %"),
         ("Aerial", "Head goals per 90"),
-        ("Reference Play", "Received long passes per 90"),
-        ("Reference Play", "Received passes per 90"),
-        ("Reference Play", "Fouls suffered per 90"),
+        ("Reference / Link Play", "Received long passes per 90"),
+        ("Reference / Link Play", "Received passes per 90"),
+        ("Reference / Link Play", "Passes per 90"),
+        ("Reference / Link Play", "Accurate passes, %"),
+        ("Reference / Link Play", "Fouls suffered per 90"),
         ("Box Threat", "Touches in box per 90"),
         ("Box Threat", "xG per 90"),
         ("Box Threat", "Shots per 90"),
         ("Box Threat", "Non-penalty goals per 90"),
+        ("Box Threat", "Shots on target, %"),
+        ("Creation", "Shot assists per 90"),
+        ("Creation", "xA per 90"),
     ],
     "Poacher": [
         ("Scoring", "Non-penalty goals per 90"),
@@ -586,45 +687,65 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Scoring", "Goal conversion, %"),
         ("Box Presence", "Touches in box per 90"),
         ("Box Presence", "Received passes per 90"),
-        ("Movement / Threat", "Progressive runs per 90"),
+        ("Box Presence", "Head goals per 90"),
+        ("Movement", "Progressive runs per 90"),
+        ("Movement", "Accelerations per 90"),
         ("Secondary Creation", "xA per 90"),
         ("Secondary Creation", "Shot assists per 90"),
+        ("Secondary Creation", "Key passes per 90"),
+        ("Attack", "Successful attacking actions per 90"),
+        ("Attack", "Offensive duels won, %"),
     ],
     "Pressing Forward": [
         ("Defensive Work", "Successful defensive actions per 90"),
         ("Defensive Work", "Defensive duels per 90"),
         ("Defensive Work", "Defensive duels won, %"),
         ("Defensive Work", "Interceptions per 90"),
+        ("Defensive Work", "PAdj Interceptions"),
         ("Mobility", "Accelerations per 90"),
         ("Mobility", "Progressive runs per 90"),
-        ("Attack", "Touches in box per 90"),
-        ("Attack", "Shots per 90"),
-        ("Attack", "xG per 90"),
-        ("Attack", "Non-penalty goals per 90"),
+        ("Mobility", "Offensive duels per 90"),
+        ("Box Threat", "Touches in box per 90"),
+        ("Box Threat", "Shots per 90"),
+        ("Box Threat", "xG per 90"),
+        ("Box Threat", "Non-penalty goals per 90"),
+        ("Link / Creation", "Received passes per 90"),
+        ("Link / Creation", "Shot assists per 90"),
+        ("Link / Creation", "xA per 90"),
     ],
     "Creative Forward / False 9": [
         ("Link Play", "Received passes per 90"),
         ("Link Play", "Passes per 90"),
         ("Link Play", "Accurate passes, %"),
+        ("Link Play", "Forward passes per 90"),
         ("Creation", "xA per 90"),
         ("Creation", "Shot assists per 90"),
         ("Creation", "Key passes per 90"),
         ("Creation", "Smart passes per 90"),
+        ("Creation", "Deep completions per 90"),
         ("Progression", "Progressive passes per 90"),
+        ("Progression", "Progressive runs per 90"),
         ("Threat", "Touches in box per 90"),
         ("Threat", "xG per 90"),
+        ("Threat", "Shots per 90"),
+        ("Threat", "Non-penalty goals per 90"),
     ],
     "Wide Forward / Inside 9": [
         ("Scoring", "Non-penalty goals per 90"),
         ("Scoring", "xG per 90"),
         ("Scoring", "Shots per 90"),
+        ("Scoring", "Shots on target, %"),
         ("Box Threat", "Touches in box per 90"),
         ("Carrying", "Progressive runs per 90"),
+        ("Carrying", "Accelerations per 90"),
         ("Carrying", "Dribbles per 90"),
         ("Carrying", "Successful dribbles, %"),
+        ("Carrying", "Offensive duels won, %"),
         ("Creation", "xA per 90"),
         ("Creation", "Shot assists per 90"),
+        ("Creation", "Key passes per 90"),
         ("Creation", "Passes to penalty area per 90"),
+        ("Creation", "Deep completions per 90"),
     ],
 }
 
@@ -1174,6 +1295,24 @@ def position_family_mask(series: pd.Series, role_name: str) -> pd.Series:
     return series.apply(matches)
 
 
+def directional_z_against_population(
+    population: pd.Series,
+    player_value: float,
+    lower_is_better: bool = False,
+) -> float:
+    """Directional z-score against the selected benchmark population."""
+    s = pd.to_numeric(population, errors="coerce").dropna()
+    if s.empty or pd.isna(player_value):
+        return np.nan
+    sd = float(s.std(ddof=0))
+    if not np.isfinite(sd) or sd == 0:
+        return 0.0
+    z = (float(player_value) - float(s.mean())) / sd
+    if lower_is_better:
+        z = -z
+    return float(z)
+
+
 def build_single_player_profile(
     player_row: pd.Series,
     benchmark_df: pd.DataFrame,
@@ -1191,12 +1330,18 @@ def build_single_player_profile(
             continue
         metric = resolved[0]
         value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        lower_better = metric in LOWER_IS_BETTER
         pct = percentile_rank_against_population(
             benchmark_df[metric],
             value,
-            lower_is_better=metric in LOWER_IS_BETTER,
+            lower_is_better=lower_better,
         )
-        if pd.isna(value) or pd.isna(pct):
+        z = directional_z_against_population(
+            benchmark_df[metric],
+            value,
+            lower_is_better=lower_better,
+        )
+        if pd.isna(value) or pd.isna(pct) or pd.isna(z):
             continue
         records.append(
             {
@@ -1204,14 +1349,20 @@ def build_single_player_profile(
                 "Metric": metric,
                 "Raw Value": float(value),
                 "Percentile": float(pct),
+                "Z-score": float(z),
             }
         )
 
     return pd.DataFrame(records), sorted(set(missing))
 
 
-def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: str) -> go.Figure:
-    """Circular percentile bar chart. KPI groups use separate Plotly palette colors."""
+def single_player_wheel(
+    profile_df: pd.DataFrame,
+    player_name: str,
+    subtitle: str,
+    scale_mode: str = "Percentile",
+) -> go.Figure:
+    """Circular role profile supporting percentile or directional z-score views."""
     if profile_df.empty:
         return go.Figure()
 
@@ -1221,25 +1372,71 @@ def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: st
 
     labels = profile_df["Metric"].tolist()
     n = len(labels)
-    width = 360.0 / n
-    theta = np.arange(n) * width
+
+    # Keep metrics from the same KPI group together and add a visible gap
+    # between groups without changing the underlying values.
+    group_sequence = profile_df["KPI Group"].tolist()
+    gap_units = 0.38
+    boundaries = sum(
+        1 for i in range(1, n) if group_sequence[i] != group_sequence[i - 1]
+    )
+    unit_width = 360.0 / (n + boundaries * gap_units)
+
+    theta_list = []
+    cursor = 0.0
+    for i in range(n):
+        if i > 0 and group_sequence[i] != group_sequence[i - 1]:
+            cursor += gap_units * unit_width
+        theta_list.append(cursor)
+        cursor += unit_width
+
+    theta = np.array(theta_list, dtype=float)
+    width = unit_width
+
+    if scale_mode == "Percentile":
+        plot_values = profile_df["Percentile"].to_numpy(dtype=float)
+        radial_range = [0, 100]
+        tickvals = [20, 40, 60, 80, 100]
+        ticktext = ["20", "40", "60", "80", "100"]
+        number_text = [f"<b>{int(round(x))}</b>" for x in plot_values]
+        number_r = np.maximum(plot_values - 5, 7)
+    else:
+        # Keep the same familiar -3 to +3 scale as the existing multi-player radar.
+        plot_values = np.clip(profile_df["Z-score"].to_numpy(dtype=float), -3, 3)
+        # Barpolar cannot meaningfully display negative bars around a zero-centred
+        # radial axis, so shift only the bar radius for drawing. Tick labels remain
+        # the true z-score values.
+        plot_values = plot_values + 3.0
+        radial_range = [0, 6]
+        tickvals = [0, 1, 2, 3, 4, 5, 6]
+        ticktext = ["-3", "-2", "-1", "0", "+1", "+2", "+3"]
+        zvals = profile_df["Z-score"].to_numpy(dtype=float)
+        number_text = [f"<b>{x:+.2f}</b>" for x in zvals]
+        number_r = np.clip(plot_values - 0.28, 0.35, 5.75)
 
     fig = go.Figure()
     for group in groups:
         sub = profile_df[profile_df["KPI Group"] == group]
         idx = sub.index.to_list()
-        positions = [profile_df.index.get_loc(i) * width for i in idx]
+        positions = [float(theta[profile_df.index.get_loc(i)]) for i in idx]
+
+        if scale_mode == "Percentile":
+            radii = sub["Percentile"].to_numpy(dtype=float)
+        else:
+            radii = np.clip(sub["Z-score"].to_numpy(dtype=float), -3, 3) + 3.0
+
         custom = np.column_stack(
             [
                 sub["Raw Value"].to_numpy(dtype=float),
                 sub["Percentile"].to_numpy(dtype=float),
+                sub["Z-score"].to_numpy(dtype=float),
                 sub["Metric"].astype(str).to_numpy(),
                 sub["KPI Group"].astype(str).to_numpy(),
             ]
         )
         fig.add_trace(
             go.Barpolar(
-                r=sub["Percentile"].to_list(),
+                r=radii,
                 theta=positions,
                 width=[width * 0.94] * len(sub),
                 name=group,
@@ -1249,22 +1446,22 @@ def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: st
                 opacity=0.92,
                 customdata=custom,
                 hovertemplate=(
-                    "<b>%{customdata[2]}</b><br>"
-                    "KPI: %{customdata[3]}<br>"
+                    "<b>%{customdata[3]}</b><br>"
+                    "KPI: %{customdata[4]}<br>"
                     "Raw value: %{customdata[0]:.2f}<br>"
-                    "Percentile: %{customdata[1]:.0f}<extra></extra>"
+                    "Percentile: %{customdata[1]:.0f}<br>"
+                    "Z-score: %{customdata[2]:+.2f}<extra></extra>"
                 ),
             )
         )
 
-    # Percentile number labels.
     fig.add_trace(
         go.Scatterpolar(
-            r=np.maximum(profile_df["Percentile"].to_numpy(dtype=float) - 5, 7),
+            r=number_r,
             theta=theta,
             mode="text",
-            text=[f"<b>{int(round(x))}</b>" for x in profile_df["Percentile"]],
-            textfont=dict(size=14, color="black"),
+            text=number_text,
+            textfont=dict(size=13, color="black"),
             hoverinfo="skip",
             showlegend=False,
         )
@@ -1272,7 +1469,7 @@ def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: st
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{player_name}</b><br><sup>{subtitle}</sup>",
+            text=f"<b>{player_name}</b><br><sup>{subtitle} | {scale_mode}</sup>",
             x=0.5,
             xanchor="center",
             font=dict(size=22),
@@ -1291,9 +1488,9 @@ def single_player_wheel(profile_df: pd.DataFrame, player_name: str, subtitle: st
         polar=dict(
             bgcolor="white",
             radialaxis=dict(
-                range=[0, 100],
-                tickvals=[20, 40, 60, 80, 100],
-                ticktext=["20", "40", "60", "80", "100"],
+                range=radial_range,
+                tickvals=tickvals,
+                ticktext=ticktext,
                 gridcolor="rgba(120,120,120,0.20)",
                 showline=False,
             ),
@@ -1811,9 +2008,9 @@ if comparison_mode == "Multi-Player Radar":
         st.info("Select players above to compare their stats and see a radar chart.")
 
 else:
-    st.markdown("#### Single-Player Percentile Profile")
+    st.markdown("#### Single-Player Role Profile — 15 Metrics")
     st.caption(
-        "Percentiles are direction-aware and calculated against a position-relevant benchmark. "
+        "The 15 role metrics are grouped by KPI family. Percentiles and z-scores are direction-aware and calculated against the selected benchmark. "
         "The weighted recruitment profile score is not changed by this visualization."
     )
 
@@ -1849,6 +2046,14 @@ else:
             player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
             player_rows = player_rows.sort_values("_single_minutes", ascending=False)
         player_row = player_rows.iloc[0]
+
+        scale_mode = st.radio(
+            "Performance scale",
+            ["Percentile", "Z-score"],
+            horizontal=True,
+            key="single_profile_scale",
+            help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean and is direction-aware.",
+        )
 
         benchmark_mode = st.radio(
             "Benchmark population",
@@ -1924,12 +2129,14 @@ else:
                 profile_df=profile_df.reset_index(drop=True),
                 player_name=single_player,
                 subtitle=subtitle,
+                scale_mode=scale_mode,
             )
             st.plotly_chart(fig_single, use_container_width=True)
 
             profile_table = profile_df.copy()
             profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
             profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
+            profile_table["Z-score"] = profile_table["Z-score"].round(2)
             st.dataframe(profile_table, use_container_width=True, hide_index=True)
 
             csv_single = StringIO()
