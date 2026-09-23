@@ -2396,7 +2396,9 @@ if comparison_mode == "Multi-Player Radar":
         st.dataframe(table_for_display, use_container_width=True)
 
         # Conventional overlaid radar remains best for comparing multiple players.
-        # The geometry is NOT weighted: every role dimension is shown equally.
+        # KPI groups from the canonical role definition are added as perimeter
+        # annotations plus separator spokes so the structure matches the
+        # single-player role profile without distorting player polygons.
         theta_labels = [radar_display_aliases.get(m, m) for m in comp_metrics]
         fig_radar = go.Figure()
 
@@ -2430,6 +2432,39 @@ if comparison_mode == "Multi-Player Radar":
                 )
             )
 
+        # Build contiguous KPI spans from the selected profile's canonical metric order.
+        kpi_spans = []
+        if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+            ordered_kpis = [radar_kpi_lookup.get(m, "") for m in comp_metrics]
+            if ordered_kpis:
+                span_start = 0
+                current_kpi = ordered_kpis[0]
+                for i in range(1, len(ordered_kpis) + 1):
+                    next_kpi = ordered_kpis[i] if i < len(ordered_kpis) else None
+                    if next_kpi != current_kpi:
+                        kpi_spans.append((current_kpi, span_start, i - 1))
+                        if i < len(ordered_kpis):
+                            span_start = i
+                            current_kpi = next_kpi
+
+        # Separator spokes at KPI boundaries. These are visual guides only.
+        n_axes = len(theta_labels)
+        if n_axes and kpi_spans:
+            for _kpi, span_start, _span_end in kpi_spans:
+                # Boundary lies halfway between the preceding and first axis of the group.
+                boundary_deg = ((span_start - 0.5) * 360.0 / n_axes) % 360.0
+                fig_radar.add_trace(
+                    go.Scatterpolar(
+                        r=[-2.0, 2.0],
+                        theta=[boundary_deg, boundary_deg],
+                        mode="lines",
+                        line=dict(width=2, dash="dot"),
+                        opacity=0.45,
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+
         radar_title = (
             f"{selected_radar_profile} — Multi-Player Role Comparison"
             if selected_radar_profile
@@ -2445,17 +2480,68 @@ if comparison_mode == "Multi-Player Radar":
                     tickvals=[-2, -1, 0, 1, 2],
                     ticktext=["-2", "-1", "0", "+1", "+2"],
                 ),
-                angularaxis=dict(tickfont=dict(size=11)),
+                angularaxis=dict(
+                    tickfont=dict(size=11),
+                    direction="clockwise",
+                    rotation=90,
+                ),
             ),
             showlegend=True,
             template="plotly_white",
-            height=720,
-            margin=dict(l=70, r=70, t=90, b=70),
+            height=800,
+            margin=dict(l=115, r=115, t=135, b=115),
         )
+
+        # KPI labels around the perimeter, positioned at the midpoint of each
+        # contiguous KPI span. Paper coordinates keep them outside the metric labels.
+        if n_axes and kpi_spans:
+            import math
+            for kpi_name, span_start, span_end in kpi_spans:
+                if not kpi_name:
+                    continue
+                mid_index = (span_start + span_end) / 2.0
+                # Plotly angular axis starts at the configured rotation (90°)
+                # and moves clockwise.
+                angle_deg = 90.0 - (mid_index * 360.0 / n_axes)
+                angle_rad = math.radians(angle_deg)
+
+                radius = 0.60
+                x = 0.5 + radius * math.cos(angle_rad)
+                y = 0.5 + radius * math.sin(angle_rad)
+
+                # Anchor text away from the chart for cleaner perimeter placement.
+                if x > 0.56:
+                    xanchor = "left"
+                elif x < 0.44:
+                    xanchor = "right"
+                else:
+                    xanchor = "center"
+
+                if y > 0.56:
+                    yanchor = "bottom"
+                elif y < 0.44:
+                    yanchor = "top"
+                else:
+                    yanchor = "middle"
+
+                fig_radar.add_annotation(
+                    x=x,
+                    y=y,
+                    xref="paper",
+                    yref="paper",
+                    text=f"<b>{kpi_name}</b>",
+                    showarrow=False,
+                    xanchor=xanchor,
+                    yanchor=yanchor,
+                    font=dict(size=13),
+                    bgcolor="rgba(255,255,255,0.82)",
+                    borderpad=3,
+                )
+
         st.plotly_chart(fig_radar, use_container_width=True)
 
         st.caption(
-            "Radar geometry is unweighted: all selected dimensions are shown equally. "
+            "Radar geometry is unweighted: all 15 role dimensions are shown equally. KPI labels and separator spokes follow the same canonical groups as the single-player profile. "
             "Built-in Profile Score uses the reviewed default weights. Z-scores are direction-aware "
             "and benchmarked against the current filtered player population."
         )
