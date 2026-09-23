@@ -2195,7 +2195,6 @@ comparison_mode = st.radio(
 )
 
 if comparison_mode == "Multi-Player Radar":
-    # Existing comparison logic preserved.
     player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
     compare_players = st.multiselect(
         "Players to compare (max 5 recommended)",
@@ -2204,8 +2203,67 @@ if comparison_mode == "Multi-Player Radar":
         key="multi_compare_players",
     )
 
-    if compare_players and "Player" in filtered.columns:
+    # Keep the multi-player comparison tied to the same canonical role framework
+    # as the weighted Profile Score and single-player radar.
+    active_builtin_profile = None
+    if active and isinstance(active.get("calc_col"), str):
+        active_label = str(active.get("calc_col"))
+        if active_label.startswith("Score: "):
+            candidate = active_label.replace("Score: ", "", 1)
+            if candidate in PROFILES:
+                active_builtin_profile = candidate
+
+    radar_metric_mode = st.radio(
+        "Radar metric mode",
+        ["Profile metrics", "Custom metrics"],
+        horizontal=True,
+        key="multi_radar_metric_mode",
+    )
+
+    comp_metric_choices = get_numeric_columns(filtered)
+    selected_radar_profile = None
+    radar_kpi_lookup: Dict[str, str] = {}
+
+    if radar_metric_mode == "Profile metrics":
+        profile_names = list(PROFILES.keys())
+        default_profile_index = profile_names.index(active_builtin_profile) if active_builtin_profile in profile_names else 0
+        selected_radar_profile = st.selectbox(
+            "Comparison profile",
+            options=profile_names,
+            index=default_profile_index,
+            key="multi_radar_profile",
+            help="Uses the same 15 metrics as the selected built-in Profile Score and single-player role profile.",
+        )
+
+        requested_compare_metrics = PROFILES[selected_radar_profile]
+        comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
+            requested_compare_metrics,
+            filtered.columns.tolist(),
+        )
+        radar_kpi_lookup = {
+            metric: kpi for kpi, metric in SINGLE_PLAYER_PROFILES[selected_radar_profile]
+        }
+
+        st.caption(
+            f"{selected_radar_profile}: {len(comp_metrics)} of 15 profile metrics available. "
+            "The radar uses direction-aware z-scores against the current filtered player population."
+        )
+        if missing_compare_metrics:
+            st.warning("Missing profile metrics: " + ", ".join(missing_compare_metrics))
+    else:
+        default_custom_metrics = [m for m in profile_metrics_in_use if m in comp_metric_choices]
+        if not default_custom_metrics:
+            default_custom_metrics = comp_metric_choices[: min(6, len(comp_metric_choices))]
+        comp_metrics = st.multiselect(
+            "Custom metrics for comparison table & radar",
+            options=comp_metric_choices,
+            default=default_custom_metrics,
+            key="multi_compare_custom_metrics",
+        )
+
+    if compare_players and "Player" in filtered.columns and comp_metrics:
         comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
+
         # If a player has more than one row after filtering, keep the row with most minutes.
         if "Minutes played" in comp_rows.columns:
             comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
@@ -2213,93 +2271,215 @@ if comparison_mode == "Multi-Player Radar":
             comp_rows = comp_rows.drop(columns="_cmp_minutes")
         else:
             comp_rows = comp_rows.drop_duplicates("Player")
+
         comp_df = comp_rows.set_index("Player")
+        available_players = [p for p in compare_players if p in comp_df.index]
 
-        comp_metric_choices = get_numeric_columns(filtered)
-        default_comp = [m for m in profile_metrics_in_use if m in comp_metric_choices]
-        if calc_col_name and calc_col_name in comp_metric_choices:
-            default_comp = [calc_col_name] + default_comp
+        # Raw-value comparison table.
+        show_table = comp_df[comp_metrics].copy()
+        for c in show_table.columns:
+            show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
 
-        if not default_comp:
-            fallback = [
-                "Goals per 90",
-                "Assists per 90",
-                "xG per 90",
-                "xA per 90",
-                "Successful defensive actions per 90",
-                "Duels won, %",
-            ]
-            if calc_col_name and calc_col_name in comp_metric_choices:
-                fallback = [calc_col_name] + fallback
-            default_comp = [m for m in fallback if m in comp_metric_choices] or comp_metric_choices[:6]
+        # Benchmark against the same CURRENT FILTERED population used by the
+        # weighted profile score, not against only the selected comparison players.
+        baseX = filtered[comp_metrics].apply(pd.to_numeric, errors="coerce")
+        means = baseX.mean(axis=0)
+        stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
 
-        comp_metrics = st.multiselect(
-            "Metrics for comparison table & radar",
-            options=comp_metric_choices,
-            default=default_comp,
-            key="multi_compare_metrics",
-        )
+        z_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+        for player in available_players:
+            row = show_table.loc[player, comp_metrics]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            row = row.apply(pd.to_numeric, errors="coerce")
+            z = ((row - means) / stds).fillna(0.0)
+            for m in comp_metrics:
+                if m in LOWER_IS_BETTER:
+                    z[m] = -z[m]
+            z_table.loc[player, comp_metrics] = z.values
 
-        if comp_metrics:
-            show_table = comp_df[comp_metrics].copy()
-            for c in show_table.columns:
-                show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+        # For built-in role comparisons, show the default weighted role score
+        # using exactly the same 15 metrics as the radar.
+        profile_score_row = None
+        if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+            default_weight_map = DEFAULT_WEIGHTS[selected_radar_profile]
+            resolved_weight_map: Dict[str, float] = {}
+            for requested_metric, pct in default_weight_map.items():
+                resolved, _missing = resolve_metrics_aliases(
+                    [requested_metric],
+                    filtered.columns.tolist(),
+                )
+                if resolved and resolved[0] in comp_metrics:
+                    resolved_weight_map[resolved[0]] = float(pct)
 
-            st.dataframe(show_table.T, use_container_width=True)
+            total_pct = sum(resolved_weight_map.values())
+            if total_pct > 0:
+                profile_score_row = {}
+                for player in available_players:
+                    z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
+                    score = 0.0
+                    for metric, pct in resolved_weight_map.items():
+                        score += float(z.get(metric, 0.0)) * (pct / total_pct)
+                    profile_score_row[player] = round(score, 2)
 
-            baseX = filtered[comp_metrics].apply(pd.to_numeric, errors="coerce")
-            means = baseX.mean(axis=0)
-            stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
+        # Friendly labels while keeping raw Wyscout columns internally.
+        radar_display_aliases = {
+            "Save rate, %": "Save Rate %",
+            "Prevented goals per 90": "Goals Prevented /90",
+            "Conceded goals per 90": "Goals Conceded /90",
+            "Shots against per 90": "Shots Faced /90",
+            "xG against per 90": "xGA /90",
+            "Exits per 90": "Exits /90",
+            "Aerial duels per 90.1": "Aerial Duels /90",
+            "Aerial duels per 90": "Aerial Duels /90",
+            "Aerial duels won, %": "Aerial Duel Win %",
+            "Passes per 90": "Passes /90",
+            "Accurate passes, %": "Pass Accuracy %",
+            "Long passes per 90": "Long Passes /90",
+            "Accurate long passes, %": "Long Pass Accuracy %",
+            "Back passes received as GK per 90": "GK Back Passes /90",
+            "Forward passes per 90": "Forward Passes /90",
+            "Accurate forward passes, %": "Forward Pass Accuracy %",
+            "Progressive passes per 90": "Progressive Passes /90",
+            "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+            "Passes to final third per 90": "Final Third Passes /90",
+            "Received passes per 90": "Passes Received /90",
+            "Progressive runs per 90": "Progressive Runs /90",
+            "Interceptions per 90": "Interceptions /90",
+            "PAdj Interceptions": "PAdj Interceptions",
+            "Successful defensive actions per 90": "Defensive Actions /90",
+            "Defensive duels per 90": "Defensive Duels /90",
+            "Defensive duels won, %": "Defensive Duel Win %",
+            "PAdj Sliding tackles": "PAdj Sliding Tackles",
+            "Sliding tackles per 90": "Sliding Tackles /90",
+            "Shots blocked per 90": "Shots Blocked /90",
+            "Fouls per 90": "Fouls /90",
+            "Yellow cards per 90": "Yellow Cards /90",
+            "Dribbles per 90": "Dribbles /90",
+            "Successful dribbles, %": "Dribble Success %",
+            "Accelerations per 90": "Accelerations /90",
+            "Crosses per 90": "Crosses /90",
+            "Accurate crosses, %": "Cross Accuracy %",
+            "Crosses to goalie box per 90": "Box Crosses /90",
+            "Passes to penalty area per 90": "Penalty Area Passes /90",
+            "Shot assists per 90": "Shot Assists /90",
+            "xA per 90": "xA /90",
+            "xG per 90": "xG /90",
+            "Shots per 90": "Shots /90",
+            "Touches in box per 90": "Box Touches /90",
+            "Non-penalty goals per 90": "Non-Penalty Goals /90",
+            "Successful attacking actions per 90": "Attacking Actions /90",
+            "Smart passes per 90": "Smart Passes /90",
+            "Key passes per 90": "Key Passes /90",
+            "Deep completions per 90": "Deep Completions /90",
+            "Through passes per 90": "Through Passes /90",
+            "Offensive duels per 90": "Offensive Duels /90",
+            "Offensive duels won, %": "Offensive Duel Win %",
+            "Goal conversion, %": "Goal Conversion %",
+            "Shots on target, %": "Shots on Target %",
+            "Head goals per 90": "Headed Goals /90",
+            "Received long passes per 90": "Long Passes Received /90",
+            "Fouls suffered per 90": "Fouls Won /90",
+        }
 
-            theta = comp_metrics
-            fig_radar = go.Figure()
-            for player in compare_players:
-                if player not in show_table.index:
-                    continue
-                row = show_table.loc[player, comp_metrics]
-                if isinstance(row, pd.DataFrame):
-                    row = row.iloc[0]
-                row = row.apply(pd.to_numeric, errors="coerce")
-                z = ((row - means) / stds).fillna(0.0)
+        table_for_display = show_table.copy()
+        table_for_display.index.name = None
+        table_for_display = table_for_display.rename(columns=radar_display_aliases).T
 
-                for m in theta:
-                    if m in LOWER_IS_BETTER:
-                        z[m] = -z[m]
+        if profile_score_row is not None:
+            score_df = pd.DataFrame(
+                {player: [profile_score_row.get(player, np.nan)] for player in available_players},
+                index=[f"Profile Score: {selected_radar_profile}"],
+            )
+            table_for_display = pd.concat([score_df, table_for_display], axis=0)
 
-                r = z.to_list()
-                if not r:
-                    continue
-                fig_radar.add_trace(
-                    go.Scatterpolar(
-                        r=r + [r[0]],
-                        theta=theta + [theta[0]],
-                        fill="toself",
-                        name=player,
-                        text=[f"{player}: z={val:.2f}" for val in r] + [f"{player}: z={r[0]:.2f}"],
-                        hoverinfo="text",
-                    )
+        st.dataframe(table_for_display, use_container_width=True)
+
+        # Conventional overlaid radar remains best for comparing multiple players.
+        # The geometry is NOT weighted: every role dimension is shown equally.
+        theta_labels = [radar_display_aliases.get(m, m) for m in comp_metrics]
+        fig_radar = go.Figure()
+
+        for player in available_players:
+            z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
+            raw_values = pd.to_numeric(show_table.loc[player, comp_metrics], errors="coerce")
+
+            # Match the single-player z-score display range while preserving
+            # uncapped values in hover text.
+            plotted = z.clip(lower=-2.0, upper=2.0).to_list()
+            if not plotted:
+                continue
+
+            hover_text = []
+            for metric, label, raw, zval in zip(comp_metrics, theta_labels, raw_values, z):
+                kpi = radar_kpi_lookup.get(metric)
+                kpi_text = f"<br>KPI: {kpi}" if kpi else ""
+                raw_text = "n/a" if pd.isna(raw) else f"{float(raw):.2f}"
+                hover_text.append(
+                    f"{player}<br>{label}{kpi_text}<br>Raw: {raw_text}<br>Z-score: {float(zval):+.2f}"
                 )
 
-            fig_radar.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[-3, 3])),
-                showlegend=True,
-                template="plotly_white",
-                height=640,
+            fig_radar.add_trace(
+                go.Scatterpolar(
+                    r=plotted + [plotted[0]],
+                    theta=theta_labels + [theta_labels[0]],
+                    fill="toself",
+                    name=player,
+                    text=hover_text + [hover_text[0]],
+                    hoverinfo="text",
+                )
             )
-            st.plotly_chart(fig_radar, use_container_width=True)
 
-            csv_buf2 = StringIO()
-            show_table[comp_metrics].to_csv(csv_buf2)
-            st.download_button(
-                "⬇️ Download comparison (CSV)",
-                data=csv_buf2.getvalue(),
-                file_name="player_comparison.csv",
-                mime="text/csv",
+        radar_title = (
+            f"{selected_radar_profile} — Multi-Player Role Comparison"
+            if selected_radar_profile
+            else "Multi-Player Custom Metric Comparison"
+        )
+
+        fig_radar.update_layout(
+            title=radar_title,
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[-2, 2],
+                    tickvals=[-2, -1, 0, 1, 2],
+                    ticktext=["-2", "-1", "0", "+1", "+2"],
+                ),
+                angularaxis=dict(tickfont=dict(size=11)),
+            ),
+            showlegend=True,
+            template="plotly_white",
+            height=720,
+            margin=dict(l=70, r=70, t=90, b=70),
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+        st.caption(
+            "Radar geometry is unweighted: all selected dimensions are shown equally. "
+            "Built-in Profile Score uses the reviewed default weights. Z-scores are direction-aware "
+            "and benchmarked against the current filtered player population."
+        )
+
+        csv_export = show_table.copy()
+        if profile_score_row is not None:
+            csv_export.insert(
+                0,
+                f"Profile Score: {selected_radar_profile}",
+                pd.Series(profile_score_row),
             )
-        else:
-            st.info("Select metrics to compare players.")
+        csv_buf2 = StringIO()
+        csv_export.to_csv(csv_buf2)
+        st.download_button(
+            "⬇️ Download comparison (CSV)",
+            data=csv_buf2.getvalue(),
+            file_name="player_comparison.csv",
+            mime="text/csv",
+        )
+
+    elif compare_players and not comp_metrics:
+        st.info("No valid comparison metrics are available for the selected profile.")
     else:
-        st.info("Select players above to compare their stats and see a radar chart.")
+        st.info("Select players above to compare their stats and see the role radar.")
 
 else:
     st.markdown("#### Single-Player Role Profile")
@@ -2309,8 +2489,8 @@ else:
             + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
         )
     st.caption(
-        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. The wheel is descriptive and remains separate from the weighted Profile Score. Percentiles and z-scores use the same benchmark and are direction-aware. "
-        "The weighted recruitment profile score is not changed by this visualization."
+        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
+        "Built-in Profile Scores use these same 15 role metrics with reviewed weights; the wheel itself remains unweighted. Percentiles and z-scores are direction-aware."
     )
 
     # Use the current season/league/minutes universe as the benchmark source,
