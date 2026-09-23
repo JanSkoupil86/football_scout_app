@@ -2020,39 +2020,32 @@ def multi_player_profile_wheel(
         borderpad=8,
     )
 
-    fig.add_annotation(
-        x=0.5, y=-0.055,
-        xref="paper", yref="paper",
-        text="Z-score: −2 to +2 · 0 = benchmark mean",
-        showarrow=False,
-        xanchor="center",
-        yanchor="top",
-        font=dict(size=10, color="#6B7785"),
-    )
+
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{profile_name}</b><br><sup>Multi-Player Role Comparison</sup>",
+            text=f"<b>{profile_name}</b> — Multi-Player Role Comparison",
             x=0.5,
             xanchor="center",
-            y=0.995,
+            y=0.998,
             font=dict(size=22, color="#17202A"),
         ),
         template="plotly_white",
-        height=900,
-        margin=dict(l=105, r=105, t=185, b=95),
+        height=1020,
+        margin=dict(l=45, r=45, t=125, b=35),
         paper_bgcolor="white",
         plot_bgcolor="white",
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.105,
+            y=1.055,
             xanchor="center",
             x=0.5,
             title_text="",
             font=dict(size=12),
         ),
         polar=dict(
+            domain=dict(x=[0.03, 0.97], y=[0.02, 0.94]),
             bgcolor="white",
             radialaxis=dict(range=[0, 93], visible=False),
             angularaxis=dict(
@@ -2062,7 +2055,7 @@ def multi_player_profile_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=12, color="#566270"),
+                tickfont=dict(size=13, color="#566270"),
                 showline=False,
             ),
         ),
@@ -2075,7 +2068,7 @@ def multi_player_profile_wheel(
         f"<span style='color:{group_colors[g]}'><b>■ {g}</b></span>" for g in groups
     )
     fig.add_annotation(
-        x=0.5, y=1.035,
+        x=0.5, y=1.005,
         xref="paper", yref="paper",
         text=kpi_text,
         showarrow=False,
