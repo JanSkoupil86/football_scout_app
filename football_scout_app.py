@@ -427,7 +427,7 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Progression", "Progressive runs per 90"),
         ("Range", "Long passes per 90"),
         ("Range", "Accurate long passes, %"),
-        ("Defending", "Interceptions per 90"),
+        ("Defending", "PAdj Interceptions"),
         ("Defending", "Defensive duels per 90"),
         ("Defending", "Defensive duels won, %"),
         ("Defending", "Aerial duels won, %"),
@@ -503,23 +503,6 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Mobility / Security", "Progressive runs per 90"),
         ("Mobility / Security", "Aerial duels won, %"),
     ],
-    "Attacking Midfielder #8": [
-        ("Progression", "Progressive passes per 90"),
-        ("Progression", "Accurate progressive passes, %"),
-        ("Progression", "Progressive runs per 90"),
-        ("Progression", "Passes to final third per 90"),
-        ("Creation", "xA per 90"),
-        ("Creation", "Key passes per 90"),
-        ("Creation", "Shot assists per 90"),
-        ("Creation", "Smart passes per 90"),
-        ("Final Third", "Shots per 90"),
-        ("Final Third", "Touches in box per 90"),
-        ("Final Third", "Passes to penalty area per 90"),
-        ("Final Third", "xG per 90"),
-        ("Defending", "Interceptions per 90"),
-        ("Defending", "Defensive duels won, %"),
-        ("Attack", "Successful attacking actions per 90"),
-    ],
     "Deep-Lying Playmaker": [
         ("Involvement", "Received passes per 90"),
         ("Involvement", "Passes per 90"),
@@ -552,7 +535,7 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Final Third", "Shots per 90"),
         ("Final Third", "xG per 90"),
         ("Final Third", "Non-penalty goals per 90"),
-        ("Final Third", "Successful attacking actions per 90"),
+        ("Involvement", "Received passes per 90"),
     ],
     "Playmaker #10": [
         ("Ball Progression", "Progressive passes per 90"),
@@ -692,7 +675,7 @@ SINGLE_PLAYER_PROFILES: Dict[str, List[Tuple[str, str]]] = {
         ("Movement", "Accelerations per 90"),
         ("Secondary Creation", "xA per 90"),
         ("Secondary Creation", "Shot assists per 90"),
-        ("Secondary Creation", "Key passes per 90"),
+        ("Movement", "Received long passes per 90"),
         ("Attack", "Successful attacking actions per 90"),
         ("Attack", "Offensive duels won, %"),
     ],
@@ -2203,7 +2186,7 @@ else:
             + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
         )
     st.caption(
-        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. Percentiles and z-scores use the same benchmark and are direction-aware. "
+        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. The wheel is descriptive and remains separate from the weighted Profile Score. Percentiles and z-scores use the same benchmark and are direction-aware. "
         "The weighted recruitment profile score is not changed by this visualization."
     )
 
