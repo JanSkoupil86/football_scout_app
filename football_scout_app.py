@@ -2032,20 +2032,20 @@ def multi_player_profile_wheel(
         ),
         template="plotly_white",
         height=1020,
-        margin=dict(l=45, r=45, t=125, b=35),
+        margin=dict(l=45, r=45, t=145, b=30),
         paper_bgcolor="white",
         plot_bgcolor="white",
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.055,
+            y=1.035,
             xanchor="center",
             x=0.5,
             title_text="",
             font=dict(size=12),
         ),
         polar=dict(
-            domain=dict(x=[0.03, 0.97], y=[0.02, 0.94]),
+            domain=dict(x=[0.03, 0.97], y=[0.015, 0.915]),
             bgcolor="white",
             radialaxis=dict(range=[0, 93], visible=False),
             angularaxis=dict(
@@ -2068,13 +2068,13 @@ def multi_player_profile_wheel(
         f"<span style='color:{group_colors[g]}'><b>■ {g}</b></span>" for g in groups
     )
     fig.add_annotation(
-        x=0.5, y=1.005,
+        x=0.5, y=0.982,
         xref="paper", yref="paper",
         text=kpi_text,
         showarrow=False,
         xanchor="center",
         yanchor="bottom",
-        font=dict(size=11),
+        font=dict(size=13)
     )
 
     return fig
