@@ -34,13 +34,7 @@ Files:
 - Raw role-metric table with KPI, raw value, z-score, percentile and weight.
 - No qualitative fit labels or separate scoring model.
 
-## Navigation update
-The app now exposes five sidebar workspaces:
-- Players
-- Compare
-- Single Player
-- Multi Player
-- Role Fit
-
-Role Fit is a real workspace rather than a section at the bottom of the app.
-The long profile-weight editor is collapsed under `Advanced profile settings`.
+## Fixed workspace navigation
+Only one main workspace renders at a time. Players no longer renders Player Comparison below the scatter.
+Role Fit is directly selectable in the sidebar. The long profile-weight editor is collapsed under
+Advanced profile settings.
