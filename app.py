@@ -1429,6 +1429,18 @@ def role_fit_detail_wheel(
 # Upload
 # =========================
 st.sidebar.header("Upload")
+# =========================
+# Workspace navigation
+# =========================
+APP_PAGES = ["Players", "Compare", "Single Player", "Multi Player", "Role Fit"]
+app_page = st.sidebar.radio(
+    "Workspace",
+    APP_PAGES,
+    horizontal=False,
+    key="app_workspace",
+)
+st.sidebar.markdown("---")
+
 uploaded = st.sidebar.file_uploader("Upload your Football Data CSV", type=["csv"])
 
 if uploaded is None:
@@ -1568,118 +1580,120 @@ if "Minutes played" in benchmark_source_global.columns:
 # =========================
 # Profile builder
 # =========================
-st.sidebar.header("Player profiles (z-score)")
-if BUILTIN_PROFILE_FRAMEWORK_ISSUES:
-    st.sidebar.error("Built-in profile configuration error: " + " | ".join(BUILTIN_PROFILE_FRAMEWORK_ISSUES))
+with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
+    st.header("Player profiles (z-score)")
+    if BUILTIN_PROFILE_FRAMEWORK_ISSUES:
+        st.error("Built-in profile configuration error: " + " | ".join(BUILTIN_PROFILE_FRAMEWORK_ISSUES))
 
-if st.sidebar.button("Clear active profile"):
-    st.session_state["active_profile"] = None
-    st.rerun()
-
-mode = st.sidebar.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
-
-if mode == "Built-in":
-    profile_name = st.sidebar.selectbox("Choose profile", list(PROFILES.keys()))
-    requested_metrics = PROFILES[profile_name]
-    resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
-
-    preset_key = f"preset::{profile_name}"
-    defaults = defaults_for_resolved(profile_name, resolved_metrics)
-    if preset_key not in st.session_state:
-        st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
-
-    state = st.session_state[preset_key]
-    if state.get("metrics") != resolved_metrics:
-        old_map = {m: int(w) for m, w in zip(state.get("metrics", []), state.get("weights", []))}
-        state = {
-            "metrics": resolved_metrics[:],
-            "weights": [int(old_map.get(m, d)) for m, d in zip(resolved_metrics, defaults)],
-        }
-        st.session_state[preset_key] = state
-
-    if st.sidebar.button("Reset weights to defaults", key=f"reset::{profile_name}"):
-        st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
-        for m, d in zip(resolved_metrics, defaults):
-            st.session_state[safe_widget_key("w", profile_name, m)] = int(d)
+    if st.button("Clear active profile"):
+        st.session_state["active_profile"] = None
         st.rerun()
 
-    weights_pct = []
-    resolved_to_requested = {}
-    for req in requested_metrics:
-        rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
-        if rr:
-            resolved_to_requested[rr[0]] = req
+    mode = st.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
 
-    for kpi, metric_weights in PROFILE_CONFIG[profile_name].items():
-        st.sidebar.markdown(f"**{kpi}**")
-        for requested_metric in metric_weights:
-            rr, _ = resolve_metrics_aliases([requested_metric], filtered_base.columns.tolist())
-            if not rr:
-                continue
-            m = rr[0]
-            default_w = int(DEFAULT_WEIGHTS[profile_name][requested_metric])
-            slider_key = safe_widget_key("w", profile_name, m)
-            if slider_key not in st.session_state:
-                st.session_state[slider_key] = default_w
-            w = st.sidebar.slider(f"{m}", 0, 100, int(st.session_state[slider_key]), 1, key=slider_key)
-            weights_pct.append(int(w))
+    if mode == "Built-in":
+        profile_name = st.selectbox("Choose profile", list(PROFILES.keys()))
+        requested_metrics = PROFILES[profile_name]
+        resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
 
-    total_weight = int(sum(weights_pct))
-    st.sidebar.metric("Total profile weight", f"{total_weight}%")
-    if total_weight != 100:
-        st.sidebar.warning("Weights must total exactly 100% before the profile can be applied.")
+        preset_key = f"preset::{profile_name}"
+        defaults = defaults_for_resolved(profile_name, resolved_metrics)
+        if preset_key not in st.session_state:
+            st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
 
-    if missing_names:
-        st.sidebar.caption("Unavailable metrics: " + ", ".join(missing_names))
+        state = st.session_state[preset_key]
+        if state.get("metrics") != resolved_metrics:
+            old_map = {m: int(w) for m, w in zip(state.get("metrics", []), state.get("weights", []))}
+            state = {
+                "metrics": resolved_metrics[:],
+                "weights": [int(old_map.get(m, d)) for m, d in zip(resolved_metrics, defaults)],
+            }
+            st.session_state[preset_key] = state
 
-    if st.sidebar.button(
-        "Apply profile",
-        key=f"apply::{profile_name}",
-        disabled=(not resolved_metrics or total_weight != 100),
-        type="primary",
-    ):
-        st.session_state["active_profile"] = {
-            "calc_col": f"Score: {profile_name}",
-            "profile_name": profile_name,
-            "metrics": resolved_metrics[:],
-            "weights_pct": [int(x) for x in weights_pct],
-        }
-        st.rerun()
+        if st.button("Reset weights to defaults", key=f"reset::{profile_name}"):
+            st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
+            for m, d in zip(resolved_metrics, defaults):
+                st.session_state[safe_widget_key("w", profile_name, m)] = int(d)
+            st.rerun()
 
-else:
-    custom_name = st.sidebar.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
-    custom_metrics = st.sidebar.multiselect(
-        "Pick metrics to include",
-        options=numeric_cols_base,
-        default=numeric_cols_base[:5],
-    )
-    weights_pct = []
-    if custom_metrics:
-        default_pct = max(1, int(100 / len(custom_metrics)))
-        for m in custom_metrics:
-            weights_pct.append(
-                int(st.sidebar.slider(
-                    m, 0, 100, default_pct, 1,
-                    key=safe_widget_key("w_custom", custom_name, m),
-                ))
-            )
-    custom_total = int(sum(weights_pct))
-    st.sidebar.metric("Total profile weight", f"{custom_total}%")
-    if custom_metrics and custom_total != 100:
-        st.sidebar.warning("Weights must total exactly 100% before the profile can be applied.")
+        weights_pct = []
+        resolved_to_requested = {}
+        for req in requested_metrics:
+            rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
+            if rr:
+                resolved_to_requested[rr[0]] = req
 
-    if st.sidebar.button(
-        "Apply custom profile",
-        disabled=(not custom_metrics or custom_total != 100),
-        type="primary",
-    ):
-        st.session_state["active_profile"] = {
-            "calc_col": f"Score: {custom_name}",
-            "profile_name": None,
-            "metrics": custom_metrics[:],
-            "weights_pct": [int(x) for x in weights_pct],
-        }
-        st.rerun()
+        for kpi, metric_weights in PROFILE_CONFIG[profile_name].items():
+            st.markdown(f"**{kpi}**")
+            for requested_metric in metric_weights:
+                rr, _ = resolve_metrics_aliases([requested_metric], filtered_base.columns.tolist())
+                if not rr:
+                    continue
+                m = rr[0]
+                default_w = int(DEFAULT_WEIGHTS[profile_name][requested_metric])
+                slider_key = safe_widget_key("w", profile_name, m)
+                if slider_key not in st.session_state:
+                    st.session_state[slider_key] = default_w
+                w = st.slider(f"{m}", 0, 100, int(st.session_state[slider_key]), 1, key=slider_key)
+                weights_pct.append(int(w))
+
+        total_weight = int(sum(weights_pct))
+        st.metric("Total profile weight", f"{total_weight}%")
+        if total_weight != 100:
+            st.warning("Weights must total exactly 100% before the profile can be applied.")
+
+        if missing_names:
+            st.caption("Unavailable metrics: " + ", ".join(missing_names))
+
+        if st.button(
+            "Apply profile",
+            key=f"apply::{profile_name}",
+            disabled=(not resolved_metrics or total_weight != 100),
+            type="primary",
+        ):
+            st.session_state["active_profile"] = {
+                "calc_col": f"Score: {profile_name}",
+                "profile_name": profile_name,
+                "metrics": resolved_metrics[:],
+                "weights_pct": [int(x) for x in weights_pct],
+            }
+            st.rerun()
+
+    else:
+        custom_name = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
+        custom_metrics = st.multiselect(
+            "Pick metrics to include",
+            options=numeric_cols_base,
+            default=numeric_cols_base[:5],
+        )
+        weights_pct = []
+        if custom_metrics:
+            default_pct = max(1, int(100 / len(custom_metrics)))
+            for m in custom_metrics:
+                weights_pct.append(
+                    int(st.slider(
+                        m, 0, 100, default_pct, 1,
+                        key=safe_widget_key("w_custom", custom_name, m),
+                    ))
+                )
+        custom_total = int(sum(weights_pct))
+        st.metric("Total profile weight", f"{custom_total}%")
+        if custom_metrics and custom_total != 100:
+            st.warning("Weights must total exactly 100% before the profile can be applied.")
+
+        if st.button(
+            "Apply custom profile",
+            disabled=(not custom_metrics or custom_total != 100),
+            type="primary",
+        ):
+            st.session_state["active_profile"] = {
+                "calc_col": f"Score: {custom_name}",
+                "profile_name": None,
+                "metrics": custom_metrics[:],
+                "weights_pct": [int(x) for x in weights_pct],
+            }
+            st.rerun()
+
 
 # =========================
 # Apply active profile on EVERY rerun (fixes disappearing score)
@@ -1758,792 +1772,1225 @@ else:
 numeric_cols = get_numeric_columns(filtered)
 
 # =========================
-# Top-N table
+# Main workspaces
 # =========================
-st.subheader("Filtered Player Data")
+if app_page == "Players":
+    # =========================
+    # Top-N table
+    # =========================
+    st.subheader("Filtered Player Data")
 
-ID_COLS = [
-    "Season label",
-    "Player",
-    "Team",
-    "League",
-    "Main Position",
-    "Age",
-    "Market value (M€)",
-    "Goals",
-    "Assists",
-    "xG",
-    "xA",
-    "Minutes played",
-]
+    ID_COLS = [
+        "Season label",
+        "Player",
+        "Team",
+        "League",
+        "Main Position",
+        "Age",
+        "Market value (M€)",
+        "Goals",
+        "Assists",
+        "xG",
+        "xA",
+        "Minutes played",
+    ]
 
-exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
-display_options = [c for c in filtered.columns if c not in exclude_cols]
+    exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
+    display_options = [c for c in filtered.columns if c not in exclude_cols]
 
-default_cols = [c for c in ID_COLS if c in filtered.columns]
-if calc_col_name and calc_col_name in filtered.columns:
-    default_cols = default_cols + [calc_col_name]
-    coverage_col = f"{calc_col_name} Coverage %"
-    if coverage_col in filtered.columns:
-        default_cols.append(coverage_col)
-    default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
+    default_cols = [c for c in ID_COLS if c in filtered.columns]
+    if calc_col_name and calc_col_name in filtered.columns:
+        default_cols = default_cols + [calc_col_name]
+        coverage_col = f"{calc_col_name} Coverage %"
+        if coverage_col in filtered.columns:
+            default_cols.append(coverage_col)
+        default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
 
-selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
+    selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
-rank_candidates = [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
-rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
-default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
+    rank_candidates = [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
+    rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
+    default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
 
-if not selected_display_cols:
-    st.info("Please select at least one column to display.")
-elif default_rank is None:
-    st.warning("No numerical columns available to sort Top-N.")
-else:
-    rank_by = st.selectbox(
-        "Sort Top-N rows by",
-        options=numeric_cols,
-        index=numeric_cols.index(default_rank) if default_rank in numeric_cols else 0,
-    )
-    row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
-
-    table_df = filtered.sort_values(by=rank_by, ascending=False).head(row_limit)[selected_display_cols].copy()
-    for c in table_df.select_dtypes(include="number").columns:
-        table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
-
-    st.dataframe(table_df.reset_index(drop=True), use_container_width=True)
-
-# CSV download
-csv_buf = StringIO()
-dl_cols = selected_display_cols if selected_display_cols else default_cols
-filtered[dl_cols].to_csv(csv_buf, index=False)
-st.download_button(
-    "⬇️ Download filtered data (CSV)",
-    data=csv_buf.getvalue(),
-    file_name="filtered_players.csv",
-    mime="text/csv",
-)
-
-# =========================
-# Scatter plot
-# =========================
-st.subheader("Player Performance Visualization")
-
-plot_metrics = [c for c in numeric_cols if c not in {"Age", "Market value"}]
-if not plot_metrics:
-    st.warning("No numerical metrics available for plotting.")
-else:
-    x_default = "Goals per 90" if "Goals per 90" in plot_metrics else plot_metrics[0]
-    if calc_col_name and calc_col_name in plot_metrics:
-        y_default = calc_col_name
-    elif "Assists per 90" in plot_metrics:
-        y_default = "Assists per 90"
+    if not selected_display_cols:
+        st.info("Please select at least one column to display.")
+    elif default_rank is None:
+        st.warning("No numerical columns available to sort Top-N.")
     else:
-        y_default = plot_metrics[1] if len(plot_metrics) > 1 else plot_metrics[0]
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
-    with c2:
-        y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
-    with c3:
-        color_by = st.selectbox(
-            "Color by",
-            options=[o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns],
-            index=0,
+        rank_by = st.selectbox(
+            "Sort Top-N rows by",
+            options=numeric_cols,
+            index=numeric_cols.index(default_rank) if default_rank in numeric_cols else 0,
         )
+        row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
 
-    size_by = st.selectbox(
-        "Size by",
-        options=[o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns],
-        index=1 if "Minutes played" in filtered.columns else 0,
+        table_df = filtered.sort_values(by=rank_by, ascending=False).head(row_limit)[selected_display_cols].copy()
+        for c in table_df.select_dtypes(include="number").columns:
+            table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
+
+        st.dataframe(table_df.reset_index(drop=True), use_container_width=True)
+
+    # CSV download
+    csv_buf = StringIO()
+    dl_cols = selected_display_cols if selected_display_cols else default_cols
+    filtered[dl_cols].to_csv(csv_buf, index=False)
+    st.download_button(
+        "⬇️ Download filtered data (CSV)",
+        data=csv_buf.getvalue(),
+        file_name="filtered_players.csv",
+        mime="text/csv",
     )
 
-    rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
-    sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
-    plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(15, len(filtered)))
+    # =========================
+    # Scatter plot
+    # =========================
+    st.subheader("Player Performance Visualization")
 
-    plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
-
-    if remove_outliers:
-        for ax in [x_axis, y_axis]:
-            s = pd.to_numeric(plot_df[ax], errors="coerce")
-            sd = float(s.std(ddof=0) or 0.0)
-            if sd > 0:
-                z = (s - float(s.mean())) / sd
-                plot_df = plot_df.loc[z.abs() <= 3]
-
-    plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
-    plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
-
-    show_labels = st.checkbox("Show player labels on chart", value=False)
-
-    fig = px.scatter(
-        plot_df,
-        x=x_axis,
-        y=y_axis,
-        hover_name="Player" if "Player" in plot_df.columns else None,
-        color=None if color_by == "None" else color_by,
-        size=None if size_by == "None" else size_by,
-        text=plot_df["Player"] if show_labels and "Player" in plot_df.columns else None,
-        title=f"{y_axis} vs. {x_axis} by Player",
-        template="plotly_white",
-        height=620,
-    )
-
-    fig.update_traces(
-        marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
-        textposition="top center",
-        textfont=dict(size=16, color="black"),
-        hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
-        cliponaxis=False,
-    )
-    fig.update_layout(
-        font=dict(size=14),
-        title_font=dict(size=20),
-        legend=dict(font=dict(size=12)),
-        xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
-        yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================
-# Player comparison visualizations
-# =========================
-st.subheader("Player Comparison")
-
-comparison_mode = st.radio(
-    "Visualization mode",
-    ["Multi-Player Radar", "Single-Player Profile"],
-    horizontal=True,
-    key="comparison_visualization_mode",
-)
-
-if comparison_mode == "Multi-Player Radar":
-    player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
-    compare_players = st.multiselect(
-        "Players to compare (max 5 recommended)",
-        options=player_options,
-        default=[],
-        key="multi_compare_players",
-    )
-
-    # Keep the multi-player comparison tied to the same canonical role framework
-    # as the weighted Profile Score and single-player radar.
-    active_builtin_profile = None
-    if active and isinstance(active.get("calc_col"), str):
-        active_label = str(active.get("calc_col"))
-        if active_label.startswith("Score: "):
-            candidate = active_label.replace("Score: ", "", 1)
-            if candidate in PROFILES:
-                active_builtin_profile = candidate
-
-    radar_metric_mode = st.radio(
-        "Radar metric mode",
-        ["Profile metrics", "Custom metrics"],
-        horizontal=True,
-        key="multi_radar_metric_mode",
-    )
-
-    comp_metric_choices = get_numeric_columns(filtered)
-    selected_radar_profile = None
-    radar_kpi_lookup: Dict[str, str] = {}
-
-    if radar_metric_mode == "Profile metrics":
-        profile_names = list(PROFILES.keys())
-        default_profile_index = profile_names.index(active_builtin_profile) if active_builtin_profile in profile_names else 0
-        selected_radar_profile = st.selectbox(
-            "Comparison profile",
-            options=profile_names,
-            index=default_profile_index,
-            key="multi_radar_profile",
-            help="Uses the same 15 metrics as the selected built-in Profile Score and single-player role profile.",
-        )
-
-        requested_compare_metrics = PROFILES[selected_radar_profile]
-        comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
-            requested_compare_metrics,
-            filtered.columns.tolist(),
-        )
-        radar_kpi_lookup = {
-            metric: kpi for kpi, metric in SINGLE_PLAYER_PROFILES[selected_radar_profile]
-        }
-
-        st.caption(
-            f"{selected_radar_profile}: {len(comp_metrics)} of 15 profile metrics available. "
-            "The radar uses direction-aware z-scores against the current filtered player population."
-        )
-        if missing_compare_metrics:
-            st.warning("Missing profile metrics: " + ", ".join(missing_compare_metrics))
+    plot_metrics = [c for c in numeric_cols if c not in {"Age", "Market value"}]
+    if not plot_metrics:
+        st.warning("No numerical metrics available for plotting.")
     else:
-        default_custom_metrics = [m for m in profile_metrics_in_use if m in comp_metric_choices]
-        if not default_custom_metrics:
-            default_custom_metrics = comp_metric_choices[: min(6, len(comp_metric_choices))]
-        comp_metrics = st.multiselect(
-            "Custom metrics for comparison table & radar",
-            options=comp_metric_choices,
-            default=default_custom_metrics,
-            key="multi_compare_custom_metrics",
-        )
-
-    if compare_players and "Player" in filtered.columns and comp_metrics:
-        comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
-
-        # If a player has more than one row after filtering, keep the row with most minutes.
-        if "Minutes played" in comp_rows.columns:
-            comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
-            comp_rows = comp_rows.sort_values("_cmp_minutes", ascending=False).drop_duplicates("Player")
-            comp_rows = comp_rows.drop(columns="_cmp_minutes")
+        x_default = "Goals per 90" if "Goals per 90" in plot_metrics else plot_metrics[0]
+        if calc_col_name and calc_col_name in plot_metrics:
+            y_default = calc_col_name
+        elif "Assists per 90" in plot_metrics:
+            y_default = "Assists per 90"
         else:
-            comp_rows = comp_rows.drop_duplicates("Player")
+            y_default = plot_metrics[1] if len(plot_metrics) > 1 else plot_metrics[0]
 
-        comp_df = comp_rows.set_index("Player")
-        available_players = [p for p in compare_players if p in comp_df.index]
-
-        # Raw-value comparison table.
-        show_table = comp_df[comp_metrics].copy()
-        for c in show_table.columns:
-            show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
-
-        # Use the same explicit benchmark logic as Profile Score / Single Player.
-        multi_role = selected_radar_profile if radar_metric_mode == "Profile metrics" else None
-        multi_benchmark_df = benchmark_population_for_role(
-            benchmark_source_global,
-            multi_role,
-            benchmark_mode,
-            selected_positions,
-        )
-        if len(multi_benchmark_df) < int(min_benchmark_n):
-            st.warning(
-                f"Multi-player benchmark sample is small ({len(multi_benchmark_df)} players; "
-                f"recommended minimum {int(min_benchmark_n)})."
-            )
-        baseX = multi_benchmark_df[comp_metrics].apply(pd.to_numeric, errors="coerce")
-        means = baseX.mean(axis=0)
-        stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
-
-        z_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
-        for player in available_players:
-            row = show_table.loc[player, comp_metrics]
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-            row = row.apply(pd.to_numeric, errors="coerce")
-            z = ((row - means) / stds).fillna(0.0)
-            for m in comp_metrics:
-                if m in LOWER_IS_BETTER:
-                    z[m] = -z[m]
-            z_table.loc[player, comp_metrics] = z.values
-
-        # Direction-aware percentiles against exactly the same benchmark population.
-        percentile_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
-        for player in available_players:
-            for metric in comp_metrics:
-                value = pd.to_numeric(pd.Series([show_table.loc[player, metric]]), errors="coerce").iloc[0]
-                percentile_table.loc[player, metric] = percentile_rank_against_population(
-                    baseX[metric],
-                    value,
-                    lower_is_better=(metric in LOWER_IS_BETTER),
-                )
-
-        # For built-in role comparisons, show the default weighted role score
-        # using exactly the same 15 metrics as the radar.
-        profile_score_row = None
-        if radar_metric_mode == "Profile metrics" and selected_radar_profile:
-            default_weight_map = DEFAULT_WEIGHTS[selected_radar_profile]
-            resolved_weight_map: Dict[str, float] = {}
-            for requested_metric, pct in default_weight_map.items():
-                resolved, _missing = resolve_metrics_aliases(
-                    [requested_metric],
-                    filtered.columns.tolist(),
-                )
-                if resolved and resolved[0] in comp_metrics:
-                    resolved_weight_map[resolved[0]] = float(pct)
-
-            total_pct = sum(resolved_weight_map.values())
-            if total_pct > 0:
-                profile_score_row = {}
-                for player in available_players:
-                    z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
-                    score = 0.0
-                    for metric, pct in resolved_weight_map.items():
-                        score += float(z.get(metric, 0.0)) * (pct / total_pct)
-                    profile_score_row[player] = round(score, 2)
-
-        # Friendly labels while keeping raw Wyscout columns internally.
-        radar_display_aliases = {
-            "Save rate, %": "Save Rate %",
-            "Prevented goals per 90": "Goals Prevented /90",
-            "Conceded goals per 90": "Goals Conceded /90",
-            "Shots against per 90": "Shots Faced /90",
-            "xG against per 90": "xGA /90",
-            "Exits per 90": "Exits /90",
-            "Aerial duels per 90.1": "Aerial Duels /90",
-            "Aerial duels per 90": "Aerial Duels /90",
-            "Aerial duels won, %": "Aerial Duel Win %",
-            "Passes per 90": "Passes /90",
-            "Accurate passes, %": "Pass Accuracy %",
-            "Long passes per 90": "Long Passes /90",
-            "Accurate long passes, %": "Long Pass Accuracy %",
-            "Back passes received as GK per 90": "GK Back Passes /90",
-            "Forward passes per 90": "Forward Passes /90",
-            "Accurate forward passes, %": "Forward Pass Accuracy %",
-            "Progressive passes per 90": "Progressive Passes /90",
-            "Accurate progressive passes, %": "Progressive Pass Accuracy %",
-            "Passes to final third per 90": "Final Third Passes /90",
-            "Received passes per 90": "Passes Received /90",
-            "Progressive runs per 90": "Progressive Runs /90",
-            "Interceptions per 90": "Interceptions /90",
-            "PAdj Interceptions": "PAdj Interceptions",
-            "Successful defensive actions per 90": "Defensive Actions /90",
-            "Defensive duels per 90": "Defensive Duels /90",
-            "Defensive duels won, %": "Defensive Duel Win %",
-            "PAdj Sliding tackles": "PAdj Sliding Tackles",
-            "Sliding tackles per 90": "Sliding Tackles /90",
-            "Shots blocked per 90": "Shots Blocked /90",
-            "Fouls per 90": "Fouls /90",
-            "Yellow cards per 90": "Yellow Cards /90",
-            "Dribbles per 90": "Dribbles /90",
-            "Successful dribbles, %": "Dribble Success %",
-            "Accelerations per 90": "Accelerations /90",
-            "Crosses per 90": "Crosses /90",
-            "Accurate crosses, %": "Cross Accuracy %",
-            "Crosses to goalie box per 90": "Box Crosses /90",
-            "Passes to penalty area per 90": "Penalty Area Passes /90",
-            "Shot assists per 90": "Shot Assists /90",
-            "xA per 90": "xA /90",
-            "xG per 90": "xG /90",
-            "Shots per 90": "Shots /90",
-            "Touches in box per 90": "Box Touches /90",
-            "Non-penalty goals per 90": "Non-Penalty Goals /90",
-            "Successful attacking actions per 90": "Attacking Actions /90",
-            "Smart passes per 90": "Smart Passes /90",
-            "Key passes per 90": "Key Passes /90",
-            "Deep completions per 90": "Deep Completions /90",
-            "Through passes per 90": "Through Passes /90",
-            "Offensive duels per 90": "Offensive Duels /90",
-            "Offensive duels won, %": "Offensive Duel Win %",
-            "Goal conversion, %": "Goal Conversion %",
-            "Shots on target, %": "Shots on Target %",
-            "Head goals per 90": "Headed Goals /90",
-            "Received long passes per 90": "Long Passes Received /90",
-            "Fouls suffered per 90": "Fouls Won /90",
-        }
-
-        table_for_display = show_table.copy()
-        table_for_display.index.name = None
-        table_for_display = table_for_display.rename(columns=radar_display_aliases).T
-
-        if profile_score_row is not None:
-            score_df = pd.DataFrame(
-                {player: [profile_score_row.get(player, np.nan)] for player in available_players},
-                index=[f"Profile Score: {selected_radar_profile}"],
-            )
-            table_for_display = pd.concat([score_df, table_for_display], axis=0)
-
-        st.dataframe(table_for_display, use_container_width=True)
-
-        comparison_scale = st.radio(
-            "Comparison scale",
-            ["Z-score", "Percentile"],
-            horizontal=True,
-            key="multi_compare_scale",
-            help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
-        )
-        st.caption(
-            f"Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
-            f"N={len(multi_benchmark_df):,}"
-        )
-
-        # Multi-player role wheel: same architecture as the single-player profile.
-        if radar_metric_mode == "Profile metrics" and selected_radar_profile:
-            fig_radar = multi_player_profile_wheel(
-                raw_table=show_table,
-                z_table=z_table,
-                percentile_table=percentile_table,
-                display_scale=comparison_scale,
-                players=available_players,
-                profile_name=selected_radar_profile,
-                metrics=comp_metrics,
-                kpi_lookup=radar_kpi_lookup,
-            )
-        else:
-            # Custom mode has no canonical KPI groups, so use one neutral group.
-            custom_kpi_lookup = {m: "Custom Metrics" for m in comp_metrics}
-            fig_radar = multi_player_profile_wheel(
-                raw_table=show_table,
-                z_table=z_table,
-                percentile_table=percentile_table,
-                display_scale=comparison_scale,
-                players=available_players,
-                profile_name="Custom Metrics",
-                metrics=comp_metrics,
-                kpi_lookup=custom_kpi_lookup,
-            )
-
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-        st.caption(
-            "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
-            "the same 15 metrics, KPI bands, metric order and KPI gaps. Switch between direction-aware Z-score (−2 to +2) "
-            "and Percentile (0–100) using the same current filtered benchmark population. Hover always shows raw value, percentile and z-score. "
-            "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
-        )
-
-        csv_export = show_table.copy()
-        if profile_score_row is not None:
-            csv_export.insert(
-                0,
-                f"Profile Score: {selected_radar_profile}",
-                pd.Series(profile_score_row),
-            )
-        csv_buf2 = StringIO()
-        csv_export.to_csv(csv_buf2)
-        st.download_button(
-            "⬇️ Download comparison (CSV)",
-            data=csv_buf2.getvalue(),
-            file_name="player_comparison.csv",
-            mime="text/csv",
-        )
-
-    elif compare_players and not comp_metrics:
-        st.info("No valid comparison metrics are available for the selected profile.")
-    else:
-        st.info("Select players above to compare their stats and see the role radar.")
-
-else:
-    st.markdown("#### Single-Player Role Profile")
-    if SINGLE_PLAYER_METRIC_POLICY_ISSUES:
-        st.warning(
-            "Single-player profile metric policy issue: "
-            + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
-        )
-    st.caption(
-        "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
-        "Built-in Profile Scores use these same 15 role metrics with reviewed weights; the wheel itself remains unweighted. Percentiles and z-scores are direction-aware."
-    )
-
-    single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
-
-    if not single_player_options:
-        st.info("No players are available for the current filters.")
-    else:
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
-            single_player = st.selectbox(
-                "Player",
-                options=single_player_options,
-                key="single_profile_player",
-            )
+            x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
         with c2:
-            single_role = st.selectbox(
-                "Role / profile",
-                options=list(SINGLE_PLAYER_PROFILES.keys()),
-                key="single_profile_role",
+            y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
+        with c3:
+            color_by = st.selectbox(
+                "Color by",
+                options=[o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns],
+                index=0,
             )
 
-        player_rows = filtered.loc[filtered["Player"] == single_player].copy()
-        if "Minutes played" in player_rows.columns:
-            player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
-            player_rows = player_rows.sort_values("_single_minutes", ascending=False)
-        player_row = player_rows.iloc[0]
-
-        scale_mode = st.radio(
-            "Performance scale",
-            ["Percentile", "Z-score"],
-            horizontal=True,
-            key="single_profile_scale",
-            help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean, displayed from −2 to +2, and is direction-aware.",
+        size_by = st.selectbox(
+            "Size by",
+            options=[o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns],
+            index=1 if "Minutes played" in filtered.columns else 0,
         )
 
-        single_benchmark_choice = st.radio(
-            "Single-player benchmark",
-            ["Use global benchmark", "Same Main Position"],
-            horizontal=True,
-            key="single_benchmark_mode",
+        rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
+        sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
+        plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(15, len(filtered)))
+
+        plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
+
+        if remove_outliers:
+            for ax in [x_axis, y_axis]:
+                s = pd.to_numeric(plot_df[ax], errors="coerce")
+                sd = float(s.std(ddof=0) or 0.0)
+                if sd > 0:
+                    z = (s - float(s.mean())) / sd
+                    plot_df = plot_df.loc[z.abs() <= 3]
+
+        plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
+        plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
+
+        show_labels = st.checkbox("Show player labels on chart", value=False)
+
+        fig = px.scatter(
+            plot_df,
+            x=x_axis,
+            y=y_axis,
+            hover_name="Player" if "Player" in plot_df.columns else None,
+            color=None if color_by == "None" else color_by,
+            size=None if size_by == "None" else size_by,
+            text=plot_df["Player"] if show_labels and "Player" in plot_df.columns else None,
+            title=f"{y_axis} vs. {x_axis} by Player",
+            template="plotly_white",
+            height=620,
         )
 
-        if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
-            player_pos = player_row.get("Main Position")
-            benchmark_df = benchmark_source_global.loc[
-                benchmark_source_global["Main Position"] == player_pos
-            ].copy()
-            benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
+        fig.update_traces(
+            marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
+            textposition="top center",
+            textfont=dict(size=16, color="black"),
+            hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
+            cliponaxis=False,
+        )
+        fig.update_layout(
+            font=dict(size=14),
+            title_font=dict(size=20),
+            legend=dict(font=dict(size=12)),
+            xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+
+elif app_page in ("Compare", "Multi Player"):
+    # =========================
+    # Player comparison visualizations
+    # =========================
+    st.subheader("Multi-Player Comparison" if app_page in ("Compare", "Multi Player") else "Single-Player Profile")
+
+    comparison_mode = "Multi-Player Radar" if app_page in ("Compare", "Multi Player") else "Single-Player Profile"
+
+    if comparison_mode == "Multi-Player Radar":
+        player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+        compare_players = st.multiselect(
+            "Players to compare (max 5 recommended)",
+            options=player_options,
+            default=[],
+            key="multi_compare_players",
+        )
+
+        # Keep the multi-player comparison tied to the same canonical role framework
+        # as the weighted Profile Score and single-player radar.
+        active_builtin_profile = None
+        if active and isinstance(active.get("calc_col"), str):
+            active_label = str(active.get("calc_col"))
+            if active_label.startswith("Score: "):
+                candidate = active_label.replace("Score: ", "", 1)
+                if candidate in PROFILES:
+                    active_builtin_profile = candidate
+
+        radar_metric_mode = st.radio(
+            "Radar metric mode",
+            ["Profile metrics", "Custom metrics"],
+            horizontal=True,
+            key="multi_radar_metric_mode",
+        )
+
+        comp_metric_choices = get_numeric_columns(filtered)
+        selected_radar_profile = None
+        radar_kpi_lookup: Dict[str, str] = {}
+
+        if radar_metric_mode == "Profile metrics":
+            profile_names = list(PROFILES.keys())
+            default_profile_index = profile_names.index(active_builtin_profile) if active_builtin_profile in profile_names else 0
+            selected_radar_profile = st.selectbox(
+                "Comparison profile",
+                options=profile_names,
+                index=default_profile_index,
+                key="multi_radar_profile",
+                help="Uses the same 15 metrics as the selected built-in Profile Score and single-player role profile.",
+            )
+
+            requested_compare_metrics = PROFILES[selected_radar_profile]
+            comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
+                requested_compare_metrics,
+                filtered.columns.tolist(),
+            )
+            radar_kpi_lookup = {
+                metric: kpi for kpi, metric in SINGLE_PLAYER_PROFILES[selected_radar_profile]
+            }
+
+            st.caption(
+                f"{selected_radar_profile}: {len(comp_metrics)} of 15 profile metrics available. "
+                "The radar uses direction-aware z-scores against the current filtered player population."
+            )
+            if missing_compare_metrics:
+                st.warning("Missing profile metrics: " + ", ".join(missing_compare_metrics))
         else:
-            benchmark_df = benchmark_population_for_role(
+            default_custom_metrics = [m for m in profile_metrics_in_use if m in comp_metric_choices]
+            if not default_custom_metrics:
+                default_custom_metrics = comp_metric_choices[: min(6, len(comp_metric_choices))]
+            comp_metrics = st.multiselect(
+                "Custom metrics for comparison table & radar",
+                options=comp_metric_choices,
+                default=default_custom_metrics,
+                key="multi_compare_custom_metrics",
+            )
+
+        if compare_players and "Player" in filtered.columns and comp_metrics:
+            comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
+
+            # If a player has more than one row after filtering, keep the row with most minutes.
+            if "Minutes played" in comp_rows.columns:
+                comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
+                comp_rows = comp_rows.sort_values("_cmp_minutes", ascending=False).drop_duplicates("Player")
+                comp_rows = comp_rows.drop(columns="_cmp_minutes")
+            else:
+                comp_rows = comp_rows.drop_duplicates("Player")
+
+            comp_df = comp_rows.set_index("Player")
+            available_players = [p for p in compare_players if p in comp_df.index]
+
+            # Raw-value comparison table.
+            show_table = comp_df[comp_metrics].copy()
+            for c in show_table.columns:
+                show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+
+            # Use the same explicit benchmark logic as Profile Score / Single Player.
+            multi_role = selected_radar_profile if radar_metric_mode == "Profile metrics" else None
+            multi_benchmark_df = benchmark_population_for_role(
                 benchmark_source_global,
-                single_role,
+                multi_role,
                 benchmark_mode,
                 selected_positions,
             )
-            benchmark_desc = f"{benchmark_mode} · selected leagues · {min_minutes}+ min"
+            if len(multi_benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Multi-player benchmark sample is small ({len(multi_benchmark_df)} players; "
+                    f"recommended minimum {int(min_benchmark_n)})."
+                )
+            baseX = multi_benchmark_df[comp_metrics].apply(pd.to_numeric, errors="coerce")
+            means = baseX.mean(axis=0)
+            stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
 
-        if len(benchmark_df) < int(min_benchmark_n):
-            st.warning(
-                f"Benchmark sample is small ({len(benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
-                "Consider broadening the benchmark."
+            z_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                row = show_table.loc[player, comp_metrics]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                row = row.apply(pd.to_numeric, errors="coerce")
+                z = ((row - means) / stds).fillna(0.0)
+                for m in comp_metrics:
+                    if m in LOWER_IS_BETTER:
+                        z[m] = -z[m]
+                z_table.loc[player, comp_metrics] = z.values
+
+            # Direction-aware percentiles against exactly the same benchmark population.
+            percentile_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                for metric in comp_metrics:
+                    value = pd.to_numeric(pd.Series([show_table.loc[player, metric]]), errors="coerce").iloc[0]
+                    percentile_table.loc[player, metric] = percentile_rank_against_population(
+                        baseX[metric],
+                        value,
+                        lower_is_better=(metric in LOWER_IS_BETTER),
+                    )
+
+            # For built-in role comparisons, show the default weighted role score
+            # using exactly the same 15 metrics as the radar.
+            profile_score_row = None
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                default_weight_map = DEFAULT_WEIGHTS[selected_radar_profile]
+                resolved_weight_map: Dict[str, float] = {}
+                for requested_metric, pct in default_weight_map.items():
+                    resolved, _missing = resolve_metrics_aliases(
+                        [requested_metric],
+                        filtered.columns.tolist(),
+                    )
+                    if resolved and resolved[0] in comp_metrics:
+                        resolved_weight_map[resolved[0]] = float(pct)
+
+                total_pct = sum(resolved_weight_map.values())
+                if total_pct > 0:
+                    profile_score_row = {}
+                    for player in available_players:
+                        z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
+                        score = 0.0
+                        for metric, pct in resolved_weight_map.items():
+                            score += float(z.get(metric, 0.0)) * (pct / total_pct)
+                        profile_score_row[player] = round(score, 2)
+
+            # Friendly labels while keeping raw Wyscout columns internally.
+            radar_display_aliases = {
+                "Save rate, %": "Save Rate %",
+                "Prevented goals per 90": "Goals Prevented /90",
+                "Conceded goals per 90": "Goals Conceded /90",
+                "Shots against per 90": "Shots Faced /90",
+                "xG against per 90": "xGA /90",
+                "Exits per 90": "Exits /90",
+                "Aerial duels per 90.1": "Aerial Duels /90",
+                "Aerial duels per 90": "Aerial Duels /90",
+                "Aerial duels won, %": "Aerial Duel Win %",
+                "Passes per 90": "Passes /90",
+                "Accurate passes, %": "Pass Accuracy %",
+                "Long passes per 90": "Long Passes /90",
+                "Accurate long passes, %": "Long Pass Accuracy %",
+                "Back passes received as GK per 90": "GK Back Passes /90",
+                "Forward passes per 90": "Forward Passes /90",
+                "Accurate forward passes, %": "Forward Pass Accuracy %",
+                "Progressive passes per 90": "Progressive Passes /90",
+                "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+                "Passes to final third per 90": "Final Third Passes /90",
+                "Received passes per 90": "Passes Received /90",
+                "Progressive runs per 90": "Progressive Runs /90",
+                "Interceptions per 90": "Interceptions /90",
+                "PAdj Interceptions": "PAdj Interceptions",
+                "Successful defensive actions per 90": "Defensive Actions /90",
+                "Defensive duels per 90": "Defensive Duels /90",
+                "Defensive duels won, %": "Defensive Duel Win %",
+                "PAdj Sliding tackles": "PAdj Sliding Tackles",
+                "Sliding tackles per 90": "Sliding Tackles /90",
+                "Shots blocked per 90": "Shots Blocked /90",
+                "Fouls per 90": "Fouls /90",
+                "Yellow cards per 90": "Yellow Cards /90",
+                "Dribbles per 90": "Dribbles /90",
+                "Successful dribbles, %": "Dribble Success %",
+                "Accelerations per 90": "Accelerations /90",
+                "Crosses per 90": "Crosses /90",
+                "Accurate crosses, %": "Cross Accuracy %",
+                "Crosses to goalie box per 90": "Box Crosses /90",
+                "Passes to penalty area per 90": "Penalty Area Passes /90",
+                "Shot assists per 90": "Shot Assists /90",
+                "xA per 90": "xA /90",
+                "xG per 90": "xG /90",
+                "Shots per 90": "Shots /90",
+                "Touches in box per 90": "Box Touches /90",
+                "Non-penalty goals per 90": "Non-Penalty Goals /90",
+                "Successful attacking actions per 90": "Attacking Actions /90",
+                "Smart passes per 90": "Smart Passes /90",
+                "Key passes per 90": "Key Passes /90",
+                "Deep completions per 90": "Deep Completions /90",
+                "Through passes per 90": "Through Passes /90",
+                "Offensive duels per 90": "Offensive Duels /90",
+                "Offensive duels won, %": "Offensive Duel Win %",
+                "Goal conversion, %": "Goal Conversion %",
+                "Shots on target, %": "Shots on Target %",
+                "Head goals per 90": "Headed Goals /90",
+                "Received long passes per 90": "Long Passes Received /90",
+                "Fouls suffered per 90": "Fouls Won /90",
+            }
+
+            table_for_display = show_table.copy()
+            table_for_display.index.name = None
+            table_for_display = table_for_display.rename(columns=radar_display_aliases).T
+
+            if profile_score_row is not None:
+                score_df = pd.DataFrame(
+                    {player: [profile_score_row.get(player, np.nan)] for player in available_players},
+                    index=[f"Profile Score: {selected_radar_profile}"],
+                )
+                table_for_display = pd.concat([score_df, table_for_display], axis=0)
+
+            st.dataframe(table_for_display, use_container_width=True)
+
+            comparison_scale = st.radio(
+                "Comparison scale",
+                ["Z-score", "Percentile"],
+                horizontal=True,
+                key="multi_compare_scale",
+                help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
             )
-
-        profile_df, missing_single_metrics = build_single_player_profile(
-            player_row=player_row,
-            benchmark_df=benchmark_df,
-            role_name=single_role,
-        )
-
-        team = str(player_row.get("Team", "")).strip()
-        league = str(player_row.get("League", "")).strip()
-        season = str(player_row.get("Season label", "")).strip()
-        player_position = str(player_row.get("Main Position", "")).strip()
-
-        header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
-
-        info1, info2, info3 = st.columns(3)
-        info1.metric("Benchmark players", f"{len(benchmark_df):,}")
-        info2.metric("Metrics displayed", f"{len(profile_df)}")
-        info3.metric("Role", single_role)
-
-        if missing_single_metrics:
             st.caption(
-                "Unavailable in this dataset and skipped: "
-                + ", ".join(missing_single_metrics)
+                f"Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+                f"N={len(multi_benchmark_df):,}"
             )
 
-        if profile_df.empty:
-            st.warning("None of the selected role metrics contain usable values for this player/benchmark.")
-        else:
-            subtitle_parts = [single_role, benchmark_desc]
-            if season and season.lower() != "none" and season.lower() != "nan":
-                subtitle_parts.append(f"Season {season}")
-            subtitle = " | ".join(subtitle_parts)
+            # Multi-player role wheel: same architecture as the single-player profile.
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name=selected_radar_profile,
+                    metrics=comp_metrics,
+                    kpi_lookup=radar_kpi_lookup,
+                )
+            else:
+                # Custom mode has no canonical KPI groups, so use one neutral group.
+                custom_kpi_lookup = {m: "Custom Metrics" for m in comp_metrics}
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name="Custom Metrics",
+                    metrics=comp_metrics,
+                    kpi_lookup=custom_kpi_lookup,
+                )
 
-            fig_single = single_player_wheel(
-                profile_df=profile_df.reset_index(drop=True),
-                player_name=single_player,
-                subtitle=subtitle,
-                scale_mode=scale_mode,
+            st.plotly_chart(fig_radar, use_container_width=True)
+
+            st.caption(
+                "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
+                "the same 15 metrics, KPI bands, metric order and KPI gaps. Switch between direction-aware Z-score (−2 to +2) "
+                "and Percentile (0–100) using the same current filtered benchmark population. Hover always shows raw value, percentile and z-score. "
+                "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
             )
-            st.plotly_chart(fig_single, use_container_width=True)
 
-            profile_table = profile_df.copy()
-            profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
-            profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
-            profile_table["Z-score"] = profile_table["Z-score"].round(2)
-            st.dataframe(profile_table, use_container_width=True, hide_index=True)
-
-            csv_single = StringIO()
-            profile_table.to_csv(csv_single, index=False)
+            csv_export = show_table.copy()
+            if profile_score_row is not None:
+                csv_export.insert(
+                    0,
+                    f"Profile Score: {selected_radar_profile}",
+                    pd.Series(profile_score_row),
+                )
+            csv_buf2 = StringIO()
+            csv_export.to_csv(csv_buf2)
             st.download_button(
-                "⬇️ Download single-player profile (CSV)",
-                data=csv_single.getvalue(),
-                file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
+                "⬇️ Download comparison (CSV)",
+                data=csv_buf2.getvalue(),
+                file_name="player_comparison.csv",
                 mime="text/csv",
             )
 
+        elif compare_players and not comp_metrics:
+            st.info("No valid comparison metrics are available for the selected profile.")
+        else:
+            st.info("Select players above to compare their stats and see the role radar.")
 
-# =========================
-# ROLE FIT v1
-# =========================
-st.markdown("---")
-st.header("🧭 Role Fit")
-st.caption(
-    "Evaluate one player across position-compatible canonical roles. "
-    "Each role is scored against its own role-relevant benchmark using the same weights, "
-    "coverage rules and direction-aware methodology as Profile Score."
-)
-
-role_fit_pool = filtered_base.copy()
-if not role_fit_pool.empty and "Player" in role_fit_pool.columns:
-    rf_c1, rf_c2 = st.columns([2, 1])
-    with rf_c1:
-        role_fit_player = st.selectbox(
-            "Player",
-            sorted(role_fit_pool["Player"].dropna().astype(str).unique().tolist()),
-            key="role_fit_player",
-        )
-
-    player_candidates = role_fit_pool.loc[role_fit_pool["Player"].astype(str) == str(role_fit_player)].copy()
-    # If duplicate player rows survive filters, use the row with the most minutes.
-    if "Minutes played" in player_candidates.columns:
-        player_candidates["_rf_minutes"] = pd.to_numeric(player_candidates["Minutes played"], errors="coerce").fillna(0)
-        player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
-    rf_player_row = player_candidates.iloc[0]
-
-    main_pos = rf_player_row.get("Main Position", "")
-    compatible_roles = compatible_roles_for_position(main_pos)
-
-    with rf_c2:
-        st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
-
-    info_cols = st.columns(4)
-    info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
-    age_val = pd.to_numeric(pd.Series([rf_player_row.get("Age", np.nan)]), errors="coerce").iloc[0]
-    info_cols[1].metric("Age", f"{age_val:.0f}" if pd.notna(age_val) else "—")
-    min_val = pd.to_numeric(pd.Series([rf_player_row.get("Minutes played", np.nan)]), errors="coerce").iloc[0]
-    info_cols[2].metric("Minutes", f"{min_val:,.0f}" if pd.notna(min_val) else "—")
-    info_cols[3].metric("Compatible roles", str(len(compatible_roles)))
-
-    if not compatible_roles:
-        st.info(
-            f"No automatic Role Fit mapping is defined for Main Position '{main_pos}'. "
-            "Use the existing Single-Player Profile to evaluate a role manually."
-        )
     else:
-        fit_results = []
-        fit_detail: Dict[str, Dict[str, object]] = {}
+        st.markdown("#### Single-Player Role Profile")
+        if SINGLE_PLAYER_METRIC_POLICY_ISSUES:
+            st.warning(
+                "Single-player profile metric policy issue: "
+                + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
+            )
+        st.caption(
+            "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
+            "Built-in Profile Scores use these same 15 role metrics with reviewed weights; the wheel itself remains unweighted. Percentiles and z-scores are direction-aware."
+        )
 
-        for role in compatible_roles:
-            role_benchmark = benchmark_population_for_role(
+        single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+
+        if not single_player_options:
+            st.info("No players are available for the current filters.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                single_player = st.selectbox(
+                    "Player",
+                    options=single_player_options,
+                    key="single_profile_player",
+                )
+            with c2:
+                single_role = st.selectbox(
+                    "Role / profile",
+                    options=list(SINGLE_PLAYER_PROFILES.keys()),
+                    key="single_profile_role",
+                )
+
+            player_rows = filtered.loc[filtered["Player"] == single_player].copy()
+            if "Minutes played" in player_rows.columns:
+                player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
+                player_rows = player_rows.sort_values("_single_minutes", ascending=False)
+            player_row = player_rows.iloc[0]
+
+            scale_mode = st.radio(
+                "Performance scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="single_profile_scale",
+                help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean, displayed from −2 to +2, and is direction-aware.",
+            )
+
+            single_benchmark_choice = st.radio(
+                "Single-player benchmark",
+                ["Use global benchmark", "Same Main Position"],
+                horizontal=True,
+                key="single_benchmark_mode",
+            )
+
+            if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
+                player_pos = player_row.get("Main Position")
+                benchmark_df = benchmark_source_global.loc[
+                    benchmark_source_global["Main Position"] == player_pos
+                ].copy()
+                benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
+            else:
+                benchmark_df = benchmark_population_for_role(
+                    benchmark_source_global,
+                    single_role,
+                    benchmark_mode,
+                    selected_positions,
+                )
+                benchmark_desc = f"{benchmark_mode} · selected leagues · {min_minutes}+ min"
+
+            if len(benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Benchmark sample is small ({len(benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
+                    "Consider broadening the benchmark."
+                )
+
+            profile_df, missing_single_metrics = build_single_player_profile(
+                player_row=player_row,
+                benchmark_df=benchmark_df,
+                role_name=single_role,
+            )
+
+            team = str(player_row.get("Team", "")).strip()
+            league = str(player_row.get("League", "")).strip()
+            season = str(player_row.get("Season label", "")).strip()
+            player_position = str(player_row.get("Main Position", "")).strip()
+
+            header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
+
+            info1, info2, info3 = st.columns(3)
+            info1.metric("Benchmark players", f"{len(benchmark_df):,}")
+            info2.metric("Metrics displayed", f"{len(profile_df)}")
+            info3.metric("Role", single_role)
+
+            if missing_single_metrics:
+                st.caption(
+                    "Unavailable in this dataset and skipped: "
+                    + ", ".join(missing_single_metrics)
+                )
+
+            if profile_df.empty:
+                st.warning("None of the selected role metrics contain usable values for this player/benchmark.")
+            else:
+                subtitle_parts = [single_role, benchmark_desc]
+                if season and season.lower() != "none" and season.lower() != "nan":
+                    subtitle_parts.append(f"Season {season}")
+                subtitle = " | ".join(subtitle_parts)
+
+                fig_single = single_player_wheel(
+                    profile_df=profile_df.reset_index(drop=True),
+                    player_name=single_player,
+                    subtitle=subtitle,
+                    scale_mode=scale_mode,
+                )
+                st.plotly_chart(fig_single, use_container_width=True)
+
+                profile_table = profile_df.copy()
+                profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
+                profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
+                profile_table["Z-score"] = profile_table["Z-score"].round(2)
+                st.dataframe(profile_table, use_container_width=True, hide_index=True)
+
+                csv_single = StringIO()
+                profile_table.to_csv(csv_single, index=False)
+                st.download_button(
+                    "⬇️ Download single-player profile (CSV)",
+                    data=csv_single.getvalue(),
+                    file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
+                    mime="text/csv",
+                )
+
+
+
+elif app_page == "Single Player":
+    # =========================
+    # Player comparison visualizations
+    # =========================
+    st.subheader("Multi-Player Comparison" if app_page in ("Compare", "Multi Player") else "Single-Player Profile")
+
+    comparison_mode = "Multi-Player Radar" if app_page in ("Compare", "Multi Player") else "Single-Player Profile"
+
+    if comparison_mode == "Multi-Player Radar":
+        player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+        compare_players = st.multiselect(
+            "Players to compare (max 5 recommended)",
+            options=player_options,
+            default=[],
+            key="multi_compare_players",
+        )
+
+        # Keep the multi-player comparison tied to the same canonical role framework
+        # as the weighted Profile Score and single-player radar.
+        active_builtin_profile = None
+        if active and isinstance(active.get("calc_col"), str):
+            active_label = str(active.get("calc_col"))
+            if active_label.startswith("Score: "):
+                candidate = active_label.replace("Score: ", "", 1)
+                if candidate in PROFILES:
+                    active_builtin_profile = candidate
+
+        radar_metric_mode = st.radio(
+            "Radar metric mode",
+            ["Profile metrics", "Custom metrics"],
+            horizontal=True,
+            key="multi_radar_metric_mode",
+        )
+
+        comp_metric_choices = get_numeric_columns(filtered)
+        selected_radar_profile = None
+        radar_kpi_lookup: Dict[str, str] = {}
+
+        if radar_metric_mode == "Profile metrics":
+            profile_names = list(PROFILES.keys())
+            default_profile_index = profile_names.index(active_builtin_profile) if active_builtin_profile in profile_names else 0
+            selected_radar_profile = st.selectbox(
+                "Comparison profile",
+                options=profile_names,
+                index=default_profile_index,
+                key="multi_radar_profile",
+                help="Uses the same 15 metrics as the selected built-in Profile Score and single-player role profile.",
+            )
+
+            requested_compare_metrics = PROFILES[selected_radar_profile]
+            comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
+                requested_compare_metrics,
+                filtered.columns.tolist(),
+            )
+            radar_kpi_lookup = {
+                metric: kpi for kpi, metric in SINGLE_PLAYER_PROFILES[selected_radar_profile]
+            }
+
+            st.caption(
+                f"{selected_radar_profile}: {len(comp_metrics)} of 15 profile metrics available. "
+                "The radar uses direction-aware z-scores against the current filtered player population."
+            )
+            if missing_compare_metrics:
+                st.warning("Missing profile metrics: " + ", ".join(missing_compare_metrics))
+        else:
+            default_custom_metrics = [m for m in profile_metrics_in_use if m in comp_metric_choices]
+            if not default_custom_metrics:
+                default_custom_metrics = comp_metric_choices[: min(6, len(comp_metric_choices))]
+            comp_metrics = st.multiselect(
+                "Custom metrics for comparison table & radar",
+                options=comp_metric_choices,
+                default=default_custom_metrics,
+                key="multi_compare_custom_metrics",
+            )
+
+        if compare_players and "Player" in filtered.columns and comp_metrics:
+            comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
+
+            # If a player has more than one row after filtering, keep the row with most minutes.
+            if "Minutes played" in comp_rows.columns:
+                comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
+                comp_rows = comp_rows.sort_values("_cmp_minutes", ascending=False).drop_duplicates("Player")
+                comp_rows = comp_rows.drop(columns="_cmp_minutes")
+            else:
+                comp_rows = comp_rows.drop_duplicates("Player")
+
+            comp_df = comp_rows.set_index("Player")
+            available_players = [p for p in compare_players if p in comp_df.index]
+
+            # Raw-value comparison table.
+            show_table = comp_df[comp_metrics].copy()
+            for c in show_table.columns:
+                show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+
+            # Use the same explicit benchmark logic as Profile Score / Single Player.
+            multi_role = selected_radar_profile if radar_metric_mode == "Profile metrics" else None
+            multi_benchmark_df = benchmark_population_for_role(
                 benchmark_source_global,
-                role,
-                "Role position",  # Role Fit intentionally normalizes every role to its own family.
+                multi_role,
+                benchmark_mode,
                 selected_positions,
             )
-            result = role_fit_for_player(
-                rf_player_row,
-                role,
-                role_benchmark,
-                coverage_threshold=float(coverage_threshold_pct) / 100.0,
-            )
-            fit_detail[role] = result
-            fit_results.append({
-                "Role": role,
-                "Role Score": result["Role Score"],
-                "Role Percentile": result["Role Percentile"],
-                "Coverage %": result["Coverage %"],
-                "Benchmark N": result["Benchmark N"],
-            })
-
-        fit_df = pd.DataFrame(fit_results)
-        fit_df = fit_df.sort_values(
-            ["Role Percentile", "Role Score"],
-            ascending=[False, False],
-            na_position="last",
-        ).reset_index(drop=True)
-
-        st.subheader("Role Fit overview")
-        st.caption(
-            "Role Percentile is the player's weighted Role Score percentile inside that role's own benchmark. "
-            "It is the cleaner cross-role reference; raw Role Scores are still shown for transparency."
-        )
-
-        # Horizontal percentile chart.
-        chart_df = fit_df.dropna(subset=["Role Percentile"]).copy()
-        if not chart_df.empty:
-            chart_df = chart_df.sort_values("Role Percentile", ascending=True)
-            role_fig = px.bar(
-                chart_df,
-                x="Role Percentile",
-                y="Role",
-                orientation="h",
-                text="Role Percentile",
-                hover_data={
-                    "Role Score": ":.2f",
-                    "Coverage %": ":.0f",
-                    "Benchmark N": True,
-                    "Role Percentile": ":.0f",
-                },
-                range_x=[0, 100],
-                title="Role percentile by compatible profile",
-            )
-            role_fig.update_traces(texttemplate="%{text:.0f}", textposition="outside", cliponaxis=False)
-            role_fig.update_layout(
-                height=max(330, 75 * len(chart_df)),
-                xaxis_title="Role Percentile",
-                yaxis_title="",
-                showlegend=False,
-                margin=dict(l=20, r=45, t=55, b=35),
-            )
-            st.plotly_chart(role_fig, use_container_width=True)
-
-        display_fit = fit_df.copy()
-        for c in ["Role Score", "Role Percentile", "Coverage %"]:
-            display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(2 if c == "Role Score" else 0)
-        st.dataframe(display_fit, use_container_width=True, hide_index=True)
-
-        low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
-        if low_n_roles:
-            st.warning(
-                "Small benchmark sample for: " + ", ".join(low_n_roles) +
-                f". Recommended minimum is {int(min_benchmark_n)}."
-            )
-
-        selectable_roles = fit_df["Role"].tolist()
-        detail_role = st.selectbox(
-            "Role detail",
-            selectable_roles,
-            key="role_fit_detail_role",
-        )
-        detail = fit_detail[detail_role]
-
-        st.subheader(detail_role)
-        dcols = st.columns(4)
-        dscore = detail["Role Score"]
-        dpct = detail["Role Percentile"]
-        dcov = detail["Coverage %"]
-        dn = detail["Benchmark N"]
-        dcols[0].metric("Role Score", f"{dscore:+.2f}" if pd.notna(dscore) else "—")
-        dcols[1].metric("Role Percentile", f"{dpct:.0f}" if pd.notna(dpct) else "—")
-        dcols[2].metric("Coverage", f"{dcov:.0f}%")
-        dcols[3].metric("Benchmark N", f"{int(dn):,}")
-
-        kpi_scores = detail.get("KPI Scores", {})
-        if kpi_scores:
-            st.markdown("#### KPI decomposition")
-            kpi_cols = st.columns(min(4, len(kpi_scores)))
-            for i, (kpi, score) in enumerate(kpi_scores.items()):
-                kpi_cols[i % len(kpi_cols)].metric(kpi, f"{score:+.2f}")
-
-        rf_scale = st.radio(
-            "Role detail scale",
-            ["Percentile", "Z-score"],
-            horizontal=True,
-            key="role_fit_scale",
-        )
-        wheel = role_fit_detail_wheel(
-            str(role_fit_player),
-            detail_role,
-            detail,
-            rf_player_row,
-            rf_scale,
-        )
-        st.plotly_chart(wheel, use_container_width=True)
-
-        st.markdown("#### Underlying role metrics")
-        metric_rows = []
-        for kpi, requested_metric in SINGLE_PLAYER_PROFILES[detail_role]:
-            rr, _ = resolve_metrics_aliases([requested_metric], role_fit_pool.columns.tolist())
-            if not rr:
-                continue
-            m = rr[0]
-            raw = pd.to_numeric(pd.Series([rf_player_row.get(m, np.nan)]), errors="coerce").iloc[0]
-            zval = detail.get("Player Z", pd.Series(dtype=float)).get(m, np.nan)
-            bench_raw = detail.get("Benchmark Raw", pd.DataFrame())
-            pctval = (
-                percentile_rank_against_population(
-                    bench_raw[m], raw, lower_is_better=(m in LOWER_IS_BETTER)
+            if len(multi_benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Multi-player benchmark sample is small ({len(multi_benchmark_df)} players; "
+                    f"recommended minimum {int(min_benchmark_n)})."
                 )
-                if isinstance(bench_raw, pd.DataFrame) and m in bench_raw.columns else np.nan
-            )
-            metric_rows.append({
-                "KPI": kpi,
-                "Metric": single_metric_display_label(m),
-                "Raw Value": raw,
-                "Z-score": zval,
-                "Percentile": pctval,
-                "Weight %": DEFAULT_WEIGHTS[detail_role].get(requested_metric, 0),
-            })
-        metric_df = pd.DataFrame(metric_rows)
-        if not metric_df.empty:
-            metric_df["Raw Value"] = pd.to_numeric(metric_df["Raw Value"], errors="coerce").round(2)
-            metric_df["Z-score"] = pd.to_numeric(metric_df["Z-score"], errors="coerce").round(2)
-            metric_df["Percentile"] = pd.to_numeric(metric_df["Percentile"], errors="coerce").round(0)
-            st.dataframe(metric_df, use_container_width=True, hide_index=True)
+            baseX = multi_benchmark_df[comp_metrics].apply(pd.to_numeric, errors="coerce")
+            means = baseX.mean(axis=0)
+            stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
 
+            z_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                row = show_table.loc[player, comp_metrics]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                row = row.apply(pd.to_numeric, errors="coerce")
+                z = ((row - means) / stds).fillna(0.0)
+                for m in comp_metrics:
+                    if m in LOWER_IS_BETTER:
+                        z[m] = -z[m]
+                z_table.loc[player, comp_metrics] = z.values
+
+            # Direction-aware percentiles against exactly the same benchmark population.
+            percentile_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                for metric in comp_metrics:
+                    value = pd.to_numeric(pd.Series([show_table.loc[player, metric]]), errors="coerce").iloc[0]
+                    percentile_table.loc[player, metric] = percentile_rank_against_population(
+                        baseX[metric],
+                        value,
+                        lower_is_better=(metric in LOWER_IS_BETTER),
+                    )
+
+            # For built-in role comparisons, show the default weighted role score
+            # using exactly the same 15 metrics as the radar.
+            profile_score_row = None
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                default_weight_map = DEFAULT_WEIGHTS[selected_radar_profile]
+                resolved_weight_map: Dict[str, float] = {}
+                for requested_metric, pct in default_weight_map.items():
+                    resolved, _missing = resolve_metrics_aliases(
+                        [requested_metric],
+                        filtered.columns.tolist(),
+                    )
+                    if resolved and resolved[0] in comp_metrics:
+                        resolved_weight_map[resolved[0]] = float(pct)
+
+                total_pct = sum(resolved_weight_map.values())
+                if total_pct > 0:
+                    profile_score_row = {}
+                    for player in available_players:
+                        z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
+                        score = 0.0
+                        for metric, pct in resolved_weight_map.items():
+                            score += float(z.get(metric, 0.0)) * (pct / total_pct)
+                        profile_score_row[player] = round(score, 2)
+
+            # Friendly labels while keeping raw Wyscout columns internally.
+            radar_display_aliases = {
+                "Save rate, %": "Save Rate %",
+                "Prevented goals per 90": "Goals Prevented /90",
+                "Conceded goals per 90": "Goals Conceded /90",
+                "Shots against per 90": "Shots Faced /90",
+                "xG against per 90": "xGA /90",
+                "Exits per 90": "Exits /90",
+                "Aerial duels per 90.1": "Aerial Duels /90",
+                "Aerial duels per 90": "Aerial Duels /90",
+                "Aerial duels won, %": "Aerial Duel Win %",
+                "Passes per 90": "Passes /90",
+                "Accurate passes, %": "Pass Accuracy %",
+                "Long passes per 90": "Long Passes /90",
+                "Accurate long passes, %": "Long Pass Accuracy %",
+                "Back passes received as GK per 90": "GK Back Passes /90",
+                "Forward passes per 90": "Forward Passes /90",
+                "Accurate forward passes, %": "Forward Pass Accuracy %",
+                "Progressive passes per 90": "Progressive Passes /90",
+                "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+                "Passes to final third per 90": "Final Third Passes /90",
+                "Received passes per 90": "Passes Received /90",
+                "Progressive runs per 90": "Progressive Runs /90",
+                "Interceptions per 90": "Interceptions /90",
+                "PAdj Interceptions": "PAdj Interceptions",
+                "Successful defensive actions per 90": "Defensive Actions /90",
+                "Defensive duels per 90": "Defensive Duels /90",
+                "Defensive duels won, %": "Defensive Duel Win %",
+                "PAdj Sliding tackles": "PAdj Sliding Tackles",
+                "Sliding tackles per 90": "Sliding Tackles /90",
+                "Shots blocked per 90": "Shots Blocked /90",
+                "Fouls per 90": "Fouls /90",
+                "Yellow cards per 90": "Yellow Cards /90",
+                "Dribbles per 90": "Dribbles /90",
+                "Successful dribbles, %": "Dribble Success %",
+                "Accelerations per 90": "Accelerations /90",
+                "Crosses per 90": "Crosses /90",
+                "Accurate crosses, %": "Cross Accuracy %",
+                "Crosses to goalie box per 90": "Box Crosses /90",
+                "Passes to penalty area per 90": "Penalty Area Passes /90",
+                "Shot assists per 90": "Shot Assists /90",
+                "xA per 90": "xA /90",
+                "xG per 90": "xG /90",
+                "Shots per 90": "Shots /90",
+                "Touches in box per 90": "Box Touches /90",
+                "Non-penalty goals per 90": "Non-Penalty Goals /90",
+                "Successful attacking actions per 90": "Attacking Actions /90",
+                "Smart passes per 90": "Smart Passes /90",
+                "Key passes per 90": "Key Passes /90",
+                "Deep completions per 90": "Deep Completions /90",
+                "Through passes per 90": "Through Passes /90",
+                "Offensive duels per 90": "Offensive Duels /90",
+                "Offensive duels won, %": "Offensive Duel Win %",
+                "Goal conversion, %": "Goal Conversion %",
+                "Shots on target, %": "Shots on Target %",
+                "Head goals per 90": "Headed Goals /90",
+                "Received long passes per 90": "Long Passes Received /90",
+                "Fouls suffered per 90": "Fouls Won /90",
+            }
+
+            table_for_display = show_table.copy()
+            table_for_display.index.name = None
+            table_for_display = table_for_display.rename(columns=radar_display_aliases).T
+
+            if profile_score_row is not None:
+                score_df = pd.DataFrame(
+                    {player: [profile_score_row.get(player, np.nan)] for player in available_players},
+                    index=[f"Profile Score: {selected_radar_profile}"],
+                )
+                table_for_display = pd.concat([score_df, table_for_display], axis=0)
+
+            st.dataframe(table_for_display, use_container_width=True)
+
+            comparison_scale = st.radio(
+                "Comparison scale",
+                ["Z-score", "Percentile"],
+                horizontal=True,
+                key="multi_compare_scale",
+                help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
+            )
+            st.caption(
+                f"Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+                f"N={len(multi_benchmark_df):,}"
+            )
+
+            # Multi-player role wheel: same architecture as the single-player profile.
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name=selected_radar_profile,
+                    metrics=comp_metrics,
+                    kpi_lookup=radar_kpi_lookup,
+                )
+            else:
+                # Custom mode has no canonical KPI groups, so use one neutral group.
+                custom_kpi_lookup = {m: "Custom Metrics" for m in comp_metrics}
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name="Custom Metrics",
+                    metrics=comp_metrics,
+                    kpi_lookup=custom_kpi_lookup,
+                )
+
+            st.plotly_chart(fig_radar, use_container_width=True)
+
+            st.caption(
+                "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
+                "the same 15 metrics, KPI bands, metric order and KPI gaps. Switch between direction-aware Z-score (−2 to +2) "
+                "and Percentile (0–100) using the same current filtered benchmark population. Hover always shows raw value, percentile and z-score. "
+                "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
+            )
+
+            csv_export = show_table.copy()
+            if profile_score_row is not None:
+                csv_export.insert(
+                    0,
+                    f"Profile Score: {selected_radar_profile}",
+                    pd.Series(profile_score_row),
+                )
+            csv_buf2 = StringIO()
+            csv_export.to_csv(csv_buf2)
+            st.download_button(
+                "⬇️ Download comparison (CSV)",
+                data=csv_buf2.getvalue(),
+                file_name="player_comparison.csv",
+                mime="text/csv",
+            )
+
+        elif compare_players and not comp_metrics:
+            st.info("No valid comparison metrics are available for the selected profile.")
+        else:
+            st.info("Select players above to compare their stats and see the role radar.")
+
+    else:
+        st.markdown("#### Single-Player Role Profile")
+        if SINGLE_PLAYER_METRIC_POLICY_ISSUES:
+            st.warning(
+                "Single-player profile metric policy issue: "
+                + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
+            )
         st.caption(
-            "Role Fit does not assign qualitative labels such as Excellent/Good/Poor. "
-            "Role Percentile, Role Score, coverage, KPI decomposition and the metric wheel are shown separately."
+            "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
+            "Built-in Profile Scores use these same 15 role metrics with reviewed weights; the wheel itself remains unweighted. Percentiles and z-scores are direction-aware."
         )
-else:
-    st.info("Upload/filter player data to use Role Fit.")
+
+        single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+
+        if not single_player_options:
+            st.info("No players are available for the current filters.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                single_player = st.selectbox(
+                    "Player",
+                    options=single_player_options,
+                    key="single_profile_player",
+                )
+            with c2:
+                single_role = st.selectbox(
+                    "Role / profile",
+                    options=list(SINGLE_PLAYER_PROFILES.keys()),
+                    key="single_profile_role",
+                )
+
+            player_rows = filtered.loc[filtered["Player"] == single_player].copy()
+            if "Minutes played" in player_rows.columns:
+                player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
+                player_rows = player_rows.sort_values("_single_minutes", ascending=False)
+            player_row = player_rows.iloc[0]
+
+            scale_mode = st.radio(
+                "Performance scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="single_profile_scale",
+                help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean, displayed from −2 to +2, and is direction-aware.",
+            )
+
+            single_benchmark_choice = st.radio(
+                "Single-player benchmark",
+                ["Use global benchmark", "Same Main Position"],
+                horizontal=True,
+                key="single_benchmark_mode",
+            )
+
+            if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
+                player_pos = player_row.get("Main Position")
+                benchmark_df = benchmark_source_global.loc[
+                    benchmark_source_global["Main Position"] == player_pos
+                ].copy()
+                benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
+            else:
+                benchmark_df = benchmark_population_for_role(
+                    benchmark_source_global,
+                    single_role,
+                    benchmark_mode,
+                    selected_positions,
+                )
+                benchmark_desc = f"{benchmark_mode} · selected leagues · {min_minutes}+ min"
+
+            if len(benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Benchmark sample is small ({len(benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
+                    "Consider broadening the benchmark."
+                )
+
+            profile_df, missing_single_metrics = build_single_player_profile(
+                player_row=player_row,
+                benchmark_df=benchmark_df,
+                role_name=single_role,
+            )
+
+            team = str(player_row.get("Team", "")).strip()
+            league = str(player_row.get("League", "")).strip()
+            season = str(player_row.get("Season label", "")).strip()
+            player_position = str(player_row.get("Main Position", "")).strip()
+
+            header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
+
+            info1, info2, info3 = st.columns(3)
+            info1.metric("Benchmark players", f"{len(benchmark_df):,}")
+            info2.metric("Metrics displayed", f"{len(profile_df)}")
+            info3.metric("Role", single_role)
+
+            if missing_single_metrics:
+                st.caption(
+                    "Unavailable in this dataset and skipped: "
+                    + ", ".join(missing_single_metrics)
+                )
+
+            if profile_df.empty:
+                st.warning("None of the selected role metrics contain usable values for this player/benchmark.")
+            else:
+                subtitle_parts = [single_role, benchmark_desc]
+                if season and season.lower() != "none" and season.lower() != "nan":
+                    subtitle_parts.append(f"Season {season}")
+                subtitle = " | ".join(subtitle_parts)
+
+                fig_single = single_player_wheel(
+                    profile_df=profile_df.reset_index(drop=True),
+                    player_name=single_player,
+                    subtitle=subtitle,
+                    scale_mode=scale_mode,
+                )
+                st.plotly_chart(fig_single, use_container_width=True)
+
+                profile_table = profile_df.copy()
+                profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
+                profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
+                profile_table["Z-score"] = profile_table["Z-score"].round(2)
+                st.dataframe(profile_table, use_container_width=True, hide_index=True)
+
+                csv_single = StringIO()
+                profile_table.to_csv(csv_single, index=False)
+                st.download_button(
+                    "⬇️ Download single-player profile (CSV)",
+                    data=csv_single.getvalue(),
+                    file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
+                    mime="text/csv",
+                )
+
+
+
+elif app_page == "Role Fit":
+    # =========================
+    # ROLE FIT v1
+    # =========================
+    st.markdown("---")
+    st.header("🧭 Role Fit")
+    st.caption(
+        "Evaluate one player across position-compatible canonical roles. "
+        "Each role is scored against its own role-relevant benchmark using the same weights, "
+        "coverage rules and direction-aware methodology as Profile Score."
+    )
+
+    role_fit_pool = filtered_base.copy()
+    if not role_fit_pool.empty and "Player" in role_fit_pool.columns:
+        rf_c1, rf_c2 = st.columns([2, 1])
+        with rf_c1:
+            role_fit_player = st.selectbox(
+                "Player",
+                sorted(role_fit_pool["Player"].dropna().astype(str).unique().tolist()),
+                key="role_fit_player",
+            )
+
+        player_candidates = role_fit_pool.loc[role_fit_pool["Player"].astype(str) == str(role_fit_player)].copy()
+        # If duplicate player rows survive filters, use the row with the most minutes.
+        if "Minutes played" in player_candidates.columns:
+            player_candidates["_rf_minutes"] = pd.to_numeric(player_candidates["Minutes played"], errors="coerce").fillna(0)
+            player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
+        rf_player_row = player_candidates.iloc[0]
+
+        main_pos = rf_player_row.get("Main Position", "")
+        compatible_roles = compatible_roles_for_position(main_pos)
+
+        with rf_c2:
+            st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
+
+        info_cols = st.columns(4)
+        info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
+        age_val = pd.to_numeric(pd.Series([rf_player_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+        info_cols[1].metric("Age", f"{age_val:.0f}" if pd.notna(age_val) else "—")
+        min_val = pd.to_numeric(pd.Series([rf_player_row.get("Minutes played", np.nan)]), errors="coerce").iloc[0]
+        info_cols[2].metric("Minutes", f"{min_val:,.0f}" if pd.notna(min_val) else "—")
+        info_cols[3].metric("Compatible roles", str(len(compatible_roles)))
+
+        if not compatible_roles:
+            st.info(
+                f"No automatic Role Fit mapping is defined for Main Position '{main_pos}'. "
+                "Use the existing Single-Player Profile to evaluate a role manually."
+            )
+        else:
+            fit_results = []
+            fit_detail: Dict[str, Dict[str, object]] = {}
+
+            for role in compatible_roles:
+                role_benchmark = benchmark_population_for_role(
+                    benchmark_source_global,
+                    role,
+                    "Role position",  # Role Fit intentionally normalizes every role to its own family.
+                    selected_positions,
+                )
+                result = role_fit_for_player(
+                    rf_player_row,
+                    role,
+                    role_benchmark,
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                fit_detail[role] = result
+                fit_results.append({
+                    "Role": role,
+                    "Role Score": result["Role Score"],
+                    "Role Percentile": result["Role Percentile"],
+                    "Coverage %": result["Coverage %"],
+                    "Benchmark N": result["Benchmark N"],
+                })
+
+            fit_df = pd.DataFrame(fit_results)
+            fit_df = fit_df.sort_values(
+                ["Role Percentile", "Role Score"],
+                ascending=[False, False],
+                na_position="last",
+            ).reset_index(drop=True)
+
+            st.subheader("Role Fit overview")
+            st.caption(
+                "Role Percentile is the player's weighted Role Score percentile inside that role's own benchmark. "
+                "It is the cleaner cross-role reference; raw Role Scores are still shown for transparency."
+            )
+
+            # Horizontal percentile chart.
+            chart_df = fit_df.dropna(subset=["Role Percentile"]).copy()
+            if not chart_df.empty:
+                chart_df = chart_df.sort_values("Role Percentile", ascending=True)
+                role_fig = px.bar(
+                    chart_df,
+                    x="Role Percentile",
+                    y="Role",
+                    orientation="h",
+                    text="Role Percentile",
+                    hover_data={
+                        "Role Score": ":.2f",
+                        "Coverage %": ":.0f",
+                        "Benchmark N": True,
+                        "Role Percentile": ":.0f",
+                    },
+                    range_x=[0, 100],
+                    title="Role percentile by compatible profile",
+                )
+                role_fig.update_traces(texttemplate="%{text:.0f}", textposition="outside", cliponaxis=False)
+                role_fig.update_layout(
+                    height=max(330, 75 * len(chart_df)),
+                    xaxis_title="Role Percentile",
+                    yaxis_title="",
+                    showlegend=False,
+                    margin=dict(l=20, r=45, t=55, b=35),
+                )
+                st.plotly_chart(role_fig, use_container_width=True)
+
+            display_fit = fit_df.copy()
+            for c in ["Role Score", "Role Percentile", "Coverage %"]:
+                display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(2 if c == "Role Score" else 0)
+            st.dataframe(display_fit, use_container_width=True, hide_index=True)
+
+            low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
+            if low_n_roles:
+                st.warning(
+                    "Small benchmark sample for: " + ", ".join(low_n_roles) +
+                    f". Recommended minimum is {int(min_benchmark_n)}."
+                )
+
+            selectable_roles = fit_df["Role"].tolist()
+            detail_role = st.selectbox(
+                "Role detail",
+                selectable_roles,
+                key="role_fit_detail_role",
+            )
+            detail = fit_detail[detail_role]
+
+            st.subheader(detail_role)
+            dcols = st.columns(4)
+            dscore = detail["Role Score"]
+            dpct = detail["Role Percentile"]
+            dcov = detail["Coverage %"]
+            dn = detail["Benchmark N"]
+            dcols[0].metric("Role Score", f"{dscore:+.2f}" if pd.notna(dscore) else "—")
+            dcols[1].metric("Role Percentile", f"{dpct:.0f}" if pd.notna(dpct) else "—")
+            dcols[2].metric("Coverage", f"{dcov:.0f}%")
+            dcols[3].metric("Benchmark N", f"{int(dn):,}")
+
+            kpi_scores = detail.get("KPI Scores", {})
+            if kpi_scores:
+                st.markdown("#### KPI decomposition")
+                kpi_cols = st.columns(min(4, len(kpi_scores)))
+                for i, (kpi, score) in enumerate(kpi_scores.items()):
+                    kpi_cols[i % len(kpi_cols)].metric(kpi, f"{score:+.2f}")
+
+            rf_scale = st.radio(
+                "Role detail scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="role_fit_scale",
+            )
+            wheel = role_fit_detail_wheel(
+                str(role_fit_player),
+                detail_role,
+                detail,
+                rf_player_row,
+                rf_scale,
+            )
+            st.plotly_chart(wheel, use_container_width=True)
+
+            st.markdown("#### Underlying role metrics")
+            metric_rows = []
+            for kpi, requested_metric in SINGLE_PLAYER_PROFILES[detail_role]:
+                rr, _ = resolve_metrics_aliases([requested_metric], role_fit_pool.columns.tolist())
+                if not rr:
+                    continue
+                m = rr[0]
+                raw = pd.to_numeric(pd.Series([rf_player_row.get(m, np.nan)]), errors="coerce").iloc[0]
+                zval = detail.get("Player Z", pd.Series(dtype=float)).get(m, np.nan)
+                bench_raw = detail.get("Benchmark Raw", pd.DataFrame())
+                pctval = (
+                    percentile_rank_against_population(
+                        bench_raw[m], raw, lower_is_better=(m in LOWER_IS_BETTER)
+                    )
+                    if isinstance(bench_raw, pd.DataFrame) and m in bench_raw.columns else np.nan
+                )
+                metric_rows.append({
+                    "KPI": kpi,
+                    "Metric": single_metric_display_label(m),
+                    "Raw Value": raw,
+                    "Z-score": zval,
+                    "Percentile": pctval,
+                    "Weight %": DEFAULT_WEIGHTS[detail_role].get(requested_metric, 0),
+                })
+            metric_df = pd.DataFrame(metric_rows)
+            if not metric_df.empty:
+                metric_df["Raw Value"] = pd.to_numeric(metric_df["Raw Value"], errors="coerce").round(2)
+                metric_df["Z-score"] = pd.to_numeric(metric_df["Z-score"], errors="coerce").round(2)
+                metric_df["Percentile"] = pd.to_numeric(metric_df["Percentile"], errors="coerce").round(0)
+                st.dataframe(metric_df, use_container_width=True, hide_index=True)
+
+            st.caption(
+                "Role Fit does not assign qualitative labels such as Excellent/Good/Poor. "
+                "Role Percentile, Role Score, coverage, KPI decomposition and the metric wheel are shown separately."
+            )
+    else:
+        st.info("Upload/filter player data to use Role Fit.")
+
 
 
 st.markdown("---")

@@ -33,3 +33,14 @@ Files:
 - Percentile / Z-score detail wheel.
 - Raw role-metric table with KPI, raw value, z-score, percentile and weight.
 - No qualitative fit labels or separate scoring model.
+
+## Navigation update
+The app now exposes five sidebar workspaces:
+- Players
+- Compare
+- Single Player
+- Multi Player
+- Role Fit
+
+Role Fit is a real workspace rather than a section at the bottom of the app.
+The long profile-weight editor is collapsed under `Advanced profile settings`.
