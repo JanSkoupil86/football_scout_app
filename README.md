@@ -21,3 +21,15 @@ Files:
 - Contextual GK workload metrics can remain descriptive at 0% score weight.
 - Cached benchmark summary statistics.
 - Methodology panel in the app.
+
+## Role Fit v1
+- Player selector using the currently filtered player pool.
+- Automatic Main Position → compatible canonical roles.
+- Each compatible role uses its own role-position benchmark.
+- Weighted Role Score, within-role Role Percentile, Coverage %, Benchmark N.
+- Horizontal Role Percentile comparison.
+- Selectable role detail.
+- KPI sub-score decomposition.
+- Percentile / Z-score detail wheel.
+- Raw role-metric table with KPI, raw value, z-score, percentile and weight.
+- No qualitative fit labels or separate scoring model.

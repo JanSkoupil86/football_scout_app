@@ -1146,6 +1146,286 @@ def multi_player_profile_wheel(
 
 
 # =========================
+# Role Fit v1
+# =========================
+ROLE_FIT_POSITION_MAP: Dict[str, List[str]] = {
+    "GK": ["Classic Goalkeeper", "Sweeper Keeper", "Build-Up Keeper"],
+    "CB": ["Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB", "Wide CB (in 3)"],
+    "DM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "CM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "AM": ["Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "LB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "RB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "LWB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "RWB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "LW": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "RW": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "LWF": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "RWF": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "CF": ["Target Man #9", "Poacher", "Pressing Forward", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+    "ST": ["Target Man #9", "Poacher", "Pressing Forward", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+}
+
+
+def normalize_main_position_for_role_fit(value: object) -> str:
+    """Normalize Wyscout-style position labels to a Role Fit family."""
+    s = str(value or "").strip().upper()
+    if not s:
+        return ""
+    # Most specific wide/keeper/forward labels first.
+    aliases = [
+        ("GOALKEEPER", "GK"), ("GK", "GK"),
+        ("RWB", "RWB"), ("LWB", "LWB"),
+        ("RIGHT WINGBACK", "RWB"), ("LEFT WINGBACK", "LWB"),
+        ("RIGHT BACK", "RB"), ("LEFT BACK", "LB"),
+        ("RB", "RB"), ("LB", "LB"),
+        ("CENTRE BACK", "CB"), ("CENTER BACK", "CB"), ("CB", "CB"),
+        ("DEFENSIVE MID", "DM"), ("DMF", "DM"), ("CDM", "DM"), ("DM", "DM"),
+        ("ATTACKING MID", "AM"), ("AMF", "AM"), ("CAM", "AM"), ("AM", "AM"),
+        ("CENTRAL MID", "CM"), ("CMF", "CM"), ("CM", "CM"),
+        ("RIGHT WINGER", "RW"), ("LEFT WINGER", "LW"),
+        ("RWF", "RWF"), ("LWF", "LWF"), ("RW", "RW"), ("LW", "LW"),
+        ("CENTRE FORWARD", "CF"), ("CENTER FORWARD", "CF"), ("CF", "CF"),
+        ("STRIKER", "ST"), ("ST", "ST"),
+    ]
+    for token, family in aliases:
+        if token in s:
+            return family
+    return s
+
+
+def compatible_roles_for_position(value: object) -> List[str]:
+    return ROLE_FIT_POSITION_MAP.get(normalize_main_position_for_role_fit(value), [])
+
+
+def role_fit_for_player(
+    player_row: pd.Series,
+    role_name: str,
+    benchmark_df: pd.DataFrame,
+    coverage_threshold: float,
+) -> Dict[str, object]:
+    """Evaluate one player under one canonical built-in role."""
+    requested = PROFILES[role_name]
+    resolved, missing = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return {
+            "Role": role_name, "Role Score": np.nan, "Role Percentile": np.nan,
+            "Coverage %": 0.0, "Benchmark N": len(benchmark_df), "KPI Scores": {},
+            "Resolved Metrics": [], "Missing Metrics": missing,
+        }
+
+    requested_to_resolved: Dict[str, str] = {}
+    resolved_weights: List[float] = []
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            requested_to_resolved[req] = rr[0]
+            resolved_weights.append(float(DEFAULT_WEIGHTS[role_name][req]))
+
+    resolved = [requested_to_resolved[r] for r in requested if r in requested_to_resolved]
+    # Deduplicate while retaining canonical order.
+    resolved = list(dict.fromkeys(resolved))
+    weight_by_resolved = {}
+    for req, col in requested_to_resolved.items():
+        weight_by_resolved[col] = weight_by_resolved.get(col, 0.0) + float(DEFAULT_WEIGHTS[role_name][req])
+    weights = np.array([weight_by_resolved[m] for m in resolved], dtype=float)
+
+    B = benchmark_df[resolved].apply(pd.to_numeric, errors="coerce")
+    sparse = sparse_mask(B, threshold=0.95)
+    usable = [m for m in resolved if not bool(sparse.get(m, False))]
+    if not usable:
+        return {
+            "Role": role_name, "Role Score": np.nan, "Role Percentile": np.nan,
+            "Coverage %": 0.0, "Benchmark N": len(benchmark_df), "KPI Scores": {},
+            "Resolved Metrics": resolved, "Missing Metrics": missing,
+        }
+
+    W = pd.Series({m: weight_by_resolved[m] for m in usable}, dtype=float)
+    positive_total = float(W.sum())
+    if positive_total <= 0:
+        W[:] = 1.0
+        positive_total = float(W.sum())
+    W = W / positive_total
+
+    stats = benchmark_metric_stats(B[usable])
+    means = stats["mean"]
+    stds = stats["std"].replace(0, np.nan)
+
+    player_vals = pd.Series(
+        {m: pd.to_numeric(pd.Series([player_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in usable},
+        dtype=float,
+    )
+    z = (player_vals - means) / stds
+    for m in usable:
+        if m in LOWER_IS_BETTER:
+            z[m] = -z[m]
+
+    available_weight = float(W[z.notna()].sum())
+    coverage = available_weight * 100.0
+    score = float((z.fillna(0.0) * W).sum() / available_weight) if available_weight > 0 else np.nan
+    if available_weight < coverage_threshold:
+        score = np.nan
+
+    # Build the benchmark's role-score distribution using identical row-level missing-data handling.
+    Zb = (B[usable] - means) / stds
+    flip = [m for m in usable if m in LOWER_IS_BETTER]
+    if flip:
+        Zb[flip] = -Zb[flip]
+    avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
+    score_b = Zb.fillna(0.0).mul(W, axis=1).sum(axis=1) / avail_b.replace(0, np.nan)
+    score_b = score_b.where(avail_b >= coverage_threshold)
+    role_pct = percentile_rank_against_population(score_b, score, lower_is_better=False) if pd.notna(score) else np.nan
+
+    # KPI decomposition for this player.
+    kpi_scores: Dict[str, float] = {}
+    for kpi, metric_weights in PROFILE_CONFIG[role_name].items():
+        cols = []
+        kws = []
+        for req, default_w in metric_weights.items():
+            col = requested_to_resolved.get(req)
+            if col in usable:
+                cols.append(col)
+                kws.append(float(default_w))
+        if not cols:
+            continue
+        kz = z[cols]
+        kw = pd.Series(kws, index=cols, dtype=float)
+        kavail = float(kw[kz.notna()].sum())
+        if kavail > 0:
+            kpi_scores[kpi] = float((kz.fillna(0.0) * kw).sum() / kavail)
+
+    return {
+        "Role": role_name,
+        "Role Score": score,
+        "Role Percentile": role_pct,
+        "Coverage %": coverage,
+        "Benchmark N": int(score_b.notna().sum()),
+        "KPI Scores": kpi_scores,
+        "Resolved Metrics": usable,
+        "Missing Metrics": missing,
+        "Player Z": z,
+        "Benchmark Z": Zb,
+        "Benchmark Raw": B,
+    }
+
+
+def role_fit_detail_wheel(
+    player_name: str,
+    role_name: str,
+    fit_result: Dict[str, object],
+    player_row: pd.Series,
+    display_scale: str,
+) -> go.Figure:
+    """Reuse the established single-player wheel architecture for Role Fit detail."""
+    metrics = list(fit_result.get("Resolved Metrics", []))
+    kpi_items = SINGLE_PLAYER_PROFILES[role_name]
+    kpi_lookup = {}
+    for kpi, requested in kpi_items:
+        rr, _ = resolve_metrics_aliases([requested], list(player_row.index))
+        if rr:
+            kpi_lookup[rr[0]] = kpi
+
+    labels = [single_metric_display_label(m) for m in metrics]
+    z = pd.to_numeric(fit_result["Player Z"].reindex(metrics), errors="coerce")
+    B = fit_result["Benchmark Raw"]
+
+    pct = pd.Series(index=metrics, dtype=float)
+    for m in metrics:
+        pct[m] = percentile_rank_against_population(
+            B[m], player_row.get(m, np.nan), lower_is_better=(m in LOWER_IS_BETTER)
+        )
+
+    n = len(metrics)
+    theta = np.linspace(0, 360, n, endpoint=False)
+    perf_inner, perf_outer = 20.0, 76.0
+    perf_span = perf_outer - perf_inner
+
+    if display_scale == "Percentile":
+        vals = pct.fillna(50.0).clip(0, 100)
+        radius = perf_inner + (vals.to_numpy(dtype=float) / 100.0) * perf_span
+        ticks = [0, 25, 50, 75, 100]
+        tick_to_r = lambda t: perf_inner + (t / 100.0) * perf_span
+        centre = "<b>Percentile</b><br><span style='font-size:11px'>50 = benchmark median</span>"
+    else:
+        vals = z.fillna(0.0).clip(-2, 2)
+        radius = perf_inner + ((vals.to_numpy(dtype=float) + 2.0) / 4.0) * perf_span
+        ticks = [-2, -1, 0, 1, 2]
+        tick_to_r = lambda t: perf_inner + ((t + 2.0) / 4.0) * perf_span
+        centre = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
+
+    fig = go.Figure()
+    ring_theta = np.linspace(0, 360, 361)
+    ref = 50 if display_scale == "Percentile" else 0
+    for tick in ticks:
+        fig.add_trace(go.Scatterpolar(
+            r=[tick_to_r(tick)] * len(ring_theta), theta=ring_theta, mode="lines",
+            line=dict(
+                color="rgba(45,55,65,0.62)" if tick == ref else "rgba(120,130,140,0.16)",
+                width=2.8 if tick == ref else 1,
+            ),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    custom = np.column_stack([
+        np.array([pd.to_numeric(pd.Series([player_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in metrics], dtype=float),
+        z.reindex(metrics).to_numpy(dtype=float),
+        pct.reindex(metrics).to_numpy(dtype=float),
+        np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
+        np.array(labels, dtype=object),
+    ])
+    fig.add_trace(go.Scatterpolar(
+        r=np.r_[radius, radius[0]],
+        theta=np.r_[theta, theta[0]],
+        mode="lines+markers",
+        name=player_name,
+        line=dict(width=3),
+        marker=dict(size=8),
+        customdata=np.vstack([custom, custom[0]]),
+        hovertemplate=(
+            "%{customdata[4]}<br>KPI: %{customdata[3]}<br>"
+            "Raw value: %{customdata[0]:.2f}<br>"
+            "Percentile: %{customdata[2]:.0f}<br>"
+            "Z-score: %{customdata[1]:+.2f}<extra></extra>"
+        ),
+    ))
+
+    # KPI-colored outer tiles, following the same established wheel language.
+    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#17becf"]
+    unique_kpis = list(dict.fromkeys(kpi_lookup.get(m, "Profile") for m in metrics))
+    kpi_color = {k: palette[i % len(palette)] for i, k in enumerate(unique_kpis)}
+    width = 360.0 / max(1, n)
+    for ang, m, label in zip(theta, metrics, labels):
+        kpi = kpi_lookup.get(m, "Profile")
+        fig.add_trace(go.Barpolar(
+            r=[15], base=[80], theta=[ang], width=[width * 0.92],
+            marker_color=kpi_color[kpi], marker_line_color="white", marker_line_width=1,
+            opacity=0.80, hoverinfo="skip", showlegend=False,
+        ))
+        fig.add_annotation(
+            x=0.5 + 0.45 * np.cos(np.deg2rad(90-ang)),
+            y=0.5 + 0.45 * np.sin(np.deg2rad(90-ang)),
+            xref="paper", yref="paper", text=label, showarrow=False,
+            font=dict(size=10), align="center",
+        )
+
+    fig.add_annotation(
+        x=0.5, y=0.5, xref="paper", yref="paper", text=centre,
+        showarrow=False, align="center", font=dict(size=13),
+    )
+    fig.update_layout(
+        title=dict(text=f"{player_name} — {role_name}", x=0.5, xanchor="center"),
+        polar=dict(
+            radialaxis=dict(visible=False, range=[0, 100]),
+            angularaxis=dict(visible=False),
+        ),
+        showlegend=False,
+        height=780,
+        margin=dict(l=90, r=90, t=85, b=85),
+    )
+    return fig
+
+
+# =========================
 # Upload
 # =========================
 st.sidebar.header("Upload")
@@ -2057,6 +2337,214 @@ else:
                 file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
                 mime="text/csv",
             )
+
+
+# =========================
+# ROLE FIT v1
+# =========================
+st.markdown("---")
+st.header("🧭 Role Fit")
+st.caption(
+    "Evaluate one player across position-compatible canonical roles. "
+    "Each role is scored against its own role-relevant benchmark using the same weights, "
+    "coverage rules and direction-aware methodology as Profile Score."
+)
+
+role_fit_pool = filtered_base.copy()
+if not role_fit_pool.empty and "Player" in role_fit_pool.columns:
+    rf_c1, rf_c2 = st.columns([2, 1])
+    with rf_c1:
+        role_fit_player = st.selectbox(
+            "Player",
+            sorted(role_fit_pool["Player"].dropna().astype(str).unique().tolist()),
+            key="role_fit_player",
+        )
+
+    player_candidates = role_fit_pool.loc[role_fit_pool["Player"].astype(str) == str(role_fit_player)].copy()
+    # If duplicate player rows survive filters, use the row with the most minutes.
+    if "Minutes played" in player_candidates.columns:
+        player_candidates["_rf_minutes"] = pd.to_numeric(player_candidates["Minutes played"], errors="coerce").fillna(0)
+        player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
+    rf_player_row = player_candidates.iloc[0]
+
+    main_pos = rf_player_row.get("Main Position", "")
+    compatible_roles = compatible_roles_for_position(main_pos)
+
+    with rf_c2:
+        st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
+
+    info_cols = st.columns(4)
+    info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
+    age_val = pd.to_numeric(pd.Series([rf_player_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+    info_cols[1].metric("Age", f"{age_val:.0f}" if pd.notna(age_val) else "—")
+    min_val = pd.to_numeric(pd.Series([rf_player_row.get("Minutes played", np.nan)]), errors="coerce").iloc[0]
+    info_cols[2].metric("Minutes", f"{min_val:,.0f}" if pd.notna(min_val) else "—")
+    info_cols[3].metric("Compatible roles", str(len(compatible_roles)))
+
+    if not compatible_roles:
+        st.info(
+            f"No automatic Role Fit mapping is defined for Main Position '{main_pos}'. "
+            "Use the existing Single-Player Profile to evaluate a role manually."
+        )
+    else:
+        fit_results = []
+        fit_detail: Dict[str, Dict[str, object]] = {}
+
+        for role in compatible_roles:
+            role_benchmark = benchmark_population_for_role(
+                benchmark_source_global,
+                role,
+                "Role position",  # Role Fit intentionally normalizes every role to its own family.
+                selected_positions,
+            )
+            result = role_fit_for_player(
+                rf_player_row,
+                role,
+                role_benchmark,
+                coverage_threshold=float(coverage_threshold_pct) / 100.0,
+            )
+            fit_detail[role] = result
+            fit_results.append({
+                "Role": role,
+                "Role Score": result["Role Score"],
+                "Role Percentile": result["Role Percentile"],
+                "Coverage %": result["Coverage %"],
+                "Benchmark N": result["Benchmark N"],
+            })
+
+        fit_df = pd.DataFrame(fit_results)
+        fit_df = fit_df.sort_values(
+            ["Role Percentile", "Role Score"],
+            ascending=[False, False],
+            na_position="last",
+        ).reset_index(drop=True)
+
+        st.subheader("Role Fit overview")
+        st.caption(
+            "Role Percentile is the player's weighted Role Score percentile inside that role's own benchmark. "
+            "It is the cleaner cross-role reference; raw Role Scores are still shown for transparency."
+        )
+
+        # Horizontal percentile chart.
+        chart_df = fit_df.dropna(subset=["Role Percentile"]).copy()
+        if not chart_df.empty:
+            chart_df = chart_df.sort_values("Role Percentile", ascending=True)
+            role_fig = px.bar(
+                chart_df,
+                x="Role Percentile",
+                y="Role",
+                orientation="h",
+                text="Role Percentile",
+                hover_data={
+                    "Role Score": ":.2f",
+                    "Coverage %": ":.0f",
+                    "Benchmark N": True,
+                    "Role Percentile": ":.0f",
+                },
+                range_x=[0, 100],
+                title="Role percentile by compatible profile",
+            )
+            role_fig.update_traces(texttemplate="%{text:.0f}", textposition="outside", cliponaxis=False)
+            role_fig.update_layout(
+                height=max(330, 75 * len(chart_df)),
+                xaxis_title="Role Percentile",
+                yaxis_title="",
+                showlegend=False,
+                margin=dict(l=20, r=45, t=55, b=35),
+            )
+            st.plotly_chart(role_fig, use_container_width=True)
+
+        display_fit = fit_df.copy()
+        for c in ["Role Score", "Role Percentile", "Coverage %"]:
+            display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(2 if c == "Role Score" else 0)
+        st.dataframe(display_fit, use_container_width=True, hide_index=True)
+
+        low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
+        if low_n_roles:
+            st.warning(
+                "Small benchmark sample for: " + ", ".join(low_n_roles) +
+                f". Recommended minimum is {int(min_benchmark_n)}."
+            )
+
+        selectable_roles = fit_df["Role"].tolist()
+        detail_role = st.selectbox(
+            "Role detail",
+            selectable_roles,
+            key="role_fit_detail_role",
+        )
+        detail = fit_detail[detail_role]
+
+        st.subheader(detail_role)
+        dcols = st.columns(4)
+        dscore = detail["Role Score"]
+        dpct = detail["Role Percentile"]
+        dcov = detail["Coverage %"]
+        dn = detail["Benchmark N"]
+        dcols[0].metric("Role Score", f"{dscore:+.2f}" if pd.notna(dscore) else "—")
+        dcols[1].metric("Role Percentile", f"{dpct:.0f}" if pd.notna(dpct) else "—")
+        dcols[2].metric("Coverage", f"{dcov:.0f}%")
+        dcols[3].metric("Benchmark N", f"{int(dn):,}")
+
+        kpi_scores = detail.get("KPI Scores", {})
+        if kpi_scores:
+            st.markdown("#### KPI decomposition")
+            kpi_cols = st.columns(min(4, len(kpi_scores)))
+            for i, (kpi, score) in enumerate(kpi_scores.items()):
+                kpi_cols[i % len(kpi_cols)].metric(kpi, f"{score:+.2f}")
+
+        rf_scale = st.radio(
+            "Role detail scale",
+            ["Percentile", "Z-score"],
+            horizontal=True,
+            key="role_fit_scale",
+        )
+        wheel = role_fit_detail_wheel(
+            str(role_fit_player),
+            detail_role,
+            detail,
+            rf_player_row,
+            rf_scale,
+        )
+        st.plotly_chart(wheel, use_container_width=True)
+
+        st.markdown("#### Underlying role metrics")
+        metric_rows = []
+        for kpi, requested_metric in SINGLE_PLAYER_PROFILES[detail_role]:
+            rr, _ = resolve_metrics_aliases([requested_metric], role_fit_pool.columns.tolist())
+            if not rr:
+                continue
+            m = rr[0]
+            raw = pd.to_numeric(pd.Series([rf_player_row.get(m, np.nan)]), errors="coerce").iloc[0]
+            zval = detail.get("Player Z", pd.Series(dtype=float)).get(m, np.nan)
+            bench_raw = detail.get("Benchmark Raw", pd.DataFrame())
+            pctval = (
+                percentile_rank_against_population(
+                    bench_raw[m], raw, lower_is_better=(m in LOWER_IS_BETTER)
+                )
+                if isinstance(bench_raw, pd.DataFrame) and m in bench_raw.columns else np.nan
+            )
+            metric_rows.append({
+                "KPI": kpi,
+                "Metric": single_metric_display_label(m),
+                "Raw Value": raw,
+                "Z-score": zval,
+                "Percentile": pctval,
+                "Weight %": DEFAULT_WEIGHTS[detail_role].get(requested_metric, 0),
+            })
+        metric_df = pd.DataFrame(metric_rows)
+        if not metric_df.empty:
+            metric_df["Raw Value"] = pd.to_numeric(metric_df["Raw Value"], errors="coerce").round(2)
+            metric_df["Z-score"] = pd.to_numeric(metric_df["Z-score"], errors="coerce").round(2)
+            metric_df["Percentile"] = pd.to_numeric(metric_df["Percentile"], errors="coerce").round(0)
+            st.dataframe(metric_df, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "Role Fit does not assign qualitative labels such as Excellent/Good/Poor. "
+            "Role Percentile, Role Score, coverage, KPI decomposition and the metric wheel are shown separately."
+        )
+else:
+    st.info("Upload/filter player data to use Role Fit.")
+
 
 st.markdown("---")
 with st.expander("Methodology & score reliability", expanded=False):
