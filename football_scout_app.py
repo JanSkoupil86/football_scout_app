@@ -1803,6 +1803,8 @@ def single_player_wheel(
 def multi_player_profile_wheel(
     raw_table: pd.DataFrame,
     z_table: pd.DataFrame,
+    percentile_table: pd.DataFrame,
+    display_scale: str,
     players: List[str],
     profile_name: str,
     metrics: List[str],
@@ -1933,22 +1935,36 @@ def multi_player_profile_wheel(
             )
         )
 
-    # Same z-score performance annulus as the single-player wheel.
+    # Same fixed-radius performance annulus as the single-player wheel.
+    # Only the statistical scale changes; geometry/KPI structure stays identical.
     perf_inner = 20.0
     perf_outer = 76.0
     perf_span = perf_outer - perf_inner
     ring_theta = np.linspace(0, 360, 361)
 
-    for tick in [-2, -1, 0, 1, 2]:
-        rv = perf_inner + ((tick + 2.0) / 4.0) * perf_span
+    if display_scale == "Percentile":
+        scale_ticks = [0, 25, 50, 75, 100]
+        reference_tick = 50
+        def map_to_radius(v: float) -> float:
+            vv = float(np.clip(v, 0.0, 100.0))
+            return perf_inner + (vv / 100.0) * perf_span
+    else:
+        scale_ticks = [-2, -1, 0, 1, 2]
+        reference_tick = 0
+        def map_to_radius(v: float) -> float:
+            vv = float(np.clip(v, -2.0, 2.0))
+            return perf_inner + ((vv + 2.0) / 4.0) * perf_span
+
+    for tick in scale_ticks:
+        rv = map_to_radius(tick)
         fig.add_trace(
             go.Scatterpolar(
                 r=[rv] * len(ring_theta),
                 theta=ring_theta,
                 mode="lines",
                 line=dict(
-                    color="rgba(45,55,65,0.62)" if tick == 0 else "rgba(120,130,140,0.16)",
-                    width=2.8 if tick == 0 else 1,
+                    color="rgba(45,55,65,0.62)" if tick == reference_tick else "rgba(120,130,140,0.16)",
+                    width=2.8 if tick == reference_tick else 1,
                 ),
                 hoverinfo="skip",
                 showlegend=False,
@@ -1975,13 +1991,16 @@ def multi_player_profile_wheel(
             continue
 
         z = pd.to_numeric(z_table.loc[player, metrics], errors="coerce").fillna(0.0)
+        pct = pd.to_numeric(percentile_table.loc[player, metrics], errors="coerce").fillna(50.0)
         raw = pd.to_numeric(raw_table.loc[player, metrics], errors="coerce")
-        clipped = z.clip(lower=-2.0, upper=2.0).to_numpy(dtype=float)
-        marker_r = perf_inner + ((clipped + 2.0) / 4.0) * perf_span
+
+        display_values = pct if display_scale == "Percentile" else z
+        marker_r = np.array([map_to_radius(v) for v in display_values], dtype=float)
 
         custom = np.column_stack([
             raw.to_numpy(dtype=float),
             z.to_numpy(dtype=float),
+            pct.to_numpy(dtype=float),
             np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
             np.array(labels, dtype=object),
         ])
@@ -1997,16 +2016,20 @@ def multi_player_profile_wheel(
                 customdata=np.vstack([custom, custom[0]]),
                 hovertemplate=(
                     "<b>%{fullData.name}</b><br>"
-                    "%{customdata[3]}<br>"
-                    "KPI: %{customdata[2]}<br>"
+                    "%{customdata[4]}<br>"
+                    "KPI: %{customdata[3]}<br>"
                     "Raw value: %{customdata[0]:.2f}<br>"
+                    "Percentile: %{customdata[2]:.0f}<br>"
                     "Z-score: %{customdata[1]:+.2f}<extra></extra>"
                 ),
             )
         )
 
     # Centre context mirrors the single-player chart.
-    centre_text = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
+    if display_scale == "Percentile":
+        centre_text = "<b>Percentile</b><br><span style='font-size:11px'>50 = benchmark median</span>"
+    else:
+        centre_text = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
     fig.add_annotation(
         x=0.5, y=0.5,
         xref="paper", yref="paper",
@@ -2578,6 +2601,19 @@ if comparison_mode == "Multi-Player Radar":
                     z[m] = -z[m]
             z_table.loc[player, comp_metrics] = z.values
 
+        # Direction-aware percentiles against the same CURRENT FILTERED benchmark.
+        percentile_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+        for metric in comp_metrics:
+            benchmark_col = pd.to_numeric(baseX[metric], errors="coerce")
+            pct_series = benchmark_col.rank(pct=True, method="average") * 100.0
+            if metric in LOWER_IS_BETTER:
+                pct_series = 100.0 - pct_series
+            # Map the selected player's original filtered-row index to its percentile.
+            for player in available_players:
+                player_rows = comp_rows.index[comp_rows["Player"] == player].tolist()
+                if player_rows:
+                    percentile_table.loc[player, metric] = float(pct_series.loc[player_rows[0]])
+
         # For built-in role comparisons, show the default weighted role score
         # using exactly the same 15 metrics as the radar.
         profile_score_row = None
@@ -2675,11 +2711,21 @@ if comparison_mode == "Multi-Player Radar":
 
         st.dataframe(table_for_display, use_container_width=True)
 
+        comparison_scale = st.radio(
+            "Comparison scale",
+            ["Z-score", "Percentile"],
+            horizontal=True,
+            key="multi_compare_scale",
+            help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
+        )
+
         # Multi-player role wheel: same architecture as the single-player profile.
         if radar_metric_mode == "Profile metrics" and selected_radar_profile:
             fig_radar = multi_player_profile_wheel(
                 raw_table=show_table,
                 z_table=z_table,
+                percentile_table=percentile_table,
+                display_scale=comparison_scale,
                 players=available_players,
                 profile_name=selected_radar_profile,
                 metrics=comp_metrics,
@@ -2691,6 +2737,8 @@ if comparison_mode == "Multi-Player Radar":
             fig_radar = multi_player_profile_wheel(
                 raw_table=show_table,
                 z_table=z_table,
+                percentile_table=percentile_table,
+                display_scale=comparison_scale,
                 players=available_players,
                 profile_name="Custom Metrics",
                 metrics=comp_metrics,
@@ -2700,9 +2748,10 @@ if comparison_mode == "Multi-Player Radar":
         st.plotly_chart(fig_radar, use_container_width=True)
 
         st.caption(
-            "Multi-player comparison now uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
-            "the same 15 metrics, KPI bands, metric order, KPI gaps and −2 to +2 direction-aware z-score scale. "
-            "Player traces use lines and markers without fills so comparisons remain readable. Profile Score weighting remains separate from wheel geometry."
+            "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
+            "the same 15 metrics, KPI bands, metric order and KPI gaps. Switch between direction-aware Z-score (−2 to +2) "
+            "and Percentile (0–100) using the same current filtered benchmark population. Hover always shows raw value, percentile and z-score. "
+            "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
         )
 
         csv_export = show_table.copy()
