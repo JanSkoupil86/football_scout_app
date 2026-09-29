@@ -38,3 +38,22 @@ Files:
 Only one main workspace renders at a time. Players no longer renders Player Comparison below the scatter.
 Role Fit is directly selectable in the sidebar. The long profile-weight editor is collapsed under
 Advanced profile settings.
+
+## Radar feedback update
+- Percentile is now the default presentation scale across Single Player, Multi Player and Role Fit.
+- Z-score remains available as an advanced view; Profile Score methodology is unchanged.
+- KPI colours use a neutral categorical palette rather than traffic-light red/green/orange semantics.
+- Performance spokes/lines and endpoint markers are substantially thicker/larger.
+- Metric labels are larger.
+- Exact outer-tile scores are larger and easier to scan.
+- Percentile reference rings emphasize 25 / 50 / 75, with 50 as the benchmark median.
+- Role Fit detail wheel now follows the same visual language.
+
+## Radar polish v3
+- Percentile remains the default; Z-score remains optional.
+- Thicker performance geometry and larger endpoint markers.
+- Larger metric labels and outer percentile values.
+- Quieter secondary reference rings.
+- Explicit `Higher = better` percentile interpretation.
+- Lower-is-better raw metrics use a ↓ display cue where the alias map is available.
+- KPI colours remain categorical rather than performance traffic lights.
