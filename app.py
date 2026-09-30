@@ -314,9 +314,9 @@ def benchmark_population_for_role(
     if "Main Position" not in bench.columns:
         return bench
     if mode == "Role position" and role_name in PROFILES:
-        return bench.loc[position_family_mask(bench["Scouting Position"] if "Scouting Position" in bench.columns else bench["Main Position"], role_name)].copy()
+        return bench.loc[position_family_mask(bench["Main Position"], role_name)].copy()
     if mode == "Selected positions" and selected_positions:
-        return bench.loc[(bench["Scouting Position"] if "Scouting Position" in bench.columns else bench["Main Position"]).isin(selected_positions)].copy()
+        return bench.loc[bench["Main Position"].isin(selected_positions)].copy()
     return bench
 
 
@@ -1457,40 +1457,6 @@ def role_fit_detail_wheel(
     return fig
 
 
-
-# =========================
-# Scouting position overrides
-# =========================
-SCOUTING_POSITION_OPTIONS = [
-    "GK", "CB", "LB", "RB", "LWB", "RWB",
-    "DM", "CM", "AM", "LW", "RW", "CF", "ST",
-]
-
-def position_override_key(row: pd.Series) -> str:
-    """Season-specific override key; source Main Position remains untouched."""
-    player = str(row.get("Player", "")).strip()
-    league = str(row.get("League", "")).strip()
-    season = str(row.get("Season label", "")).strip()
-    team = str(row.get("Team", "")).strip()
-    return " | ".join([player, season or league, team])
-
-def apply_scouting_position_overrides(
-    frame: pd.DataFrame,
-    overrides: Dict[str, str],
-) -> pd.DataFrame:
-    out = frame.copy()
-    if "Main Position" not in out.columns:
-        out["Scouting Position"] = ""
-        out["Position Override"] = False
-        return out
-    keys = out.apply(position_override_key, axis=1)
-    override_values = keys.map(overrides)
-    valid_override = override_values.notna() & override_values.astype(str).str.strip().ne("")
-    out["Scouting Position"] = out["Main Position"].astype(str)
-    out.loc[valid_override, "Scouting Position"] = override_values.loc[valid_override].astype(str)
-    out["Position Override"] = valid_override
-    return out
-
 # =========================
 # Upload
 # =========================
@@ -1528,67 +1494,6 @@ if missing:
 
 df_all = preprocess(df_raw)
 
-# Preserve Wyscout Main Position as source data and layer scout corrections on top.
-if "position_overrides" not in st.session_state:
-    st.session_state["position_overrides"] = {}
-df_all = apply_scouting_position_overrides(df_all, st.session_state["position_overrides"])
-
-# =========================
-# Position overrides
-# =========================
-with st.sidebar.expander("✏️ Position overrides", expanded=False):
-    st.caption(
-        "Correct provider position labels without changing the original Wyscout Main Position. "
-        "Overrides are session-specific and keyed by player + season + team."
-    )
-    override_players = sorted(df_all["Player"].dropna().astype(str).unique().tolist())
-    if override_players:
-        ov_player = st.selectbox("Player to correct", override_players, key="ov_player")
-        ov_rows = df_all.loc[df_all["Player"].astype(str) == str(ov_player)].copy()
-        ov_labels = []
-        for _, rr in ov_rows.iterrows():
-            ov_labels.append(
-                f"{rr.get('Player','')} | {rr.get('Season label', rr.get('League',''))} | "
-                f"{rr.get('Team','')} | source: {rr.get('Main Position','')}"
-            )
-        ov_choice = st.selectbox("Player-season record", ov_labels, key="ov_record")
-        ov_idx = ov_labels.index(ov_choice)
-        ov_row = ov_rows.iloc[ov_idx]
-        ov_key = position_override_key(ov_row)
-        source_pos = str(ov_row.get("Main Position", ""))
-        current_pos = st.session_state["position_overrides"].get(ov_key, source_pos)
-        options = SCOUTING_POSITION_OPTIONS[:]
-        if source_pos and source_pos not in options:
-            options.append(source_pos)
-        if current_pos and current_pos not in options:
-            options.append(current_pos)
-        ov_new = st.selectbox(
-            "Scouting Position",
-            options,
-            index=options.index(current_pos) if current_pos in options else 0,
-            key="ov_new_position",
-        )
-        c1, c2 = st.columns(2)
-        if c1.button("Apply override", use_container_width=True):
-            st.session_state["position_overrides"][ov_key] = ov_new
-            st.rerun()
-        if c2.button("Reset to source", use_container_width=True):
-            st.session_state["position_overrides"].pop(ov_key, None)
-            st.rerun()
-
-        st.caption(f"Wyscout Main Position: **{source_pos}** → Effective Scouting Position: **{current_pos}**")
-
-    active_ovs = st.session_state["position_overrides"]
-    if active_ovs:
-        st.markdown("**Active overrides**")
-        active_rows = []
-        for key, pos in active_ovs.items():
-            active_rows.append({"Player / season / team": key, "Scouting Position": pos})
-        st.dataframe(pd.DataFrame(active_rows), use_container_width=True, hide_index=True)
-        if st.button("Clear all position overrides"):
-            st.session_state["position_overrides"] = {}
-            st.rerun()
-
 # =========================
 # Sidebar filters
 # =========================
@@ -1621,9 +1526,9 @@ if df_league.empty:
 
 # Team / Position
 teams = sorted(df_league["Team"].dropna().unique().tolist())
-positions = sorted(df_league["Scouting Position"].dropna().unique().tolist())
+positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
-selected_positions, _ = multiselect_all("Scouting Position(s)", positions, default_all=True)
+selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
 
 # Age
 age_series = pd.to_numeric(df_league["Age"], errors="coerce")
@@ -1649,7 +1554,7 @@ remove_outliers = st.sidebar.checkbox("Remove outliers (|Z| > 3) — for plots o
 
 mask = (
     df_league["Team"].isin(selected_teams)
-    & df_league["Scouting Position"].isin(selected_positions)
+    & df_league["Main Position"].isin(selected_positions)
     & pd.to_numeric(df_league["Age"], errors="coerce").between(age_range[0], age_range[1])
 )
 if "Minutes played" in df_league.columns:
@@ -2407,9 +2312,9 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
             )
 
             if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
-                player_pos = player_row.get("Scouting Position", player_row.get("Main Position"))
+                player_pos = player_row.get("Main Position")
                 benchmark_df = benchmark_source_global.loc[
-                    (benchmark_source_global["Scouting Position"] if "Scouting Position" in benchmark_source_global.columns else benchmark_source_global["Main Position"]) == player_pos
+                    benchmark_source_global["Main Position"] == player_pos
                 ].copy()
                 benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
             else:
@@ -2436,7 +2341,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
             team = str(player_row.get("Team", "")).strip()
             league = str(player_row.get("League", "")).strip()
             season = str(player_row.get("Season label", "")).strip()
-            player_position = str(player_row.get("Scouting Position", player_row.get("Main Position", ""))).strip()
+            player_position = str(player_row.get("Main Position", "")).strip()
 
             header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
 
@@ -2513,11 +2418,11 @@ elif app_page == "Role Fit":
             player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
         rf_player_row = player_candidates.iloc[0]
 
-        main_pos = rf_player_row.get("Scouting Position", rf_player_row.get("Main Position", ""))
+        main_pos = rf_player_row.get("Main Position", "")
         compatible_roles = compatible_roles_for_position(main_pos)
 
         with rf_c2:
-            st.metric("Scouting Position", str(main_pos) if pd.notna(main_pos) else "—")
+            st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
 
         info_cols = st.columns(4)
         info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
