@@ -1160,6 +1160,104 @@ def multi_player_profile_wheel(
     return fig
 
 
+
+# =========================
+# Calculated Metrics v1
+# =========================
+POSITION_FAMILIES = {
+    "Goalkeeper": {"GK"},
+    "Centre-Back": {"CB", "LCB", "RCB"},
+    "Full-Back / Wing-Back": {"LB", "RB", "LWB", "RWB"},
+    "Central Midfield": {"DMF", "LDMF", "RDMF", "CMF", "LCMF", "RCMF"},
+    "Attacking Midfield": {"AMF"},
+    "Winger": {"LW", "RW", "LAMF", "RAMF"},
+    "Forward": {"CF", "LWF", "RWF"},
+}
+
+CALCULATED_METRICS = {
+    "GK Shot Stopping": {"families": ["Goalkeeper"], "components": {"Save rate, %": 40, "Prevented goals per 90": 35, "Conceded goals per 90": 15, "xG against per 90": 10}},
+    "GK Area Control": {"families": ["Goalkeeper"], "components": {"Exits per 90": 40, "Aerial duels per 90.1": 25, "Aerial duels won, %": 35}},
+    "GK Distribution": {"families": ["Goalkeeper"], "components": {"Accurate passes, %": 20, "Accurate long passes, %": 30, "Accurate forward passes, %": 20, "Progressive passes per 90": 20, "Back passes received as GK per 90": 10}},
+    "Defensive Activity": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Successful defensive actions per 90": 35, "PAdj Interceptions": 35, "PAdj Sliding tackles": 30}},
+    "Duel Dominance": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Defensive duels won, %": 60, "Aerial duels won, %": 40}},
+    "Aerial Impact": {"families": ["Centre-Back", "Central Midfield", "Forward"], "components": {"Aerial duels per 90": 45, "Aerial duels won, %": 55}},
+    "Passing Progression": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield"], "components": {"Progressive passes per 90": 50, "Passes to final third per 90": 30, "Forward passes per 90": 20}},
+    "Carrying Progression": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger"], "components": {"Progressive runs per 90": 40, "Dribbles per 90": 30, "Accelerations per 90": 30}},
+    "Wide Delivery": {"families": ["Full-Back / Wing-Back", "Winger"], "components": {"Crosses per 90": 25, "Accurate crosses, %": 30, "Crosses to goalie box per 90": 25, "Passes to penalty area per 90": 20}},
+    "1v1 Threat": {"families": ["Attacking Midfield", "Winger"], "components": {"Dribbles per 90": 35, "Successful dribbles, %": 35, "Offensive duels won, %": 30}},
+    "Chance Creation": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger", "Forward"], "components": {"xA per 90": 40, "Shot assists per 90": 30, "Key passes per 90": 20, "Deep completions per 90": 10}},
+    "Box Threat": {"families": ["Attacking Midfield", "Winger", "Forward"], "components": {"xG per 90": 40, "Touches in box per 90": 30, "Shots per 90": 20, "Non-penalty goals per 90": 10}},
+    "Finishing": {"families": ["Winger", "Forward"], "components": {"Non-penalty goals per 90": 35, "Goal conversion, %": 25, "Shots on target, %": 20, "xG per 90": 20}},
+    "Link Play": {"families": ["Forward"], "components": {"Received passes per 90": 25, "Received long passes per 90": 20, "Accurate passes, %": 25, "Shot assists per 90": 15, "xA per 90": 15}},
+}
+
+EFFICIENCY_METRICS = ["Shot Quality (xG/Shot)", "Finishing Above xG /90", "Chance Quality (xA/Key Pass)"]
+CALCULATED_INDEX_NAMES = list(CALCULATED_METRICS.keys())
+
+def calculated_position_family(value: object) -> str | None:
+    s = str(value or "").strip().upper()
+    for family, positions in POSITION_FAMILIES.items():
+        if s in positions:
+            return family
+    return None
+
+def add_efficiency_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    def n(col):
+        return pd.to_numeric(out[col], errors="coerce") if col in out.columns else pd.Series(np.nan, index=out.index)
+    shots = n("Shots per 90").replace(0, np.nan)
+    key_passes = n("Key passes per 90").replace(0, np.nan)
+    out["Shot Quality (xG/Shot)"] = n("xG per 90") / shots
+    out["Finishing Above xG /90"] = n("Non-penalty goals per 90") - n("xG per 90")
+    out["Chance Quality (xA/Key Pass)"] = n("xA per 90") / key_passes
+    return out
+
+def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
+    out = add_efficiency_metrics(score_df)
+    bench = add_efficiency_metrics(benchmark_df)
+    families_score = out["Main Position"].map(calculated_position_family)
+    families_bench = bench["Main Position"].map(calculated_position_family)
+    for index_name, cfg in CALCULATED_METRICS.items():
+        out[index_name] = np.nan
+        for family in cfg["families"]:
+            score_mask = families_score.eq(family)
+            bench_mask = families_bench.eq(family)
+            if not score_mask.any() or not bench_mask.any():
+                continue
+            requested = list(cfg["components"].keys())
+            resolved, _ = resolve_metrics_aliases(requested, bench.columns.tolist())
+            req_to_col = {}
+            for req in requested:
+                rr, _ = resolve_metrics_aliases([req], bench.columns.tolist())
+                if rr and rr[0] in out.columns:
+                    req_to_col[req] = rr[0]
+            cols = list(dict.fromkeys(req_to_col.values()))
+            if not cols:
+                continue
+            B = bench.loc[bench_mask, cols].apply(pd.to_numeric, errors="coerce")
+            sparse = sparse_mask(B, threshold=0.95)
+            cols = [c for c in cols if not bool(sparse.get(c, False))]
+            if not cols:
+                continue
+            stats = benchmark_metric_stats(B[cols])
+            means, stds = stats["mean"], stats["std"].replace(0, np.nan)
+            W = pd.Series({req_to_col[r]: float(w) for r, w in cfg["components"].items() if r in req_to_col and req_to_col[r] in cols})
+            W = W.groupby(level=0).sum(); W = W / W.sum()
+            Zb = (B[cols] - means) / stds
+            flip = [c for c in cols if c in LOWER_IS_BETTER]
+            if flip: Zb[flip] = -Zb[flip]
+            avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
+            score_b = Zb.fillna(0).mul(W, axis=1).sum(axis=1) / avail_b.replace(0, np.nan)
+            score_b = score_b.where(avail_b >= 0.70).dropna()
+            X = out.loc[score_mask, cols].apply(pd.to_numeric, errors="coerce")
+            Z = (X - means) / stds
+            if flip: Z[flip] = -Z[flip]
+            avail = Z.notna().mul(W, axis=1).sum(axis=1)
+            composite = Z.fillna(0).mul(W, axis=1).sum(axis=1) / avail.replace(0, np.nan)
+            composite = composite.where(avail >= 0.70)
+            out.loc[score_mask, index_name] = composite.apply(lambda v: percentile_rank_against_population(score_b, v) if pd.notna(v) else np.nan)
+    return out
+
 # =========================
 # Role Fit v1
 # =========================
@@ -1796,6 +1894,9 @@ if active and active.get("metrics"):
 else:
     filtered = filtered_base
 
+# Calculated Metrics v1: benchmark-aware positional-family indices + direct efficiency metrics.
+# Benchmark remains independent from team/age filters and follows the selected season/league/minutes universe.
+filtered = add_calculated_indices(filtered, benchmark_source_global)
 numeric_cols = get_numeric_columns(filtered)
 
 # =========================
@@ -1826,6 +1927,8 @@ if app_page == "Players":
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
+    calc_defaults = [c for c in ["Box Threat", "Chance Creation", "Passing Progression", "Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
+    default_cols.extend(calc_defaults[:2])
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols = default_cols + [calc_col_name]
         coverage_col = f"{calc_col_name} Coverage %"
@@ -1867,6 +1970,13 @@ if app_page == "Players":
         file_name="filtered_players.csv",
         mime="text/csv",
     )
+
+    with st.expander("Calculated Metrics Methodology", expanded=False):
+        st.markdown("**Composite Indices** are positional-family benchmark percentiles (0–100). Components are standardized as direction-aware z-scores before weighting; 70% component-weight coverage is required.")
+        for name, cfg in CALCULATED_METRICS.items():
+            parts = " · ".join(f"{metric} {weight}%" for metric, weight in cfg["components"].items())
+            st.markdown(f"**{name}** — {', '.join(cfg['families'])}  \n{parts}")
+        st.markdown("**Efficiency Metrics** are direct calculations: Shot Quality = xG/90 ÷ Shots/90; Finishing Above xG /90 = NPG/90 − xG/90; Chance Quality = xA/90 ÷ Key Passes/90.")
 
     # =========================
     # Scatter plot
