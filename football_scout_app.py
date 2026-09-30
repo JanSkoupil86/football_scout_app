@@ -39,7 +39,7 @@ st.markdown(
 PCT_SUFFIX = ", %"
 ALL_TOKEN = "ALL"
 
-REQUIRED_COLS = ["Player", "Team", "Main Position", "Age", "League"]
+REQUIRED_COLS = ["Player", "Team", "Main Position", "Scouting Position", "Age", "League"]
 
 NON_FEATURE_COLUMNS = {
     "Column1",
@@ -314,9 +314,9 @@ def benchmark_population_for_role(
     if "Main Position" not in bench.columns:
         return bench
     if mode == "Role position" and role_name in PROFILES:
-        return bench.loc[position_family_mask(bench["Main Position"], role_name)].copy()
+        return bench.loc[position_family_mask(bench["Scouting Position"] if "Scouting Position" in bench.columns else bench["Main Position"], role_name)].copy()
     if mode == "Selected positions" and selected_positions:
-        return bench.loc[bench["Main Position"].isin(selected_positions)].copy()
+        return bench.loc[(bench["Scouting Position"] if "Scouting Position" in bench.columns else bench["Main Position"]).isin(selected_positions)].copy()
     return bench
 
 
@@ -545,9 +545,17 @@ def single_player_wheel(
     p = profile_df.reset_index(drop=True).copy()
     groups = p["KPI Group"].drop_duplicates().tolist()
 
+    # Neutral categorical palette: colour = KPI family, NOT performance quality.
+    # Avoid traffic-light red/green/orange semantics.
     palette = [
-        "#4E79A7", "#59A14F", "#F28E2B", "#E15759",
-        "#76B7B2", "#B07AA1", "#EDC948", "#9C755F",
+        "#4C78A8",  # blue
+        "#7A5195",  # purple
+        "#2F8F9D",  # teal-blue
+        "#5C6BC0",  # indigo
+        "#008C95",  # deep cyan
+        "#8C6D9E",  # muted violet
+        "#577590",  # slate blue
+        "#6C7A89",  # blue-grey
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
@@ -555,7 +563,7 @@ def single_player_wheel(
     display_aliases = {
         "Save rate, %": "Save Rate %",
         "Prevented goals per 90": "Goals Prevented /90",
-        "Conceded goals per 90": "Goals Conceded /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓",
         "Shots against per 90": "Shots Faced /90",
         "xG against per 90": "xGA /90",
         "Exits per 90": "Exits /90",
@@ -582,8 +590,8 @@ def single_player_wheel(
         "PAdj Sliding tackles": "PAdj Sliding Tackles",
         "Sliding tackles per 90": "Sliding Tackles /90",
         "Shots blocked per 90": "Shots Blocked /90",
-        "Fouls per 90": "Fouls /90",
-        "Yellow cards per 90": "Yellow Cards /90",
+        "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓",
         "Dribbles per 90": "Dribbles /90",
         "Successful dribbles, %": "Dribble Success %",
         "Accelerations per 90": "Accelerations /90",
@@ -676,29 +684,28 @@ def single_player_wheel(
         scale_r = [perf_inner + ((v + 2.0) / 4.0) * perf_span for v in scale_ticks]
         scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
 
-    # Neutral reference rings across the performance annulus.
+    # Calm reference rings. In the default percentile view, 50 is the
+    # benchmark median and 25/75 provide quick orientation.
     ring_theta = np.linspace(0, 360, 361)
-    for rv in scale_r:
+    for tick, rv in zip(scale_ticks, scale_r):
+        if scale_mode == "Percentile":
+            if tick == 50:
+                ring_color, ring_width = "rgba(45,55,65,0.55)", 2.6
+            elif tick in (25, 75):
+                ring_color, ring_width = "rgba(95,105,115,0.14)", 1.15
+            else:
+                ring_color, ring_width = "rgba(120,130,140,0.10)", 1.0
+        else:
+            if tick == 0:
+                ring_color, ring_width = "rgba(45,55,65,0.55)", 2.6
+            else:
+                ring_color, ring_width = "rgba(120,130,140,0.14)", 1.0
         fig.add_trace(
             go.Scatterpolar(
                 r=[rv] * len(ring_theta),
                 theta=ring_theta,
                 mode="lines",
-                line=dict(color="rgba(120,130,140,0.16)", width=1),
-                hoverinfo="skip",
-                showlegend=False,
-            )
-        )
-
-    # Stronger neutral reference in z-score mode.
-    if scale_mode == "Z-score":
-        zero_r = perf_inner + 0.5 * perf_span
-        fig.add_trace(
-            go.Scatterpolar(
-                r=[zero_r] * len(ring_theta),
-                theta=ring_theta,
-                mode="lines",
-                line=dict(color="rgba(45,55,65,0.68)", width=2.8),
+                line=dict(color=ring_color, width=ring_width),
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -720,8 +727,8 @@ def single_player_wheel(
                 r=[perf_inner, marker_r[i]],
                 theta=[theta[i], theta[i]],
                 mode="lines",
-                line=dict(color=group_colors[group_seq[i]], width=3.5),
-                opacity=0.62,
+                line=dict(color=group_colors[group_seq[i]], width=9.5),
+                opacity=0.82,
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -735,9 +742,9 @@ def single_player_wheel(
             theta=theta,
             mode="markers",
             marker=dict(
-                size=15,
+                size=21,
                 color=marker_colors,
-                line=dict(color="white", width=2),
+                line=dict(color="white", width=2.4),
             ),
             customdata=custom,
             hovertemplate=(
@@ -758,7 +765,7 @@ def single_player_wheel(
             theta=theta,
             mode="text",
             text=[f"<b>{v}</b>" for v in value_text],
-            textfont=dict(size=11, color="white"),
+            textfont=dict(size=17, color="white"),
             hoverinfo="skip",
             showlegend=False,
         )
@@ -832,7 +839,7 @@ def single_player_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=11, color="#566270"),
+                tickfont=dict(size=16, color="#303A44"),
                 showline=False,
             ),
         ),
@@ -930,9 +937,17 @@ def multi_player_profile_wheel(
         if g not in groups:
             groups.append(g)
 
+    # Neutral categorical palette: colour = KPI family, NOT performance quality.
+    # Avoid traffic-light red/green/orange semantics.
     palette = [
-        "#4E79A7", "#59A14F", "#F28E2B", "#E15759",
-        "#76B7B2", "#B07AA1", "#EDC948", "#9C755F",
+        "#4C78A8",  # blue
+        "#7A5195",  # purple
+        "#2F8F9D",  # teal-blue
+        "#5C6BC0",  # indigo
+        "#008C95",  # deep cyan
+        "#8C6D9E",  # muted violet
+        "#577590",  # slate blue
+        "#6C7A89",  # blue-grey
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
@@ -1020,7 +1035,7 @@ def multi_player_profile_wheel(
                 r=[perf_inner, perf_outer],
                 theta=[angle, angle],
                 mode="lines",
-                line=dict(color="rgba(120,130,140,0.20)", width=1),
+                line=dict(color="rgba(120,130,140,0.16)", width=1.4),
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -1053,8 +1068,8 @@ def multi_player_profile_wheel(
                 theta=list(theta) + [float(theta[0])],
                 mode="lines+markers",
                 name=player,
-                line=dict(width=3),
-                marker=dict(size=9, line=dict(color="white", width=1.4)),
+                line=dict(width=6.5),
+                marker=dict(size=15, line=dict(color="white", width=2.2)),
                 customdata=np.vstack([custom, custom[0]]),
                 hovertemplate=(
                     "<b>%{fullData.name}</b><br>"
@@ -1069,7 +1084,7 @@ def multi_player_profile_wheel(
 
     # Centre context mirrors the single-player chart.
     if display_scale == "Percentile":
-        centre_text = "<b>Percentile</b><br><span style='font-size:11px'>50 = benchmark median</span>"
+        centre_text = "<b>Percentile</b><br><span style='font-size:11px'>Higher = better · 50 = median</span>"
     else:
         centre_text = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
     fig.add_annotation(
@@ -1120,7 +1135,7 @@ def multi_player_profile_wheel(
                 direction="clockwise",
                 rotation=90,
                 gridcolor="rgba(255,255,255,0)",
-                tickfont=dict(size=13, color="#566270"),
+                tickfont=dict(size=16, color="#303A44"),
                 showline=False,
             ),
         ),
@@ -1337,7 +1352,7 @@ def role_fit_detail_wheel(
 
     n = len(metrics)
     theta = np.linspace(0, 360, n, endpoint=False)
-    perf_inner, perf_outer = 20.0, 76.0
+    perf_inner, perf_outer = 17.0, 77.0
     perf_span = perf_outer - perf_inner
 
     if display_scale == "Percentile":
@@ -1345,7 +1360,7 @@ def role_fit_detail_wheel(
         radius = perf_inner + (vals.to_numpy(dtype=float) / 100.0) * perf_span
         ticks = [0, 25, 50, 75, 100]
         tick_to_r = lambda t: perf_inner + (t / 100.0) * perf_span
-        centre = "<b>Percentile</b><br><span style='font-size:11px'>50 = benchmark median</span>"
+        centre = "<b>Percentile</b><br><span style='font-size:11px'>Higher = better · 50 = median</span>"
     else:
         vals = z.fillna(0.0).clip(-2, 2)
         radius = perf_inner + ((vals.to_numpy(dtype=float) + 2.0) / 4.0) * perf_span
@@ -1378,8 +1393,8 @@ def role_fit_detail_wheel(
         theta=np.r_[theta, theta[0]],
         mode="lines+markers",
         name=player_name,
-        line=dict(width=3),
-        marker=dict(size=8),
+        line=dict(width=7.5),
+        marker=dict(size=16, line=dict(color="white", width=2.2)),
         customdata=np.vstack([custom, custom[0]]),
         hovertemplate=(
             "%{customdata[4]}<br>KPI: %{customdata[3]}<br>"
@@ -1390,7 +1405,8 @@ def role_fit_detail_wheel(
     ))
 
     # KPI-colored outer tiles, following the same established wheel language.
-    palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#17becf"]
+    # Neutral KPI colours; they identify categories rather than good/bad performance.
+    palette = ["#4C78A8", "#7A5195", "#2F8F9D", "#5C6BC0", "#008C95", "#8C6D9E", "#577590", "#6C7A89"]
     unique_kpis = list(dict.fromkeys(kpi_lookup.get(m, "Profile") for m in metrics))
     kpi_color = {k: palette[i % len(palette)] for i, k in enumerate(unique_kpis)}
     width = 360.0 / max(1, n)
@@ -1402,11 +1418,27 @@ def role_fit_detail_wheel(
             opacity=0.80, hoverinfo="skip", showlegend=False,
         ))
         fig.add_annotation(
-            x=0.5 + 0.45 * np.cos(np.deg2rad(90-ang)),
-            y=0.5 + 0.45 * np.sin(np.deg2rad(90-ang)),
+            x=0.5 + 0.47 * np.cos(np.deg2rad(90-ang)),
+            y=0.5 + 0.47 * np.sin(np.deg2rad(90-ang)),
             xref="paper", yref="paper", text=label, showarrow=False,
-            font=dict(size=10), align="center",
+            font=dict(size=15, color="#303A44"), align="center",
         )
+
+    # Exact score values remain aligned with the outer KPI tiles for rapid reading.
+    outer_values = (
+        [f"<b>{int(round(v))}</b>" for v in pct.reindex(metrics).fillna(50.0)]
+        if display_scale == "Percentile"
+        else [f"<b>{v:+.2f}</b>" for v in z.reindex(metrics).fillna(0.0)]
+    )
+    fig.add_trace(go.Scatterpolar(
+        r=[87.0] * n,
+        theta=theta,
+        mode="text",
+        text=outer_values,
+        textfont=dict(size=17, color="white"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
 
     fig.add_annotation(
         x=0.5, y=0.5, xref="paper", yref="paper", text=centre,
@@ -1419,11 +1451,45 @@ def role_fit_detail_wheel(
             angularaxis=dict(visible=False),
         ),
         showlegend=False,
-        height=780,
-        margin=dict(l=90, r=90, t=85, b=85),
+        height=900,
+        margin=dict(l=145, r=145, t=105, b=105),
     )
     return fig
 
+
+
+# =========================
+# Scouting position overrides
+# =========================
+SCOUTING_POSITION_OPTIONS = [
+    "GK", "CB", "LB", "RB", "LWB", "RWB",
+    "DM", "CM", "AM", "LW", "RW", "CF", "ST",
+]
+
+def position_override_key(row: pd.Series) -> str:
+    """Season-specific override key; source Main Position remains untouched."""
+    player = str(row.get("Player", "")).strip()
+    league = str(row.get("League", "")).strip()
+    season = str(row.get("Season label", "")).strip()
+    team = str(row.get("Team", "")).strip()
+    return " | ".join([player, season or league, team])
+
+def apply_scouting_position_overrides(
+    frame: pd.DataFrame,
+    overrides: Dict[str, str],
+) -> pd.DataFrame:
+    out = frame.copy()
+    if "Main Position" not in out.columns:
+        out["Scouting Position"] = ""
+        out["Position Override"] = False
+        return out
+    keys = out.apply(position_override_key, axis=1)
+    override_values = keys.map(overrides)
+    valid_override = override_values.notna() & override_values.astype(str).str.strip().ne("")
+    out["Scouting Position"] = out["Main Position"].astype(str)
+    out.loc[valid_override, "Scouting Position"] = override_values.loc[valid_override].astype(str)
+    out["Position Override"] = valid_override
+    return out
 
 # =========================
 # Upload
@@ -1462,6 +1528,67 @@ if missing:
 
 df_all = preprocess(df_raw)
 
+# Preserve Wyscout Main Position as source data and layer scout corrections on top.
+if "position_overrides" not in st.session_state:
+    st.session_state["position_overrides"] = {}
+df_all = apply_scouting_position_overrides(df_all, st.session_state["position_overrides"])
+
+# =========================
+# Position overrides
+# =========================
+with st.sidebar.expander("✏️ Position overrides", expanded=False):
+    st.caption(
+        "Correct provider position labels without changing the original Wyscout Main Position. "
+        "Overrides are session-specific and keyed by player + season + team."
+    )
+    override_players = sorted(df_all["Player"].dropna().astype(str).unique().tolist())
+    if override_players:
+        ov_player = st.selectbox("Player to correct", override_players, key="ov_player")
+        ov_rows = df_all.loc[df_all["Player"].astype(str) == str(ov_player)].copy()
+        ov_labels = []
+        for _, rr in ov_rows.iterrows():
+            ov_labels.append(
+                f"{rr.get('Player','')} | {rr.get('Season label', rr.get('League',''))} | "
+                f"{rr.get('Team','')} | source: {rr.get('Main Position','')}"
+            )
+        ov_choice = st.selectbox("Player-season record", ov_labels, key="ov_record")
+        ov_idx = ov_labels.index(ov_choice)
+        ov_row = ov_rows.iloc[ov_idx]
+        ov_key = position_override_key(ov_row)
+        source_pos = str(ov_row.get("Main Position", ""))
+        current_pos = st.session_state["position_overrides"].get(ov_key, source_pos)
+        options = SCOUTING_POSITION_OPTIONS[:]
+        if source_pos and source_pos not in options:
+            options.append(source_pos)
+        if current_pos and current_pos not in options:
+            options.append(current_pos)
+        ov_new = st.selectbox(
+            "Scouting Position",
+            options,
+            index=options.index(current_pos) if current_pos in options else 0,
+            key="ov_new_position",
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Apply override", use_container_width=True):
+            st.session_state["position_overrides"][ov_key] = ov_new
+            st.rerun()
+        if c2.button("Reset to source", use_container_width=True):
+            st.session_state["position_overrides"].pop(ov_key, None)
+            st.rerun()
+
+        st.caption(f"Wyscout Main Position: **{source_pos}** → Effective Scouting Position: **{current_pos}**")
+
+    active_ovs = st.session_state["position_overrides"]
+    if active_ovs:
+        st.markdown("**Active overrides**")
+        active_rows = []
+        for key, pos in active_ovs.items():
+            active_rows.append({"Player / season / team": key, "Scouting Position": pos})
+        st.dataframe(pd.DataFrame(active_rows), use_container_width=True, hide_index=True)
+        if st.button("Clear all position overrides"):
+            st.session_state["position_overrides"] = {}
+            st.rerun()
+
 # =========================
 # Sidebar filters
 # =========================
@@ -1494,9 +1621,9 @@ if df_league.empty:
 
 # Team / Position
 teams = sorted(df_league["Team"].dropna().unique().tolist())
-positions = sorted(df_league["Main Position"].dropna().unique().tolist())
+positions = sorted(df_league["Scouting Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
-selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
+selected_positions, _ = multiselect_all("Scouting Position(s)", positions, default_all=True)
 
 # Age
 age_series = pd.to_numeric(df_league["Age"], errors="coerce")
@@ -1522,7 +1649,7 @@ remove_outliers = st.sidebar.checkbox("Remove outliers (|Z| > 3) — for plots o
 
 mask = (
     df_league["Team"].isin(selected_teams)
-    & df_league["Main Position"].isin(selected_positions)
+    & df_league["Scouting Position"].isin(selected_positions)
     & pd.to_numeric(df_league["Age"], errors="coerce").between(age_range[0], age_range[1])
 )
 if "Minutes played" in df_league.columns:
@@ -2161,7 +2288,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
 
             comparison_scale = st.radio(
                 "Comparison scale",
-                ["Z-score", "Percentile"],
+                ["Percentile", "Z-score"],
                 horizontal=True,
                 key="multi_compare_scale",
                 help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
@@ -2201,8 +2328,8 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
 
             st.caption(
                 "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
-                "the same 15 metrics, KPI bands, metric order and KPI gaps. Switch between direction-aware Z-score (−2 to +2) "
-                "and Percentile (0–100) using the same current filtered benchmark population. Hover always shows raw value, percentile and z-score. "
+                "the same 15 metrics, KPI bands, metric order and KPI gaps. Percentile (0–100) is the default scout-facing view; "
+                "direction-aware Z-score (−2 to +2) remains available as an advanced view. Both use the same benchmark population. Hover always shows raw value, percentile and z-score. "
                 "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
             )
 
@@ -2269,7 +2396,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
                 ["Percentile", "Z-score"],
                 horizontal=True,
                 key="single_profile_scale",
-                help="Percentile shows 0–100 rank. Z-score shows standard deviations from the benchmark mean, displayed from −2 to +2, and is direction-aware.",
+                help="Percentile is the default scout-facing view (0–100). Z-score remains available as an advanced analytical view.",
             )
 
             single_benchmark_choice = st.radio(
@@ -2280,9 +2407,9 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
             )
 
             if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
-                player_pos = player_row.get("Main Position")
+                player_pos = player_row.get("Scouting Position", player_row.get("Main Position"))
                 benchmark_df = benchmark_source_global.loc[
-                    benchmark_source_global["Main Position"] == player_pos
+                    (benchmark_source_global["Scouting Position"] if "Scouting Position" in benchmark_source_global.columns else benchmark_source_global["Main Position"]) == player_pos
                 ].copy()
                 benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
             else:
@@ -2309,7 +2436,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
             team = str(player_row.get("Team", "")).strip()
             league = str(player_row.get("League", "")).strip()
             season = str(player_row.get("Season label", "")).strip()
-            player_position = str(player_row.get("Main Position", "")).strip()
+            player_position = str(player_row.get("Scouting Position", player_row.get("Main Position", ""))).strip()
 
             header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
 
@@ -2386,11 +2513,11 @@ elif app_page == "Role Fit":
             player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
         rf_player_row = player_candidates.iloc[0]
 
-        main_pos = rf_player_row.get("Main Position", "")
+        main_pos = rf_player_row.get("Scouting Position", rf_player_row.get("Main Position", ""))
         compatible_roles = compatible_roles_for_position(main_pos)
 
         with rf_c2:
-            st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
+            st.metric("Scouting Position", str(main_pos) if pd.notna(main_pos) else "—")
 
         info_cols = st.columns(4)
         info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
@@ -2588,9 +2715,13 @@ selected coverage threshold are suppressed.
 **KPI sub-scores.** Built-in profiles also expose weighted direction-aware z-score sub-scores for each
 KPI family. They use the same benchmark and the same metric weights as the overall Profile Score.
 
-**Percentiles.** Percentile wheels use the same benchmark population as z-scores. Higher always means
-better after direction reversal. Percentile and z-score views change the visual scale only; the weighted
-Profile Score remains z-score based.
+**Percentiles.** Percentile (0–100) is the default presentation scale because it is faster to interpret.
+Higher always means better after direction reversal. Z-score remains available as an advanced analytical
+view. Both use the same benchmark population; the weighted Profile Score remains z-score based.
+
+**Visual colour.** KPI colours are categorical only. They identify KPI families and deliberately avoid a
+traffic-light red/green/orange performance meaning. Performance is communicated by radial length and the
+numeric percentile, not by colour.
 
 **Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
 warns when the benchmark falls below the configured minimum sample size.
