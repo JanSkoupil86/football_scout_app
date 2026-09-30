@@ -39,7 +39,7 @@ st.markdown(
 PCT_SUFFIX = ", %"
 ALL_TOKEN = "ALL"
 
-REQUIRED_COLS = ["Player", "Team", "Main Position", "Scouting Position", "Age", "League"]
+REQUIRED_COLS = ["Player", "Team", "Main Position", "Age", "League"]
 
 NON_FEATURE_COLUMNS = {
     "Column1",
