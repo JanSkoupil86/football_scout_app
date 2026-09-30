@@ -63,6 +63,7 @@ NON_FEATURE_COLUMNS = {
 
 LOWER_IS_BETTER = {
     "Conceded goals per 90",
+    "xG against per 90",
     "Fouls per 90",
     "Turnovers per 90",
     "Miscontrols per 90",
@@ -1175,23 +1176,27 @@ POSITION_FAMILIES = {
 }
 
 CALCULATED_METRICS = {
-    "GK Shot Stopping": {"families": ["Goalkeeper"], "components": {"Save rate, %": 40, "Prevented goals per 90": 35, "Conceded goals per 90": 15, "xG against per 90": 10}},
-    "GK Area Control": {"families": ["Goalkeeper"], "components": {"Exits per 90": 40, "Aerial duels per 90.1": 25, "Aerial duels won, %": 35}},
-    "GK Distribution": {"families": ["Goalkeeper"], "components": {"Accurate passes, %": 20, "Accurate long passes, %": 30, "Accurate forward passes, %": 20, "Progressive passes per 90": 20, "Back passes received as GK per 90": 10}},
-    "Defensive Activity": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Successful defensive actions per 90": 35, "PAdj Interceptions": 35, "PAdj Sliding tackles": 30}},
-    "Duel Dominance": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Defensive duels won, %": 60, "Aerial duels won, %": 40}},
-    "Aerial Impact": {"families": ["Centre-Back", "Central Midfield", "Forward"], "components": {"Aerial duels per 90": 45, "Aerial duels won, %": 55}},
-    "Passing Progression": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield"], "components": {"Progressive passes per 90": 50, "Passes to final third per 90": 30, "Forward passes per 90": 20}},
-    "Carrying Progression": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger"], "components": {"Progressive runs per 90": 40, "Dribbles per 90": 30, "Accelerations per 90": 30}},
-    "Wide Delivery": {"families": ["Full-Back / Wing-Back", "Winger"], "components": {"Crosses per 90": 25, "Accurate crosses, %": 30, "Crosses to goalie box per 90": 25, "Passes to penalty area per 90": 20}},
-    "1v1 Threat": {"families": ["Attacking Midfield", "Winger"], "components": {"Dribbles per 90": 35, "Successful dribbles, %": 35, "Offensive duels won, %": 30}},
-    "Chance Creation": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger", "Forward"], "components": {"xA per 90": 40, "Shot assists per 90": 30, "Key passes per 90": 20, "Deep completions per 90": 10}},
-    "Box Threat": {"families": ["Attacking Midfield", "Winger", "Forward"], "components": {"xG per 90": 40, "Touches in box per 90": 30, "Shots per 90": 20, "Non-penalty goals per 90": 10}},
-    "Finishing": {"families": ["Winger", "Forward"], "components": {"Non-penalty goals per 90": 35, "Goal conversion, %": 25, "Shots on target, %": 20, "xG per 90": 20}},
-    "Link Play": {"families": ["Forward"], "components": {"Received passes per 90": 25, "Received long passes per 90": 20, "Accurate passes, %": 25, "Shot assists per 90": 15, "xA per 90": 15}},
+    "Calc: GK Shot Stopping": {"families": ["Goalkeeper"], "components": {"Save rate, %": 40, "Prevented goals per 90": 35, "Conceded goals per 90": 15, "xG against per 90": 10}},
+    "Calc: GK Area Control": {"families": ["Goalkeeper"], "components": {"Exits per 90": 40, "Aerial duels per 90.1": 25, "Aerial duels won, %": 35}},
+    "Calc: GK Distribution": {"families": ["Goalkeeper"], "components": {"Accurate passes, %": 20, "Accurate long passes, %": 30, "Accurate forward passes, %": 20, "Progressive passes per 90": 20, "Back passes received as GK per 90": 10}},
+    "Calc: Defensive Activity": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Successful defensive actions per 90": 35, "PAdj Interceptions": 35, "PAdj Sliding tackles": 30}},
+    "Calc: Duel Dominance": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Defensive duels won, %": 60, "Aerial duels won, %": 40}},
+    "Calc: Aerial Impact": {"families": ["Centre-Back", "Central Midfield", "Forward"], "components": {"Aerial duels per 90": 45, "Aerial duels won, %": 55}},
+    "Calc: Passing Progression": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield"], "components": {"Progressive passes per 90": 50, "Passes to final third per 90": 30, "Forward passes per 90": 20}},
+    "Calc: Carrying Progression": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger"], "components": {"Progressive runs per 90": 40, "Dribbles per 90": 30, "Accelerations per 90": 30}},
+    "Calc: Wide Delivery": {"families": ["Full-Back / Wing-Back", "Winger"], "components": {"Crosses per 90": 25, "Accurate crosses, %": 30, "Crosses to goalie box per 90": 25, "Passes to penalty area per 90": 20}},
+    "Calc: 1v1 Threat": {"families": ["Attacking Midfield", "Winger"], "components": {"Dribbles per 90": 35, "Successful dribbles, %": 35, "Offensive duels won, %": 30}},
+    "Calc: Chance Creation": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger", "Forward"], "components": {"xA per 90": 40, "Shot assists per 90": 30, "Key passes per 90": 20, "Deep completions per 90": 10}},
+    "Calc: Box Threat": {"families": ["Attacking Midfield", "Winger", "Forward"], "components": {"xG per 90": 40, "Touches in box per 90": 30, "Shots per 90": 20, "Non-penalty goals per 90": 10}},
+    "Calc: Finishing": {"families": ["Winger", "Forward"], "components": {"Non-penalty goals per 90": 35, "Goal conversion, %": 25, "Shots on target, %": 20, "xG per 90": 20}},
+    "Calc: Link Play": {"families": ["Forward"], "components": {"Received passes per 90": 25, "Received long passes per 90": 20, "Accurate passes, %": 25, "Shot assists per 90": 15, "xA per 90": 15}},
 }
 
-EFFICIENCY_METRICS = ["Shot Quality (xG/Shot)", "Finishing Above xG /90", "Chance Quality (xA/Key Pass)"]
+EFFICIENCY_METRICS = [
+    "Calc: Shot Quality (xG/Shot)",
+    "Calc: Finishing Above xG /90",
+    "Calc: Chance Quality (xA/Key Pass)",
+]
 CALCULATED_INDEX_NAMES = list(CALCULATED_METRICS.keys())
 
 def calculated_position_family(value: object) -> str | None:
@@ -1207,9 +1212,9 @@ def add_efficiency_metrics(df: pd.DataFrame) -> pd.DataFrame:
         return pd.to_numeric(out[col], errors="coerce") if col in out.columns else pd.Series(np.nan, index=out.index)
     shots = n("Shots per 90").replace(0, np.nan)
     key_passes = n("Key passes per 90").replace(0, np.nan)
-    out["Shot Quality (xG/Shot)"] = n("xG per 90") / shots
-    out["Finishing Above xG /90"] = n("Non-penalty goals per 90") - n("xG per 90")
-    out["Chance Quality (xA/Key Pass)"] = n("xA per 90") / key_passes
+    out["Calc: Shot Quality (xG/Shot)"] = n("xG per 90") / shots
+    out["Calc: Finishing Above xG /90"] = n("Non-penalty goals per 90") - n("xG per 90")
+    out["Calc: Chance Quality (xA/Key Pass)"] = n("xA per 90") / key_passes
     return out
 
 def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
@@ -1897,7 +1902,21 @@ else:
 # Calculated Metrics v1: benchmark-aware positional-family indices + direct efficiency metrics.
 # Benchmark remains independent from team/age filters and follows the selected season/league/minutes universe.
 filtered = add_calculated_indices(filtered, benchmark_source_global)
-numeric_cols = get_numeric_columns(filtered)
+
+# Force every calculated output to numeric after enrichment. This avoids pandas dtype
+# inference hiding calculated columns from selectors when a filtered slice is sparse.
+CALCULATED_OUTPUT_COLUMNS = CALCULATED_INDEX_NAMES + EFFICIENCY_METRICS
+for _calc_col in CALCULATED_OUTPUT_COLUMNS:
+    if _calc_col in filtered.columns:
+        filtered[_calc_col] = pd.to_numeric(filtered[_calc_col], errors="coerce")
+
+# IMPORTANT: build the UI metric pool from the FINAL enriched dataframe, then
+# explicitly append calculated outputs. Players table sorting and Scatter X/Y all
+# consume this same pool.
+numeric_cols = list(get_numeric_columns(filtered))
+for _calc_col in CALCULATED_OUTPUT_COLUMNS:
+    if _calc_col in filtered.columns and _calc_col not in numeric_cols:
+        numeric_cols.append(_calc_col)
 
 # =========================
 # Main workspaces — exactly one renders
@@ -1927,7 +1946,7 @@ if app_page == "Players":
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
-    calc_defaults = [c for c in ["Box Threat", "Chance Creation", "Passing Progression", "Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
+    calc_defaults = [c for c in ["Calc: Box Threat", "Calc: Chance Creation", "Calc: Passing Progression", "Calc: Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
     default_cols.extend(calc_defaults[:2])
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols = default_cols + [calc_col_name]
@@ -1938,7 +1957,7 @@ if app_page == "Players":
 
     selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
-    rank_candidates = [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
+    rank_candidates = CALCULATED_OUTPUT_COLUMNS + [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
     rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
     default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
 
@@ -1972,11 +1991,14 @@ if app_page == "Players":
     )
 
     with st.expander("Calculated Metrics Methodology", expanded=False):
+        _available_calc = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
+        _populated_calc = [c for c in _available_calc if filtered[c].notna().any()]
+        st.caption(f"Calculated outputs in current dataset: {len(_available_calc)} · populated for current filtered players: {len(_populated_calc)}")
         st.markdown("**Composite Indices** are positional-family benchmark percentiles (0–100). Components are standardized as direction-aware z-scores before weighting; 70% component-weight coverage is required.")
         for name, cfg in CALCULATED_METRICS.items():
             parts = " · ".join(f"{metric} {weight}%" for metric, weight in cfg["components"].items())
             st.markdown(f"**{name}** — {', '.join(cfg['families'])}  \n{parts}")
-        st.markdown("**Efficiency Metrics** are direct calculations: Shot Quality = xG/90 ÷ Shots/90; Finishing Above xG /90 = NPG/90 − xG/90; Chance Quality = xA/90 ÷ Key Passes/90.")
+        st.markdown("**Efficiency Metrics** are direct calculations: Calc: Shot Quality (xG/Shot) = xG/90 ÷ Shots/90; Calc: Finishing Above xG /90 = NPG/90 − xG/90; Calc: Chance Quality (xA/Key Pass) = xA/90 ÷ Key Passes/90.")
 
     # =========================
     # Scatter plot
