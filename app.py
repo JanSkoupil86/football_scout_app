@@ -27,6 +27,7 @@ from profiles_config import (
 # =========================
 st.set_page_config(layout="wide", page_title="Advanced Football Scouting App", page_icon="⚽")
 st.title("⚽ Advanced Football Player Scouting App — Season-aware Edition")
+st.caption("Build: Calculated Metrics v1.1 · Main Position benchmark families")
 st.markdown(
     "Upload your football data CSV to analyze player metrics. "
     "Includes season normalization, robust metric aliasing, built-in & custom profiles with weights, "
@@ -1910,13 +1911,26 @@ for _calc_col in CALCULATED_OUTPUT_COLUMNS:
     if _calc_col in filtered.columns:
         filtered[_calc_col] = pd.to_numeric(filtered[_calc_col], errors="coerce")
 
-# IMPORTANT: build the UI metric pool from the FINAL enriched dataframe, then
-# explicitly append calculated outputs. Players table sorting and Scatter X/Y all
-# consume this same pool.
-numeric_cols = list(get_numeric_columns(filtered))
-for _calc_col in CALCULATED_OUTPUT_COLUMNS:
-    if _calc_col in filtered.columns and _calc_col not in numeric_cols:
-        numeric_cols.append(_calc_col)
+# IMPORTANT: build the UI metric pool from the FINAL enriched dataframe.
+# Calculated outputs are injected explicitly so they cannot disappear because of
+# pandas dtype inference, sparse slices, or an earlier cached numeric-column list.
+raw_numeric_cols = list(get_numeric_columns(filtered))
+calc_metric_cols = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
+numeric_cols = list(dict.fromkeys(raw_numeric_cols + calc_metric_cols))
+
+# Runtime contract for Calculated Metrics v1.1. This is intentionally visible in
+# Players so deployment/main-file mistakes are immediately obvious.
+current_families = sorted({
+    f for f in filtered["Main Position"].map(calculated_position_family).dropna().tolist()
+}) if "Main Position" in filtered.columns else []
+expected_family_indices = [
+    name for name, cfg in CALCULATED_METRICS.items()
+    if any(f in cfg["families"] for f in current_families)
+]
+populated_family_indices = [
+    c for c in expected_family_indices
+    if c in filtered.columns and pd.to_numeric(filtered[c], errors="coerce").notna().any()
+]
 
 # =========================
 # Main workspaces — exactly one renders
@@ -1926,6 +1940,18 @@ if app_page == "Players":
     # Top-N table
     # =========================
     st.subheader("Filtered Player Data")
+
+    _status_ok = len(calc_metric_cols) == len(CALCULATED_OUTPUT_COLUMNS)
+    _status_icon = "✅" if _status_ok else "❌"
+    st.caption(
+        f"{_status_icon} Calculated Metrics Engine v1.1 · "
+        f"{len(calc_metric_cols)}/{len(CALCULATED_OUTPUT_COLUMNS)} outputs attached · "
+        f"families in current selection: {', '.join(current_families) if current_families else 'none'} · "
+        f"relevant composites populated: {len(populated_family_indices)}/{len(expected_family_indices)}"
+    )
+    if not _status_ok:
+        missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
+        st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
     ID_COLS = [
         "Season label",
@@ -2006,6 +2032,11 @@ if app_page == "Players":
     st.subheader("Player Performance Visualization")
 
     plot_metrics = [c for c in numeric_cols if c not in {"Age", "Market value"}]
+    # Final selector contract: explicitly append every attached calculated output.
+    # This makes Scatter independent of any upstream numeric-column inference.
+    plot_metrics = list(dict.fromkeys(plot_metrics + calc_metric_cols))
+    if calc_metric_cols:
+        st.caption(f"Scatter calculated metrics available: {len(calc_metric_cols)} (type `Calc:` in X/Y to filter them)")
     if not plot_metrics:
         st.warning("No numerical metrics available for plotting.")
     else:
