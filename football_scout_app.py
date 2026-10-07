@@ -1765,7 +1765,7 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
                 slider_key = safe_widget_key("w", profile_name, m)
                 if slider_key not in st.session_state:
                     st.session_state[slider_key] = default_w
-                w = st.slider(f"{m}", 0, 100, int(st.session_state[slider_key]), 1, key=slider_key)
+                w = st.slider(f"{m}", min_value=0, max_value=100, step=1, key=slider_key)
                 weights_pct.append(int(w))
 
         total_weight = int(sum(weights_pct))
