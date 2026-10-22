@@ -1967,6 +1967,32 @@ populated_family_indices = [
     if c in filtered.columns and pd.to_numeric(filtered[c], errors="coerce").notna().any()
 ]
 
+# Two headline calculated indicators shown by default for each canonical profile.
+# Presentation only: role scores, weights, benchmarks and KPI calculations are unchanged.
+PROFILE_TABLE_CALC_DEFAULTS = {
+    "Classic Goalkeeper": ["Calc: GK Shot Stopping", "Calc: GK Area Control"],
+    "Sweeper Keeper": ["Calc: GK Area Control", "Calc: GK Distribution"],
+    "Build-Up Keeper": ["Calc: GK Distribution", "Calc: GK Shot Stopping"],
+    "Ball-Playing CB": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Combative CB / Stopper": ["Calc: Duel Dominance", "Calc: Defensive Activity"],
+    "Libero / Middle Pin CB": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Wide CB (in 3)": ["Calc: Carrying Progression", "Calc: Duel Dominance"],
+    "Defensive Midfielder #6": ["Calc: Defensive Activity", "Calc: Passing Progression"],
+    "Deep-Lying Playmaker": ["Calc: Passing Progression", "Calc: Chance Creation"],
+    "Box-to-Box Midfielder": ["Calc: Carrying Progression", "Calc: Defensive Activity"],
+    "Playmaker #10": ["Calc: Chance Creation", "Calc: Carrying Progression"],
+    "Full-Back": ["Calc: Defensive Activity", "Calc: Wide Delivery"],
+    "Wing-Back": ["Calc: Carrying Progression", "Calc: Wide Delivery"],
+    "Inverted Full-Back": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Classic Winger": ["Calc: 1v1 Threat", "Calc: Wide Delivery"],
+    "Inverted Winger": ["Calc: 1v1 Threat", "Calc: Box Threat"],
+    "Target Man #9": ["Calc: Aerial Impact", "Calc: Link Play"],
+    "Poacher": ["Calc: Finishing", "Calc: Box Threat"],
+    "Pressing Forward": ["Calc: Defensive Activity", "Calc: Box Threat"],
+    "Creative Forward / False 9": ["Calc: Chance Creation", "Calc: Link Play"],
+    "Wide Forward / Inside 9": ["Calc: Box Threat", "Calc: 1v1 Threat"],
+}
+
 # =========================
 # Main workspaces — exactly one renders
 # =========================
@@ -2019,8 +2045,13 @@ if app_page == "Players":
         default_cols.extend([c for c in ["Save rate, %", "Prevented goals per 90"] if c in filtered.columns])
     else:
         default_cols.extend([c for c in ["Goals", "Assists", "xG", "xA"] if c in filtered.columns])
-        calc_defaults = [c for c in ["Calc: Box Threat", "Calc: Chance Creation", "Calc: Passing Progression", "Calc: Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
-        default_cols.extend(calc_defaults[:2])
+
+    # Exactly two calculated indicators relevant to the active profile.
+    profile_calc_defaults = PROFILE_TABLE_CALC_DEFAULTS.get(selected_profile, [])
+    default_cols.extend([
+        c for c in profile_calc_defaults
+        if c in filtered.columns and filtered[c].notna().any()
+    ])
 
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
@@ -2066,6 +2097,20 @@ if app_page == "Players":
             "KPI: Area Control": "Area Ctrl",
             "KPI: Distribution": "Distrib.",
             "KPI: Build-Up": "Build-Up",
+            "Calc: GK Shot Stopping": "GK Shot Stop",
+            "Calc: GK Area Control": "GK Area Ctrl",
+            "Calc: GK Distribution": "GK Distrib.",
+            "Calc: Defensive Activity": "Def. Activity",
+            "Calc: Duel Dominance": "Duel Dom.",
+            "Calc: Aerial Impact": "Aerial Impact",
+            "Calc: Passing Progression": "Pass Prog.",
+            "Calc: Carrying Progression": "Carry Prog.",
+            "Calc: Wide Delivery": "Wide Delivery",
+            "Calc: 1v1 Threat": "1v1 Threat",
+            "Calc: Chance Creation": "Chance Create",
+            "Calc: Box Threat": "Box Threat",
+            "Calc: Finishing": "Finishing",
+            "Calc: Link Play": "Link Play",
         }
 
         for c in table_df.columns:
