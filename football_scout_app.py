@@ -4505,11 +4505,18 @@ elif app_page == "Similar Players":
                             result["League"].astype(str).isin([str(x) for x in target_leagues])
                         ].copy()
 
+                        # Similar Players is ranked primarily by stylistic similarity.
+                        # Adjusted quality is only the tiebreaker; raw Profile Score is
+                        # the final fallback. Stable mergesort preserves deterministic
+                        # ordering for exact ties.
                         result = result.sort_values(
-                            ["Similarity %", "League-Adjusted Score", "Profile Score"],
+                            by=["Similarity %", "League-Adjusted Score", "Profile Score"],
                             ascending=[False, False, False],
                             na_position="last",
+                            kind="mergesort",
                         ).head(top_n_sim).copy()
+
+                        result = result.reset_index(drop=True)
 
                         if result.empty:
                             st.info("No candidates remain after the Similar Players filters.")
