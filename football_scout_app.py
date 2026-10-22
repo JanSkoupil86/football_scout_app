@@ -4282,17 +4282,40 @@ elif app_page == "League Projection":
 elif app_page == "Similar Players":
     st.header("🔎 Similar Players")
     st.caption(
-        "Find players with the closest role-specific playing profile. Similarity measures style only; "
-        "Profile Score and League-Adjusted Score are shown separately so stylistic fit is not confused with level."
+        "Choose a reference player, then search for stylistically similar players in one or more target leagues. "
+        "Similarity measures style only; quality and league-adjusted quality remain separate."
     )
 
-    similar_pool = filtered_base.copy()
-    if similar_pool.empty or "Player" not in similar_pool.columns:
-        st.info("No players are available for the current filters.")
+    # IMPORTANT: the reference-player universe is intentionally broader than the
+    # sidebar League filter. The sidebar still controls season group, age and minutes,
+    # but target competitions are selected independently inside this workspace.
+    reference_pool = df.copy()
+
+    if "Season group" in reference_pool.columns and selected_season_groups:
+        reference_pool = reference_pool.loc[
+            reference_pool["Season group"].isin(selected_season_groups)
+        ].copy()
+
+    if exact_season_toggle and selected_season_labels and "Season label" in reference_pool.columns:
+        reference_pool = reference_pool.loc[
+            reference_pool["Season label"].isin(selected_season_labels)
+        ].copy()
+
+    if "Age" in reference_pool.columns:
+        _ref_age = pd.to_numeric(reference_pool["Age"], errors="coerce")
+        reference_pool = reference_pool.loc[
+            _ref_age.between(float(age_min), float(age_max), inclusive="both")
+        ].copy()
+
+    if "Minutes played" in reference_pool.columns:
+        _ref_min = pd.to_numeric(reference_pool["Minutes played"], errors="coerce")
+        reference_pool = reference_pool.loc[_ref_min >= float(min_minutes)].copy()
+
+    if reference_pool.empty:
+        st.info("No reference players are available under the current season, age and minutes filters.")
     else:
-        # Reference player follows the current scouting filters.
         ref_labels, ref_index = [], {}
-        for idx, row in similar_pool.iterrows():
+        for idx, row in reference_pool.iterrows():
             label = f"{row.get('Player', '')} — {row.get('Team', '')} | {row.get('League', '')}"
             if label in ref_index:
                 label = f"{label} [{idx}]"
@@ -4302,7 +4325,7 @@ elif app_page == "Similar Players":
         s1, s2 = st.columns([1.35, 1])
         with s1:
             ref_label = st.selectbox("Reference player", ref_labels, key="similar_reference_player")
-        ref_row = similar_pool.loc[ref_index[ref_label]]
+        ref_row = reference_pool.loc[ref_index[ref_label]]
 
         compatible_roles = [
             r for r, eligible in PROFILE_POSITION_ELIGIBILITY.items()
@@ -4317,230 +4340,264 @@ elif app_page == "Similar Players":
             with s2:
                 similar_role = st.selectbox("Role / profile", compatible_roles, index=role_idx, key="similar_role")
 
-            eligible_positions = PROFILE_POSITION_ELIGIBILITY[similar_role]
-
-            # Candidate universe uses the selected leagues/seasons/age/minutes filters,
-            # but only role-compatible Main Positions.
-            candidates = similar_pool.loc[
-                similar_pool["Main Position"].astype(str).isin(eligible_positions)
-            ].copy()
-
-            # Similar Players results must stay inside the league(s) selected in the
-            # main sidebar. This is explicit rather than relying only on upstream
-            # filtering, so the results table/scatter can never leak candidates from
-            # unselected competitions.
-            _selected_similarity_leagues = [
+            # Independent target-league selector. Default to the sidebar league(s)
+            # when those are explicitly selected; otherwise use the reference league.
+            available_target_leagues = sorted(
+                df["League"].dropna().astype(str).unique().tolist()
+            )
+            sidebar_target_defaults = [
                 str(x) for x in selected_leagues
-                if str(x) != ALL_TOKEN
+                if str(x) != ALL_TOKEN and str(x) in available_target_leagues
             ]
-            if _selected_similarity_leagues and "League" in candidates.columns:
+            if not sidebar_target_defaults:
+                _ref_league = str(ref_row.get("League", ""))
+                sidebar_target_defaults = [_ref_league] if _ref_league in available_target_leagues else []
+
+            target_leagues = st.multiselect(
+                "Search / target league(s)",
+                options=available_target_leagues,
+                default=sidebar_target_defaults,
+                key="similar_target_leagues",
+                help=(
+                    "These leagues define where Similar Players are searched. "
+                    "They are independent from the reference player's competition."
+                ),
+            )
+
+            if not target_leagues:
+                st.info("Select at least one Search / target league.")
+            else:
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY[similar_role]
+
+                # Candidate universe: same season-group / exact-season / age / minutes
+                # framework, but target leagues are controlled here rather than by the
+                # sidebar League filter.
+                candidates = df.copy()
+                if "Season group" in candidates.columns and selected_season_groups:
+                    candidates = candidates.loc[
+                        candidates["Season group"].isin(selected_season_groups)
+                    ].copy()
+                if exact_season_toggle and selected_season_labels and "Season label" in candidates.columns:
+                    candidates = candidates.loc[
+                        candidates["Season label"].isin(selected_season_labels)
+                    ].copy()
                 candidates = candidates.loc[
-                    candidates["League"].astype(str).isin(_selected_similarity_leagues)
+                    candidates["League"].astype(str).isin([str(x) for x in target_leagues])
+                    & candidates["Main Position"].astype(str).isin(eligible_positions)
                 ].copy()
 
-            # Exclude only the selected row, not every player with the same display name.
-            candidates = candidates.drop(index=ref_index[ref_label], errors="ignore")
+                if "Age" in candidates.columns:
+                    _cand_age = pd.to_numeric(candidates["Age"], errors="coerce")
+                    candidates = candidates.loc[
+                        _cand_age.between(float(age_min), float(age_max), inclusive="both")
+                    ].copy()
+                if "Minutes played" in candidates.columns:
+                    _cand_min = pd.to_numeric(candidates["Minutes played"], errors="coerce")
+                    candidates = candidates.loc[_cand_min >= float(min_minutes)].copy()
 
-            if candidates.empty:
-                st.info("No role-compatible comparison players remain under the current filters.")
-            else:
-                # Role benchmark uses the selected league/season universe and minimum minutes,
-                # consistent with the rest of the app, while ignoring team/age narrowing.
-                role_benchmark = benchmark_population_for_role(
-                    benchmark_source_global,
-                    similar_role,
-                    "Role position",
-                    selected_positions,
-                )
+                # Exclude the exact selected observation if its own league is also a target.
+                candidates = candidates.drop(index=ref_index[ref_label], errors="ignore")
 
-                similarity_df = build_role_similarity_table(
-                    ref_row,
-                    candidates,
-                    role_benchmark,
-                    similar_role,
-                    float(coverage_threshold_pct) / 100.0,
-                )
-
-                if similarity_df.empty:
-                    st.info("No candidates have enough comparable role metrics for a reliable similarity score.")
+                if candidates.empty:
+                    st.info("No role-compatible players are available in the selected target league(s).")
                 else:
-                    result = similarity_df.merge(
-                        candidates.reset_index().rename(columns={"index": "_row_index"}),
-                        on="_row_index",
-                        how="left",
-                    )
+                    # Similarity benchmark contains reference + target candidates so all
+                    # role metrics share one standardized comparison space.
+                    role_benchmark = pd.concat(
+                        [candidates, reference_pool.loc[[ref_index[ref_label]]]],
+                        axis=0,
+                    ).drop_duplicates().copy()
+                    role_benchmark = role_benchmark.loc[
+                        role_benchmark["Main Position"].astype(str).isin(eligible_positions)
+                    ].copy()
 
-                    # Raw role quality: same role benchmark for reference and candidates.
-                    scored_candidates, role_distribution = role_score_for_population(
+                    similarity_df = build_role_similarity_table(
+                        ref_row,
                         candidates,
                         role_benchmark,
                         similar_role,
                         float(coverage_threshold_pct) / 100.0,
                     )
-                    score_map = pd.to_numeric(
-                        scored_candidates["_projection_role_score"], errors="coerce"
-                    )
-                    result["Profile Score"] = result["_row_index"].map(score_map)
 
-                    # League-adjusted quality is deliberately separate from similarity.
-                    league_strength_sim = build_league_strength_lookup(
-                        tuple(sorted(set(
-                            [str(ref_row.get("League", ""))]
-                            + result["League"].dropna().astype(str).tolist()
-                        ))),
-                        str(OPTA_LEAGUE_META_PATH),
-                    ) if OPTA_LEAGUE_META_PATH.exists() else pd.DataFrame()
-
-                    mapped_refs = (
-                        league_strength_sim["League"].dropna().astype(str).tolist()
-                        if not league_strength_sim.empty else []
-                    )
-
-                    reference_league = None
-                    reference_rating = None
-                    if mapped_refs:
-                        ref_current_league = str(ref_row.get("League", ""))
-                        default_ref_idx = mapped_refs.index(ref_current_league) if ref_current_league in mapped_refs else 0
-                        reference_league = st.selectbox(
-                            "Reference league for adjusted quality",
-                            mapped_refs,
-                            index=default_ref_idx,
-                            key="similar_reference_league",
-                            help="This affects League-Adjusted Score only. It never changes Similarity %.",
-                        )
-                        ref_strength_row = league_strength_sim.loc[
-                            league_strength_sim["League"].eq(reference_league)
-                        ].iloc[0]
-                        reference_rating = float(ref_strength_row["rating"])
-                        rating_map = league_strength_sim.set_index("League")["rating"]
-                        result["_league_rating"] = result["League"].map(rating_map)
-                        result["League-Adjusted Score"] = (
-                            pd.to_numeric(result["Profile Score"], errors="coerce")
-                            + LEAGUE_TRANSLATION_BETA
-                            * (pd.to_numeric(result["_league_rating"], errors="coerce") - reference_rating)
-                        )
-                        st.caption(
-                            f"Adjusted quality reference: {reference_league} (Opta {reference_rating:.2f}) · "
-                            f"β={LEAGUE_TRANSLATION_BETA:.3f}. Similarity itself remains league-independent."
-                        )
+                    if similarity_df.empty:
+                        st.info("No candidates have enough comparable role metrics for a reliable similarity score.")
                     else:
-                        result["League-Adjusted Score"] = np.nan
-
-                    # Candidate controls.
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        top_n_sim = st.slider("Number of similar players", 5, 30, 15, key="similar_top_n")
-                    with c2:
-                        max_age_gap = st.slider(
-                            "Maximum age difference",
-                            0, 10, 5,
-                            key="similar_age_gap",
-                            help="0 = same age only. Applied after the main sidebar age filter.",
+                        result = similarity_df.merge(
+                            candidates.reset_index().rename(columns={"index": "_row_index"}),
+                            on="_row_index",
+                            how="left",
                         )
 
-                    ref_age = pd.to_numeric(pd.Series([ref_row.get("Age", np.nan)]), errors="coerce").iloc[0]
-                    if pd.notna(ref_age):
-                        cand_age = pd.to_numeric(result["Age"], errors="coerce")
-                        result = result.loc[(cand_age - float(ref_age)).abs() <= max_age_gap]
+                        scored_candidates, _ = role_score_for_population(
+                            candidates,
+                            role_benchmark,
+                            similar_role,
+                            float(coverage_threshold_pct) / 100.0,
+                        )
+                        score_map = pd.to_numeric(
+                            scored_candidates["_projection_role_score"], errors="coerce"
+                        )
+                        result["Profile Score"] = result["_row_index"].map(score_map)
 
-                    # Final defensive league filter: output table and scatter show
-                    # only the competition(s) selected in the main sidebar.
-                    if _selected_similarity_leagues and "League" in result.columns:
+                        # League-adjusted quality remains separate from similarity.
+                        relevant_strength_leagues = sorted(set(
+                            [str(ref_row.get("League", ""))]
+                            + [str(x) for x in target_leagues]
+                        ))
+                        league_strength_sim = build_league_strength_lookup(
+                            tuple(relevant_strength_leagues),
+                            str(OPTA_LEAGUE_META_PATH),
+                        ) if OPTA_LEAGUE_META_PATH.exists() else pd.DataFrame()
+
+                        mapped_refs = (
+                            league_strength_sim["League"].dropna().astype(str).tolist()
+                            if not league_strength_sim.empty else []
+                        )
+                        reference_league = None
+                        reference_rating = None
+
+                        if mapped_refs:
+                            ref_current_league = str(ref_row.get("League", ""))
+                            default_ref_idx = mapped_refs.index(ref_current_league) if ref_current_league in mapped_refs else 0
+                            reference_league = st.selectbox(
+                                "Reference league for adjusted quality",
+                                mapped_refs,
+                                index=default_ref_idx,
+                                key="similar_reference_league",
+                                help="Affects League-Adjusted Score only. Similarity % never changes.",
+                            )
+                            ref_strength_row = league_strength_sim.loc[
+                                league_strength_sim["League"].eq(reference_league)
+                            ].iloc[0]
+                            reference_rating = float(ref_strength_row["rating"])
+                            rating_map = league_strength_sim.set_index("League")["rating"]
+                            result["_league_rating"] = result["League"].map(rating_map)
+                            result["League-Adjusted Score"] = (
+                                pd.to_numeric(result["Profile Score"], errors="coerce")
+                                + LEAGUE_TRANSLATION_BETA
+                                * (pd.to_numeric(result["_league_rating"], errors="coerce") - reference_rating)
+                            )
+                            st.caption(
+                                f"Adjusted quality reference: {reference_league} (Opta {reference_rating:.2f}) · "
+                                f"β={LEAGUE_TRANSLATION_BETA:.3f}. Similarity itself remains league-independent."
+                            )
+                        else:
+                            result["League-Adjusted Score"] = np.nan
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            top_n_sim = st.slider("Number of similar players", 5, 30, 15, key="similar_top_n")
+                        with c2:
+                            max_age_gap = st.slider(
+                                "Maximum age difference",
+                                0, 10, 5,
+                                key="similar_age_gap",
+                                help="Applied after the main age filter.",
+                            )
+
+                        ref_age = pd.to_numeric(pd.Series([ref_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+                        if pd.notna(ref_age):
+                            cand_age = pd.to_numeric(result["Age"], errors="coerce")
+                            result = result.loc[(cand_age - float(ref_age)).abs() <= max_age_gap]
+
+                        # Hard output guard: table and scatter can only contain target leagues.
                         result = result.loc[
-                            result["League"].astype(str).isin(_selected_similarity_leagues)
+                            result["League"].astype(str).isin([str(x) for x in target_leagues])
                         ].copy()
 
-                    result = result.sort_values(
-                        ["Similarity %", "League-Adjusted Score", "Profile Score"],
-                        ascending=[False, False, False],
-                        na_position="last",
-                    ).head(top_n_sim).copy()
+                        result = result.sort_values(
+                            ["Similarity %", "League-Adjusted Score", "Profile Score"],
+                            ascending=[False, False, False],
+                            na_position="last",
+                        ).head(top_n_sim).copy()
 
-                    if result.empty:
-                        st.info("No candidates remain after the Similar Players filters.")
-                    else:
-                        # Reference summary.
-                        r1, r2, r3, r4 = st.columns(4)
-                        r1.metric("Reference", str(ref_row.get("Player", "—")))
-                        r2.metric("Role", similar_role)
-                        r3.metric("Main Position", str(ref_row.get("Main Position", "—")))
-                        r4.metric("Candidates shown", f"{len(result):,}")
+                        if result.empty:
+                            st.info("No candidates remain after the Similar Players filters.")
+                        else:
+                            r1, r2, r3, r4 = st.columns(4)
+                            r1.metric("Reference", str(ref_row.get("Player", "—")))
+                            r2.metric("Role", similar_role)
+                            r3.metric("Reference league", str(ref_row.get("League", "—")))
+                            r4.metric("Candidates shown", f"{len(result):,}")
 
-                        table_cols = [
-                            "Player", "Team", "League", "Main Position", "Age", "Minutes played",
-                            "Similarity %", "Profile Score", "League-Adjusted Score",
-                            "Similarity Coverage %",
-                        ]
-                        table_cols = [c for c in table_cols if c in result.columns]
-                        table = result[table_cols].copy()
-                        for c in ["Similarity %", "Similarity Coverage %"]:
-                            if c in table:
-                                table[c] = pd.to_numeric(table[c], errors="coerce").round(0)
-                        for c in ["Profile Score", "League-Adjusted Score"]:
-                            if c in table:
-                                table[c] = pd.to_numeric(table[c], errors="coerce").round(2)
-
-                        st.subheader("Closest role-profile matches")
-                        st.dataframe(
-                            table,
-                            width="stretch",
-                            hide_index=True,
-                            column_config={
-                                "Main Position": st.column_config.TextColumn("Pos", width=55),
-                                "Minutes played": st.column_config.NumberColumn("Min", format="%d", width=70),
-                                "Similarity %": st.column_config.NumberColumn("Similarity %", format="%.0f", width=95),
-                                "Profile Score": st.column_config.NumberColumn("Profile Score", format="%.2f", width=95),
-                                "League-Adjusted Score": st.column_config.NumberColumn("League-Adjusted Score", format="%.2f", width=125),
-                                "Similarity Coverage %": st.column_config.NumberColumn("Coverage %", format="%.0f", width=85),
-                            },
-                        )
-
-                        # Recruitment map: style similarity vs adjusted quality.
-                        chart_df = result.dropna(subset=["Similarity %", "League-Adjusted Score"]).copy()
-                        if not chart_df.empty:
-                            st.subheader("Similarity vs adjusted quality")
                             st.caption(
-                                "Right = more stylistically similar. Up = stronger performance after translating league strength "
-                                f"to {reference_league or 'the selected reference competition'}."
+                                "Searching in: " + " · ".join([str(x) for x in target_leagues])
                             )
-                            fig_sim = px.scatter(
-                                chart_df,
-                                x="Similarity %",
-                                y="League-Adjusted Score",
-                                color="Team",
-                                hover_name="Player",
-                                hover_data={
-                                    "League": True,
-                                    "Main Position": True,
-                                    "Age": True,
-                                    "Minutes played": ":.0f",
-                                    "Similarity %": ":.1f",
-                                    "Profile Score": ":.2f",
-                                    "League-Adjusted Score": ":.2f",
-                                    "Team": False,
+
+                            table_cols = [
+                                "Player", "Team", "League", "Main Position", "Age", "Minutes played",
+                                "Similarity %", "Profile Score", "League-Adjusted Score",
+                                "Similarity Coverage %",
+                            ]
+                            table_cols = [c for c in table_cols if c in result.columns]
+                            table = result[table_cols].copy()
+                            for c in ["Similarity %", "Similarity Coverage %"]:
+                                if c in table:
+                                    table[c] = pd.to_numeric(table[c], errors="coerce").round(0)
+                            for c in ["Profile Score", "League-Adjusted Score"]:
+                                if c in table:
+                                    table[c] = pd.to_numeric(table[c], errors="coerce").round(2)
+
+                            st.subheader("Closest role-profile matches")
+                            st.dataframe(
+                                table,
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "Main Position": st.column_config.TextColumn("Pos", width=55),
+                                    "Minutes played": st.column_config.NumberColumn("Min", format="%d", width=70),
+                                    "Similarity %": st.column_config.NumberColumn("Similarity %", format="%.0f", width=95),
+                                    "Profile Score": st.column_config.NumberColumn("Profile Score", format="%.2f", width=95),
+                                    "League-Adjusted Score": st.column_config.NumberColumn("League-Adjusted Score", format="%.2f", width=125),
+                                    "Similarity Coverage %": st.column_config.NumberColumn("Coverage %", format="%.0f", width=85),
                                 },
-                                text="Player",
-                                title=f"{similar_role}: similarity vs league-adjusted quality",
                             )
-                            fig_sim.update_traces(textposition="top center", marker=dict(size=11))
-                            fig_sim.update_xaxes(range=[0, 100])
-                            fig_sim.update_layout(height=600, legend_title_text="Team")
-                            st.plotly_chart(fig_sim, width="stretch")
 
-                        csv_sim = StringIO()
-                        table.to_csv(csv_sim, index=False)
-                        st.download_button(
-                            "⬇️ Download similar players (CSV)",
-                            data=csv_sim.getvalue(),
-                            file_name=f"{safe_widget_key(str(ref_row.get('Player', 'player')), similar_role)}_similar_players.csv",
-                            mime="text/csv",
-                        )
+                            chart_df = result.dropna(subset=["Similarity %", "League-Adjusted Score"]).copy()
+                            if not chart_df.empty:
+                                st.subheader("Similarity vs adjusted quality")
+                                st.caption(
+                                    "Right = more stylistically similar. Up = stronger performance after translating "
+                                    f"competition strength to {reference_league or 'the selected reference competition'}."
+                                )
+                                fig_sim = px.scatter(
+                                    chart_df,
+                                    x="Similarity %",
+                                    y="League-Adjusted Score",
+                                    color="League",
+                                    hover_name="Player",
+                                    hover_data={
+                                        "Team": True,
+                                        "Main Position": True,
+                                        "Age": True,
+                                        "Minutes played": ":.0f",
+                                        "Similarity %": ":.1f",
+                                        "Profile Score": ":.2f",
+                                        "League-Adjusted Score": ":.2f",
+                                        "League": False,
+                                    },
+                                    text="Player",
+                                    title=f"{similar_role}: similarity vs league-adjusted quality",
+                                )
+                                fig_sim.update_traces(textposition="top center", marker=dict(size=11))
+                                fig_sim.update_xaxes(range=[0, 100])
+                                fig_sim.update_layout(height=600, legend_title_text="Target League")
+                                st.plotly_chart(fig_sim, width="stretch")
 
-                        st.caption(
-                            "Similarity V1 uses weighted standardized distance across the selected role's canonical metrics. "
-                            "League strength is intentionally excluded from Similarity %. Profile Score measures current role performance; "
-                            "League-Adjusted Score translates that quality to the selected reference league using β = 0.020."
-                        )
+                            csv_sim = StringIO()
+                            table.to_csv(csv_sim, index=False)
+                            st.download_button(
+                                "⬇️ Download similar players (CSV)",
+                                data=csv_sim.getvalue(),
+                                file_name=f"{safe_widget_key(str(ref_row.get('Player', 'player')), similar_role)}_similar_players.csv",
+                                mime="text/csv",
+                            )
+
+                            st.caption(
+                                "Similarity V1 uses weighted standardized distance across the selected role's canonical metrics. "
+                                "Target league selection controls only where candidates are found. League strength does not alter "
+                                "Similarity %; it is used only for League-Adjusted Score."
+                            )
 
 
 st.markdown("---")
