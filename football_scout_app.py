@@ -1987,6 +1987,10 @@ if app_page == "Players":
         missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
         st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
+    # Position-aware default table columns. All source columns remain available
+    # in the selector; this only controls what is shown initially.
+    _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
+
     ID_COLS = [
         "Season label",
         "Player",
@@ -1994,13 +1998,12 @@ if app_page == "Players":
         "League",
         "Main Position",
         "Age",
-        "Market value (M€)",
-        "Goals",
-        "Assists",
-        "xG",
-        "xA",
-        "Minutes played",
     ]
+    if _gk_only_selection:
+        ID_COLS.extend(["Save rate, %", "Prevented goals per 90"])
+    else:
+        ID_COLS.extend(["Goals", "Assists", "xG", "xA"])
+    ID_COLS.append("Minutes played")
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
     display_options = [c for c in filtered.columns if c not in exclude_cols]
@@ -2009,15 +2012,16 @@ if app_page == "Players":
     calc_defaults = [c for c in ["Calc: Box Threat", "Calc: Chance Creation", "Calc: Passing Progression", "Calc: Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
     default_cols.extend(calc_defaults[:2])
     if calc_col_name and calc_col_name in filtered.columns:
+        # Show the role score and KPI sub-scores by default, but keep Coverage %
+        # available only as an optional user-selected column.
         default_cols = default_cols + [calc_col_name]
-        coverage_col = f"{calc_col_name} Coverage %"
-        if coverage_col in filtered.columns:
-            default_cols.append(coverage_col)
         default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
 
     selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
-    rank_candidates = CALCULATED_OUTPUT_COLUMNS + [calc_col_name, "Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
+    # The active profile score is the primary scouting ranking. Calculated
+    # indicators remain available but no longer override the role score default.
+    rank_candidates = [calc_col_name] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
     rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
     default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
 
@@ -2074,7 +2078,41 @@ if app_page == "Players":
     if not plot_metrics:
         st.warning("No numerical metrics available for plotting.")
     else:
-        x_default = "Goals per 90" if "Goals per 90" in plot_metrics else plot_metrics[0]
+        # Profile-aware scatter defaults: pair the active weighted role score
+        # with the most relevant calculated indicator for that role.
+        PROFILE_SCATTER_X_DEFAULT = {
+            "Classic Goalkeeper": "Calc: GK Shot Stopping",
+            "Sweeper Keeper": "Calc: GK Area Control",
+            "Build-Up Keeper": "Calc: GK Distribution",
+            "Ball-Playing CB": "Calc: Passing Progression",
+            "Combative CB / Stopper": "Calc: Defensive Activity",
+            "Libero / Middle Pin CB": "Calc: Passing Progression",
+            "Wide CB (in 3)": "Calc: Carrying Progression",
+            "Defensive Midfielder #6": "Calc: Defensive Activity",
+            "Deep-Lying Playmaker": "Calc: Passing Progression",
+            "Box-to-Box Midfielder": "Calc: Carrying Progression",
+            "Playmaker #10": "Calc: Chance Creation",
+            "Full-Back": "Calc: Passing Progression",
+            "Wing-Back": "Calc: Wide Delivery",
+            "Inverted Full-Back": "Calc: Passing Progression",
+            "Classic Winger": "Calc: Wide Delivery",
+            "Inverted Winger": "Calc: Box Threat",
+            "Target Man #9": "Calc: Aerial Impact",
+            "Poacher": "Calc: Finishing",
+            "Pressing Forward": "Calc: Defensive Activity",
+            "Creative Forward / False 9": "Calc: Chance Creation",
+            "Wide Forward / Inside 9": "Calc: Box Threat",
+        }
+        _profile_x = PROFILE_SCATTER_X_DEFAULT.get(active_role) if active else None
+        if _profile_x in plot_metrics and filtered[_profile_x].notna().any():
+            x_default = _profile_x
+        elif _gk_only_selection and "Calc: GK Shot Stopping" in plot_metrics:
+            x_default = "Calc: GK Shot Stopping"
+        elif "Goals per 90" in plot_metrics:
+            x_default = "Goals per 90"
+        else:
+            x_default = plot_metrics[0]
+
         if calc_col_name and calc_col_name in plot_metrics:
             y_default = calc_col_name
         elif "Assists per 90" in plot_metrics:
@@ -2088,21 +2126,24 @@ if app_page == "Players":
         with c2:
             y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
         with c3:
+            _color_options = [o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns]
+            _color_default = _color_options.index("Team") if "Team" in _color_options else 0
             color_by = st.selectbox(
                 "Color by",
-                options=[o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns],
-                index=0,
+                options=_color_options,
+                index=_color_default,
             )
 
+        _size_options = [o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns]
         size_by = st.selectbox(
             "Size by",
-            options=[o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns],
-            index=1 if "Minutes played" in filtered.columns else 0,
+            options=_size_options,
+            index=_size_options.index("None"),
         )
 
         rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
         sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
-        plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(15, len(filtered)))
+        plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(10, len(filtered)))
 
         plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
 
@@ -2117,7 +2158,7 @@ if app_page == "Players":
         plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
         plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
 
-        show_labels = st.checkbox("Show player labels on chart", value=False)
+        show_labels = st.checkbox("Show player labels on chart", value=True)
 
         fig = px.scatter(
             plot_df,
