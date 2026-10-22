@@ -279,6 +279,26 @@ def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
     df["Season end"] = starts_ends.apply(lambda t: t[1])
     df["Season group"] = pd.Series(df["Season start"]).fillna(df["Season end"]).astype("Int64")
 
+    # Memory optimization: downcast wide numeric columns where possible.
+    # This preserves values while reducing RAM for large Wyscout exports.
+    for col in df.select_dtypes(include=["float64"]).columns:
+        df[col] = pd.to_numeric(df[col], downcast="float")
+    for col in df.select_dtypes(include=["int64"]).columns:
+        df[col] = pd.to_numeric(df[col], downcast="integer")
+
+    # Repeated categorical labels are stored once rather than as tens of thousands
+    # of duplicate Python strings. Player is deliberately left as text because of
+    # its high cardinality and frequent string operations.
+    for col in [
+        "Team", "League", "Main Position", "Position", "Foot",
+        "Birth country", "Passport country", "On loan", "Season label",
+    ]:
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype("category")
+            except (TypeError, ValueError):
+                pass
+
     return df
 
 
@@ -338,13 +358,14 @@ def benchmark_population_for_role(
     selected_positions: List[str],
 ) -> pd.DataFrame:
     """Benchmark is intentionally independent from age/team search filters."""
-    bench = source_df.copy()
+    # Filtering below is read-only, so avoid cloning the entire benchmark source.
+    bench = source_df
     if "Main Position" not in bench.columns:
         return bench
     if mode == "Role position" and role_name in PROFILES:
-        return bench.loc[position_family_mask(bench["Main Position"], role_name)].copy()
+        return bench.loc[position_family_mask(bench["Main Position"], role_name)]
     if mode == "Selected positions" and selected_positions:
-        return bench.loc[bench["Main Position"].isin(selected_positions)].copy()
+        return bench.loc[bench["Main Position"].isin(selected_positions)]
     return bench
 
 
@@ -1859,11 +1880,11 @@ coverage_threshold_pct = st.sidebar.slider(
     help="Scores below this percentage of available profile weight are suppressed rather than treating missing data as average.",
 )
 
-benchmark_source_global = df_league.copy()
+benchmark_source_global = df_league
 if "Minutes played" in benchmark_source_global.columns:
     benchmark_source_global = benchmark_source_global.loc[
         pd.to_numeric(benchmark_source_global["Minutes played"], errors="coerce") >= min_minutes
-    ].copy()
+    ]
 
 # =========================
 # Profile builder
@@ -2000,7 +2021,7 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
 active = st.session_state.get("active_profile")
 calc_col_name: str | None = None
 profile_metrics_in_use: List[str] = []
-active_benchmark_df = benchmark_source_global.copy()
+active_benchmark_df = benchmark_source_global
 active_kpi_cols: List[str] = []
 
 if active and active.get("metrics"):
@@ -2901,7 +2922,7 @@ elif app_page == "Role Fit":
         "coverage rules and direction-aware methodology as Profile Score."
     )
 
-    role_fit_pool = filtered_base.copy()
+    role_fit_pool = filtered_base
     if not role_fit_pool.empty and "Player" in role_fit_pool.columns:
         rf_c1, rf_c2 = st.columns([2, 1])
         with rf_c1:
