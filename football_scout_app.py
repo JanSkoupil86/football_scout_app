@@ -604,6 +604,29 @@ def build_single_player_profile(
     return pd.DataFrame(records), sorted(set(missing))
 
 
+def performance_band_color(value: float, scale_mode: str) -> str:
+    """Performance colour for percentile or direction-aware z-score."""
+    if pd.isna(value):
+        return "#7F8C8D"
+    if scale_mode == "Percentile":
+        if value < 25:
+            return "#8B1E1E"   # dark red
+        if value < 50:
+            return "#E57373"   # light red
+        if value < 75:
+            return "#81C784"   # light green
+        return "#1B5E20"       # dark green
+
+    # z thresholds mirror approximately the 25th / 50th / 75th percentiles.
+    if value < -0.67:
+        return "#8B1E1E"
+    if value < 0:
+        return "#E57373"
+    if value < 0.67:
+        return "#81C784"
+    return "#1B5E20"
+
+
 def single_player_wheel(
     profile_df: pd.DataFrame,
     player_name: str,
@@ -765,6 +788,15 @@ def single_player_wheel(
         scale_r = [perf_inner + ((v + 2.0) / 4.0) * perf_span for v in scale_ticks]
         scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
 
+    performance_values = (
+        p["Percentile"].to_numpy(dtype=float)
+        if scale_mode == "Percentile"
+        else p["Z-score"].to_numpy(dtype=float)
+    )
+    performance_colors = [
+        performance_band_color(v, scale_mode) for v in performance_values
+    ]
+
     # Calm reference rings. In the default percentile view, 50 is the
     # benchmark median and 25/75 provide quick orientation.
     ring_theta = np.linspace(0, 360, 361)
@@ -808,7 +840,7 @@ def single_player_wheel(
                 r=[perf_inner, marker_r[i]],
                 theta=[theta[i], theta[i]],
                 mode="lines",
-                line=dict(color=group_colors[group_seq[i]], width=9.5),
+                line=dict(color=performance_colors[i], width=9.5),
                 opacity=0.82,
                 hoverinfo="skip",
                 showlegend=False,
@@ -816,7 +848,7 @@ def single_player_wheel(
         )
 
     # Performance markers: the primary quantitative encoding.
-    marker_colors = [group_colors[g] for g in group_seq]
+    marker_colors = performance_colors
     fig.add_trace(
         go.Scatterpolar(
             r=marker_r,
@@ -1574,20 +1606,44 @@ def role_fit_detail_wheel(
         np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
         np.array(labels, dtype=object),
     ])
+    role_perf_values = (
+        pct.reindex(metrics).to_numpy(dtype=float)
+        if display_scale == "Percentile"
+        else z.reindex(metrics).to_numpy(dtype=float)
+    )
+    role_perf_colors = [
+        performance_band_color(v, display_scale) for v in role_perf_values
+    ]
+
+    # Performance colour is encoded by each radial line and endpoint dot.
+    for i in range(n):
+        fig.add_trace(go.Scatterpolar(
+            r=[perf_inner, radius[i]],
+            theta=[theta[i], theta[i]],
+            mode="lines",
+            line=dict(color=role_perf_colors[i], width=7.5),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
     fig.add_trace(go.Scatterpolar(
-        r=np.r_[radius, radius[0]],
-        theta=np.r_[theta, theta[0]],
-        mode="lines+markers",
+        r=radius,
+        theta=theta,
+        mode="markers",
         name=player_name,
-        line=dict(width=7.5),
-        marker=dict(size=16, line=dict(color="white", width=2.2)),
-        customdata=np.vstack([custom, custom[0]]),
+        marker=dict(
+            size=16,
+            color=role_perf_colors,
+            line=dict(color="white", width=2.2),
+        ),
+        customdata=custom,
         hovertemplate=(
             "%{customdata[4]}<br>KPI: %{customdata[3]}<br>"
             "Raw value: %{customdata[0]:.2f}<br>"
             "Percentile: %{customdata[2]:.0f}<br>"
             "Z-score: %{customdata[1]:+.2f}<extra></extra>"
         ),
+        showlegend=False,
     ))
 
     # KPI-colored outer tiles, following the same established wheel language.
