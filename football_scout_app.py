@@ -2708,6 +2708,63 @@ if app_page == "Players":
         missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
         st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
+    # Optional competition-strength normalization for cross-league player ranking.
+    # The original Profile Score is never overwritten. The adjusted score expresses
+    # every player on the selected reference league's competition-strength scale.
+    league_adjustment_on = False
+    adjusted_score_col = None
+    reference_league = None
+    reference_rating = None
+    league_strength_players = pd.DataFrame()
+
+    if calc_col_name and calc_col_name in filtered.columns and "League" in filtered.columns:
+        league_strength_players = build_league_strength_lookup(
+            tuple(sorted(filtered["League"].dropna().astype(str).unique().tolist())),
+            str(OPTA_LEAGUE_META_PATH),
+        )
+        if not league_strength_players.empty:
+            league_adjustment_on = st.toggle(
+                "Apply league adjustment",
+                value=False,
+                key="players_apply_league_adjustment",
+                help=(
+                    "Keeps the original Profile Score and adds a competition-adjusted score using "
+                    "β = 0.020 per Opta league-rating point. Choose the league whose strength should "
+                    "be the common comparison reference."
+                ),
+            )
+            if league_adjustment_on:
+                mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+                reference_league = st.selectbox(
+                    "Reference league for adjusted scores",
+                    options=mapped_leagues,
+                    index=0,
+                    key="players_league_adjustment_reference",
+                    help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
+                )
+                ref_row = league_strength_players.loc[league_strength_players["League"].eq(reference_league)].iloc[0]
+                reference_rating = float(ref_row["rating"])
+                rating_map = league_strength_players.set_index("League")["rating"]
+                rank_map = league_strength_players.set_index("League")["rank"]
+                filtered["Opta League Rating"] = filtered["League"].map(rating_map)
+                filtered["Opta Global Rank"] = filtered["League"].map(rank_map)
+                adjusted_score_col = "League-Adjusted Score"
+                filtered[adjusted_score_col] = (
+                    pd.to_numeric(filtered[calc_col_name], errors="coerce")
+                    + LEAGUE_TRANSLATION_BETA
+                    * (pd.to_numeric(filtered["Opta League Rating"], errors="coerce") - reference_rating)
+                )
+                filtered["League Adjustment"] = filtered[adjusted_score_col] - pd.to_numeric(filtered[calc_col_name], errors="coerce")
+                for _c in ["Opta League Rating", "Opta Global Rank", adjusted_score_col, "League Adjustment"]:
+                    if _c not in numeric_cols:
+                        numeric_cols.append(_c)
+                st.caption(
+                    f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
+                    f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
+                )
+        else:
+            st.caption("League adjustment unavailable: none of the currently filtered leagues are mapped to Opta league strength.")
+
     # Position-aware default table columns. All source columns remain available
     # in the selector; this only controls what is shown initially.
     _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
@@ -2733,6 +2790,8 @@ if app_page == "Players":
     # Coverage remains available in the selector but is not shown by default.
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.append(calc_col_name)
+        if league_adjustment_on and adjusted_score_col in filtered.columns:
+            default_cols.extend(["Opta League Rating", adjusted_score_col])
 
     if _gk_only_selection:
         # GK-specific raw indicators replace attacking output columns in the default view.
@@ -2809,6 +2868,10 @@ if app_page == "Players":
             "Calc: Box Threat": "Box Threat",
             "Calc: Finishing": "Finishing",
             "Calc: Link Play": "Link Play",
+            "Opta League Rating": "League Rating",
+            "Opta Global Rank": "Opta Rank",
+            "League-Adjusted Score": "Adjusted Score",
+            "League Adjustment": "Adjustment",
         }
 
         for c in table_df.columns:
@@ -2835,6 +2898,10 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=60, format="%d")
             elif c.startswith("Score:"):
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
+            elif c in {"League-Adjusted Score", "League Adjustment", "Opta League Rating"}:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=92, format="%.2f")
+            elif c == "Opta Global Rank":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%d")
             elif c == "Save rate, %":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
             elif c == "Prevented goals per 90":
@@ -3001,6 +3068,91 @@ if app_page == "Players":
             xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
             yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
         )
+
+        # When Profile Score is the Y-axis and league adjustment is enabled,
+        # overlay each player's adjusted score at the same X coordinate. The
+        # lighter point preserves the original team/category colour, while a
+        # thin connector makes the size and direction of the adjustment visible.
+        if (
+            league_adjustment_on
+            and adjusted_score_col in plot_df.columns
+            and y_axis == calc_col_name
+            and plot_df[adjusted_score_col].notna().any()
+        ):
+            import plotly.graph_objects as go
+
+            original_color_by = None if color_by == "None" else color_by
+            color_lookup = {}
+            for tr in fig.data:
+                if getattr(tr, "mode", None) and "markers" in tr.mode:
+                    color_lookup[str(tr.name)] = getattr(tr.marker, "color", None)
+            fallback_color = "#636EFA"
+
+            # Connector segments are drawn first so both endpoints stay crisp.
+            for _, r in plot_df.dropna(subset=[x_axis, y_axis, adjusted_score_col]).iterrows():
+                category = str(r[original_color_by]) if original_color_by else ""
+                base_color = color_lookup.get(category, fallback_color)
+                fig.add_trace(go.Scatter(
+                    x=[r[x_axis], r[x_axis]],
+                    y=[r[y_axis], r[adjusted_score_col]],
+                    mode="lines",
+                    line=dict(color=base_color, width=1.5),
+                    opacity=0.28,
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+
+            if original_color_by:
+                grouped = plot_df.groupby(original_color_by, dropna=False, sort=False)
+            else:
+                grouped = [("Adjusted", plot_df)]
+
+            for category, g in grouped:
+                g = g.dropna(subset=[x_axis, adjusted_score_col])
+                if g.empty:
+                    continue
+                category_key = str(category) if original_color_by else ""
+                base_color = color_lookup.get(category_key, fallback_color)
+                custom = np.column_stack([
+                    g["Player"].astype(str) if "Player" in g.columns else pd.Series([""] * len(g), index=g.index),
+                    pd.to_numeric(g[y_axis], errors="coerce"),
+                    pd.to_numeric(g[adjusted_score_col], errors="coerce"),
+                    pd.to_numeric(g.get("Opta League Rating", np.nan), errors="coerce"),
+                    g["League"].astype(str) if "League" in g.columns else pd.Series([""] * len(g), index=g.index),
+                    pd.to_numeric(g.get("League Adjustment", np.nan), errors="coerce"),
+                ])
+                fig.add_trace(go.Scatter(
+                    x=g[x_axis],
+                    y=g[adjusted_score_col],
+                    mode="markers",
+                    name="Adjusted" if not original_color_by else f"{category} · adjusted",
+                    legendgroup=f"adjusted_{category_key}",
+                    showlegend=False,
+                    marker=dict(
+                        size=16,
+                        color=base_color,
+                        opacity=0.35,
+                        line=dict(width=1.5, color=base_color),
+                    ),
+                    customdata=custom,
+                    hovertemplate=(
+                        "Player: %{customdata[0]}<br>"
+                        + x_axis + ": %{x:.2f}<br>"
+                        + "Original Profile Score: %{customdata[1]:.2f}<br>"
+                        + "Adjusted Score: %{customdata[2]:.2f}<br>"
+                        + "League: %{customdata[4]}<br>"
+                        + "Opta League Rating: %{customdata[3]:.2f}<br>"
+                        + "League Adjustment: %{customdata[5]:+.2f}<br>"
+                        + f"Reference: {reference_league} ({reference_rating:.2f})"
+                        + "<extra>League-adjusted</extra>"
+                    ),
+                ))
+
+            fig.update_layout(
+                title=f"{y_axis} vs. {x_axis} by Player · original + league-adjusted",
+            )
+        elif league_adjustment_on and y_axis != calc_col_name:
+            st.caption("League-adjusted overlay appears when the active Profile Score is selected on the Y-axis.")
 
         st.plotly_chart(fig, width="stretch")
 
