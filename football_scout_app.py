@@ -1672,44 +1672,142 @@ def league_projection_radar(
     current_label: str,
     target_label: str,
 ) -> go.Figure:
-    """Current-vs-projected percentile radar using the same role metric order as Single Player."""
+    """Single-Player-style scouting wheel overlaying current and projected percentiles."""
     if current_profile.empty or projected_profile.empty:
         return go.Figure()
-    cur = current_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Current"})
-    pro = projected_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Projected"})
-    d = cur.merge(pro, on="Metric", how="inner")
-    if d.empty:
+
+    cur = current_profile[["KPI Group", "Metric", "Raw Value", "Percentile", "Z-score"]].copy()
+    pro = projected_profile[["Metric", "Percentile", "Z-score"]].rename(
+        columns={"Percentile": "Projected Percentile", "Z-score": "Projected Z-score"}
+    )
+    p = cur.merge(pro, on="Metric", how="inner").reset_index(drop=True)
+    if p.empty:
         return go.Figure()
-    aliases = {
-        "Successful defensive actions per 90": "Def. Actions /90", "Defensive duels won, %": "Def. Duel Win %",
-        "Aerial duels won, %": "Aerial Win %", "PAdj Interceptions": "PAdj Interceptions",
-        "PAdj Sliding tackles": "PAdj Tackles", "Accurate passes, %": "Pass Accuracy %",
-        "Progressive passes per 90": "Progressive Passes /90", "Accurate progressive passes, %": "Prog. Pass Acc. %",
-        "Passes to final third per 90": "Final Third Passes /90", "Progressive runs per 90": "Progressive Runs /90",
-        "Dribbles per 90": "Dribbles /90", "Successful dribbles, %": "Dribble Success %",
-        "xA per 90": "xA /90", "Key passes per 90": "Key Passes /90", "xG per 90": "xG /90",
-        "Non-penalty goals per 90": "NPG /90", "Touches in box per 90": "Box Touches /90",
-        "Shots per 90": "Shots /90", "Save rate, %": "Save Rate %", "Prevented goals per 90": "Goals Prevented /90",
-        "Conceded goals per 90": "Goals Conceded /90 ↓", "Exits per 90": "Exits /90",
-        "Aerial duels per 90.1": "Aerial Duels /90", "Accurate long passes, %": "Long Pass Acc. %",
-        "Shot assists per 90": "Shot Assists /90", "Crosses per 90": "Crosses /90",
-        "Accurate crosses, %": "Cross Accuracy %", "Offensive duels won, %": "Off. Duel Win %",
-        "Received passes per 90": "Passes Received /90", "Received long passes per 90": "Long Passes Rec. /90",
+
+    groups = p["KPI Group"].drop_duplicates().tolist()
+    palette = ["#3478B8", "#8E5AB5", "#16A6B6", "#E58A2B", "#244A73", "#D4A72C", "#C44E8B", "#687684"]
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    display_aliases = {
+        "Save rate, %": "Save Rate %", "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓", "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90", "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90", "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %", "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %", "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %", "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90", "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90", "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90", "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90", "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions", "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90", "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles", "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90", "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓", "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %", "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90", "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90", "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90", "xA per 90": "xA /90", "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90", "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90", "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90", "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90", "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90", "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %", "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90", "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
     }
-    labels = [aliases.get(m, m) for m in d["Metric"]]
-    labels_closed = labels + [labels[0]]
-    cur_vals = d["Current"].astype(float).tolist(); cur_vals += [cur_vals[0]]
-    pro_vals = d["Projected"].astype(float).tolist(); pro_vals += [pro_vals[0]]
+    labels = [display_aliases.get(m, m) for m in p["Metric"]]
+    p["Display Metric"] = labels
+
+    n = len(p)
+    group_seq = p["KPI Group"].tolist()
+    gap_units = 0.48
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
+    theta, cursor = [], 0.0
+    for i in range(n):
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.90
+
+    band_inner, band_outer = 78.0, 86.0
     fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(r=cur_vals, theta=labels_closed, mode="lines+markers", name=current_label,
-                                  line=dict(width=3), marker=dict(size=7), fill=None))
-    fig.add_trace(go.Scatterpolar(r=pro_vals, theta=labels_closed, mode="lines+markers", name=f"{target_label} (Projected)",
-                                  line=dict(width=3, dash="dot"), marker=dict(size=7), fill=None))
+    for group in groups:
+        idx = p.index[p["KPI Group"] == group].tolist()
+        fig.add_trace(go.Barpolar(
+            r=[band_outer-band_inner]*len(idx), base=[band_inner]*len(idx),
+            theta=[float(theta[i]) for i in idx], width=[width]*len(idx),
+            marker_color=group_colors[group], marker_line_color="white", marker_line_width=1.2,
+            opacity=0.88, name=group, hoverinfo="skip", legendgroup="kpi",
+        ))
+
+    perf_inner, perf_outer = 20.0, 74.0
+    perf_span = perf_outer - perf_inner
+    cur_pct = np.clip(p["Percentile"].to_numpy(dtype=float), 0, 100)
+    pro_pct = np.clip(p["Projected Percentile"].to_numpy(dtype=float), 0, 100)
+    cur_r = perf_inner + cur_pct/100.0*perf_span
+    pro_r = perf_inner + pro_pct/100.0*perf_span
+
+    ring_theta = np.linspace(0, 360, 361)
+    for tick in [0,25,50,75,100]:
+        rv = perf_inner + tick/100.0*perf_span
+        if tick == 50:
+            col, lw = "rgba(45,55,65,0.55)", 2.6
+        elif tick in (25,75):
+            col, lw = "rgba(95,105,115,0.14)", 1.15
+        else:
+            col, lw = "rgba(120,130,140,0.10)", 1.0
+        fig.add_trace(go.Scatterpolar(r=[rv]*len(ring_theta), theta=ring_theta, mode="lines",
+                                      line=dict(color=col,width=lw), hoverinfo="skip", showlegend=False))
+
+    # Close each profile around the wheel while preserving the KPI-boundary gaps.
+    closed_theta = list(theta) + [float(theta[0])]
+    current_color = "#303A44"
+    projected_color = "#E56B3F"
+    cur_custom = np.column_stack([p["Raw Value"], p["Percentile"], p["Z-score"], p["Display Metric"], p["KPI Group"]])
+    pro_custom = np.column_stack([p["Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
+    cur_custom_closed = np.vstack([cur_custom, cur_custom[0]])
+    pro_custom_closed = np.vstack([pro_custom, pro_custom[0]])
+
+    fig.add_trace(go.Scatterpolar(
+        r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
+        line=dict(color=current_color,width=3.2), marker=dict(size=9,color=current_color,line=dict(color="white",width=1.5)),
+        name=current_label, legendgroup="profiles", customdata=cur_custom_closed,
+        hovertemplate="<b>%{customdata[3]}</b><br>Current: %{customdata[1]:.0f}th percentile<br>Raw value: %{customdata[0]:.2f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatterpolar(
+        r=list(pro_r)+[pro_r[0]], theta=closed_theta, mode="lines+markers",
+        line=dict(color=projected_color,width=3.2,dash="dot"), marker=dict(size=9,color=projected_color,line=dict(color="white",width=1.5)),
+        name=f"{target_label} (Projected)", legendgroup="profiles", customdata=pro_custom_closed,
+        hovertemplate="<b>%{customdata[3]}</b><br>Projected: %{customdata[1]:.0f}th percentile<br>Current raw value: %{customdata[0]:.2f}<extra></extra>",
+    ))
+
+    # Outer tiles show current → projected percentile, making the translation readable without hover.
+    tile_text = [f"<b>{int(round(c))}→{int(round(q))}</b>" for c,q in zip(cur_pct,pro_pct)]
+    fig.add_trace(go.Scatterpolar(r=[82.0]*n, theta=theta, mode="text", text=tile_text,
+                                  textfont=dict(size=14,color="white"), hoverinfo="skip", showlegend=False))
+
+    fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
+                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>Current → Projected</span>",
+                       showarrow=False,align="center",font=dict(size=16,color="#17202A"),
+                       bgcolor="rgba(255,255,255,0.94)",bordercolor="rgba(120,130,140,0.22)",borderwidth=1,borderpad=11)
+    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text="Percentile: 0–100 · outer tiles = current → projected",
+                       showarrow=False,xanchor="left",yanchor="bottom",font=dict(size=10,color="#6B7785"))
+
     fig.update_layout(
-        title=f"Projected performance of {player_name}", template="plotly_white", height=680,
-        polar=dict(radialaxis=dict(range=[0,100], tickvals=[25,50,75,100], ticksuffix="", showline=False),
-                   angularaxis=dict(direction="clockwise")),
-        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center"), margin=dict(l=80,r=80,t=80,b=100),
+        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{current_label} → {target_label}</sup>",
+                   x=0.5,xanchor="center",y=0.985,font=dict(size=20,color="#17202A")),
+        template="plotly_white",height=920,margin=dict(l=180,r=180,t=150,b=125),paper_bgcolor="white",plot_bgcolor="white",
+        legend=dict(orientation="h",yanchor="bottom",y=1.025,xanchor="center",x=0.5,title_text="",font=dict(size=10)),
+        polar=dict(bgcolor="white",radialaxis=dict(range=[0,96],visible=False),
+                   angularaxis=dict(tickmode="array",tickvals=theta,ticktext=labels,direction="clockwise",rotation=90,
+                                    gridcolor="rgba(255,255,255,0)",tickfont=dict(size=16,color="#303A44"),showline=False)),
+        barmode="overlay",
     )
     return fig
 
