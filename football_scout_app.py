@@ -140,6 +140,32 @@ def validate_builtin_profile_framework() -> List[str]:
 BUILTIN_PROFILE_FRAMEWORK_ISSUES = validate_builtin_profile_framework()
 
 
+# Main Position eligibility used when a built-in profile is applied.
+# Applying a profile updates the Main Position filter to these Wyscout labels.
+PROFILE_POSITION_ELIGIBILITY = {
+    "Classic Goalkeeper": ["GK"],
+    "Sweeper Keeper": ["GK"],
+    "Build-Up Keeper": ["GK"],
+    "Ball-Playing CB": ["CB", "LCB", "RCB"],
+    "Combative CB / Stopper": ["CB", "LCB", "RCB"],
+    "Libero / Middle Pin CB": ["CB", "LCB", "RCB"],
+    "Wide CB (in 3)": ["CB", "LCB", "RCB"],
+    "Defensive Midfielder #6": ["DMF", "LDMF", "RDMF", "LCMF", "RCMF"],
+    "Deep-Lying Playmaker": ["DMF", "LDMF", "RDMF", "LCMF", "RCMF"],
+    "Box-to-Box Midfielder": ["LCMF", "RCMF"],
+    "Playmaker #10": ["AMF"],
+    "Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Wing-Back": ["LWB", "RWB", "LB", "RB"],
+    "Inverted Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Classic Winger": ["LW", "RW", "LAMF", "RAMF"],
+    "Inverted Winger": ["LW", "RW", "LWF", "RWF", "LAMF", "RAMF"],
+    "Target Man #9": ["CF"],
+    "Poacher": ["CF", "LWF", "RWF"],
+    "Pressing Forward": ["CF", "LWF", "RWF"],
+    "Creative Forward / False 9": ["CF", "AMF"],
+    "Wide Forward / Inside 9": ["LWF", "RWF", "LW", "RW"],
+}
+
 # =========================
 # Utilities
 # =========================
@@ -1688,7 +1714,22 @@ if df_league.empty:
 teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
-selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
+# A stable widget key allows Apply profile to set role-eligible Main Positions.
+# Remove stale values if the selected leagues do not contain them.
+_position_widget_options = [ALL_TOKEN] + positions
+if "main_position_filter" in st.session_state:
+    _clean_positions = [
+        p for p in st.session_state["main_position_filter"]
+        if p in _position_widget_options
+    ]
+    st.session_state["main_position_filter"] = _clean_positions or [ALL_TOKEN]
+
+selected_positions, _ = multiselect_all(
+    "Main Position(s)",
+    positions,
+    default_all=True,
+    key="main_position_filter",
+)
 
 # Age — quick scouting presets plus the existing manual range slider.
 age_series = pd.to_numeric(df_league["Age"], errors="coerce")
@@ -1898,6 +1939,14 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
                 "metrics": resolved_metrics[:],
                 "weights_pct": [int(x) for x in weights_pct],
             }
+
+            # Automatically focus the Main Position filter on players eligible
+            # for the applied built-in profile. The user can edit it afterward.
+            eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
+            available_eligible_positions = [p for p in eligible_positions if p in positions]
+            if available_eligible_positions:
+                st.session_state["main_position_filter"] = available_eligible_positions
+
             st.rerun()
 
     else:
@@ -2221,7 +2270,7 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.TextColumn(display_label, width=50)
             elif c == "Age":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=45, format="%d")
-            elif c == "Minutes played":
+            elif c in {"Minutes played", "Matches played", "Goals", "Assists"}:
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=60, format="%d")
             elif c.startswith("Score:"):
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
