@@ -1638,9 +1638,15 @@ df_all = preprocess(df_raw)
 # =========================
 st.sidebar.header("Filters")
 
-# Season
+# Season — prefer 2026 on a fresh upload. If 2026 is not present, fall back to
+# the latest available season group so the app never opens on an empty season.
 season_groups = sorted([x for x in df_all["Season group"].dropna().unique().tolist()])
-selected_groups = st.sidebar.multiselect("Season group (start year)", season_groups, default=season_groups)
+season_default = [2026] if 2026 in season_groups else ([season_groups[-1]] if season_groups else [])
+selected_groups = st.sidebar.multiselect(
+    "Season group (start year)",
+    season_groups,
+    default=season_default,
+)
 
 use_exact_label = st.sidebar.checkbox("Also filter by exact Season label", value=False)
 selected_labels = None
@@ -1648,48 +1654,116 @@ if use_exact_label:
     season_labels = sorted(df_all["Season label"].dropna().unique().tolist())
     selected_labels = st.sidebar.multiselect("Season label(s)", season_labels, default=season_labels)
 
-season_mask = df_all["Season group"].isin(selected_groups) if selected_groups else pd.Series(True, index=df_all.index)
+season_mask = (
+    df_all["Season group"].isin(selected_groups)
+    if selected_groups
+    else pd.Series(False, index=df_all.index)
+)
 if use_exact_label and selected_labels:
     season_mask = season_mask & df_all["Season label"].isin(selected_labels)
 
 df_season = df_all.loc[season_mask]
 
-# League
+# League — deliberately blank by default. The normal workflow is to choose a
+# small group of leagues manually; ALL remains available as an explicit choice.
 leagues = sorted(df_season["League"].dropna().unique().tolist())
-selected_leagues, _ = multiselect_all("League(s)", leagues, default_all=True, help="Choose specific leagues or ALL")
+selected_leagues, _ = multiselect_all(
+    "League(s)",
+    leagues,
+    default_all=False,
+    help="Choose the leagues you want to analyse. Select ALL manually when needed.",
+)
+
+if not selected_leagues:
+    st.sidebar.info("Select at least one league to continue.")
+    st.info("Select at least one league in the sidebar to continue.")
+    st.stop()
 
 df_league = df_season.loc[df_season["League"].isin(selected_leagues)]
 if df_league.empty:
     st.warning("No players found for selected seasons/leagues.")
     st.stop()
 
-# Team / Position
+# Team / Position — unchanged. After leagues are chosen, Team defaults to ALL.
 teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
 selected_positions, _ = multiselect_all("Main Position(s)", positions, default_all=True)
 
-# Age
+# Age — quick scouting presets plus the existing manual range slider.
 age_series = pd.to_numeric(df_league["Age"], errors="coerce")
 age_min = int(age_series.min(skipna=True) or 0)
 age_max = int(age_series.max(skipna=True) or 0)
 if age_max < age_min:
     age_min, age_max = 0, 0
-age_range = st.sidebar.slider("Age range", age_min, age_max, (age_min, age_max)) if age_max >= age_min else (0, 0)
 
-# Minutes
+age_preset = st.sidebar.radio(
+    "Age preset",
+    ["All", "U21", "U23", "U25"],
+    index=0,
+    horizontal=True,
+    key="age_preset",
+)
+
+age_caps = {"U21": 21, "U23": 23, "U25": 25}
+preset_age_max = min(age_caps.get(age_preset, age_max), age_max)
+preset_age_max = max(age_min, preset_age_max)
+
+# Reset the manual range when the preset changes; otherwise retain manual slider edits.
+if st.session_state.get("_last_age_preset") != age_preset:
+    st.session_state["age_range"] = (age_min, preset_age_max)
+    st.session_state["_last_age_preset"] = age_preset
+
+# Keep session-state range valid if league/season changes alter available ages.
+current_age_range = st.session_state.get("age_range", (age_min, preset_age_max))
+valid_age_low = max(age_min, min(int(current_age_range[0]), age_max))
+valid_age_high = max(valid_age_low, min(int(current_age_range[1]), age_max))
+st.session_state["age_range"] = (valid_age_low, valid_age_high)
+
+age_range = st.sidebar.slider(
+    "Age range",
+    age_min,
+    age_max,
+    key="age_range",
+) if age_max >= age_min else (0, 0)
+
+# Minutes — quick presets plus the existing slider. Default remains 500.
 min_minutes = 0
 if "Minutes played" in df_league.columns:
     mm = pd.to_numeric(df_league["Minutes played"], errors="coerce")
     min_minutes_max = int(mm.max(skipna=True) or 0)
+
+    minute_preset = st.sidebar.radio(
+        "Minutes preset",
+        [0, 300, 500, 900, 1500],
+        index=2,
+        horizontal=True,
+        key="minutes_preset",
+        format_func=lambda x: f"{x}",
+    )
+
+    preset_minutes = min(int(minute_preset), max(0, min_minutes_max))
+    if st.session_state.get("_last_minutes_preset") != minute_preset:
+        st.session_state["min_minutes_slider"] = preset_minutes
+        st.session_state["_last_minutes_preset"] = minute_preset
+
+    current_minutes = int(st.session_state.get("min_minutes_slider", preset_minutes))
+    st.session_state["min_minutes_slider"] = max(0, min(current_minutes, max(0, min_minutes_max)))
+
     min_minutes = st.sidebar.slider(
         "Minimum minutes this season",
         0,
         max(0, min_minutes_max),
-        min(500, max(0, min_minutes_max)),
+        key="min_minutes_slider",
     )
 
-remove_outliers = st.sidebar.checkbox("Remove outliers (|Z| > 3) — for plots only", value=False)
+# Plot-only option moved out of the primary scouting filters.
+with st.sidebar.expander("Advanced / Plot settings", expanded=False):
+    remove_outliers = st.checkbox(
+        "Remove outliers (|Z| > 3) — for plots only",
+        value=False,
+        key="remove_plot_outliers",
+    )
 
 mask = (
     df_league["Team"].isin(selected_teams)
@@ -1706,6 +1780,7 @@ if filtered_base.empty:
     st.stop()
 
 numeric_cols_base = get_numeric_columns(filtered_base)
+
 
 # =========================
 # Benchmark population
