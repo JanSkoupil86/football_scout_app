@@ -1977,6 +1977,10 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
                 # and apply it before widget creation on the next rerun.
                 st.session_state["_pending_main_position_filter"] = available_eligible_positions
 
+            # Synchronize role selectors across workspaces on the next rerun.
+            # Users may still manually change a workspace role afterward.
+            st.session_state["_pending_workspace_profile_sync"] = profile_name
+
             st.rerun()
 
     else:
@@ -2155,6 +2159,17 @@ PROFILE_TABLE_CALC_DEFAULTS = {
     "Creative Forward / False 9": ["Calc: Chance Creation", "Calc: Link Play"],
     "Wide Forward / Inside 9": ["Calc: Box Threat", "Calc: 1v1 Threat"],
 }
+
+# Synchronize built-in role selectors after Apply profile, before those widgets
+# are instantiated. This avoids Streamlit's post-instantiation session-state error.
+_pending_workspace_profile = st.session_state.pop("_pending_workspace_profile_sync", None)
+if _pending_workspace_profile in PROFILES:
+    if _pending_workspace_profile in SINGLE_PLAYER_PROFILES:
+        st.session_state["single_profile_role"] = _pending_workspace_profile
+    st.session_state["multi_radar_profile"] = _pending_workspace_profile
+    # Role Fit has a detail selector whose options depend on the selected player.
+    # Store the preferred role separately and apply it only when compatible.
+    st.session_state["_preferred_role_fit_detail"] = _pending_workspace_profile
 
 # =========================
 # Main workspaces — exactly one renders
@@ -3039,6 +3054,18 @@ elif app_page == "Role Fit":
                 )
 
             selectable_roles = fit_df["Role"].tolist()
+
+            preferred_role_fit = st.session_state.pop("_preferred_role_fit_detail", None)
+            if preferred_role_fit in selectable_roles:
+                st.session_state["role_fit_detail_role"] = preferred_role_fit
+            elif (
+                "role_fit_detail_role" in st.session_state
+                and st.session_state["role_fit_detail_role"] not in selectable_roles
+            ):
+                # Prevent stale role values when the selected player's compatible
+                # role set changes.
+                del st.session_state["role_fit_detail_role"]
+
             detail_role = st.selectbox(
                 "Role detail",
                 selectable_roles,
