@@ -2047,7 +2047,11 @@ if app_page == "Players":
         default_cols.extend([c for c in ["Goals", "Assists", "xG", "xA"] if c in filtered.columns])
 
     # Exactly two calculated indicators relevant to the active profile.
-    profile_calc_defaults = PROFILE_TABLE_CALC_DEFAULTS.get(selected_profile, [])
+    # Use the currently applied built-in profile stored in session state.
+    # Custom profiles have profile_name=None and therefore simply receive no
+    # automatic calculated-metric table defaults.
+    active_profile_name = active.get("profile_name") if isinstance(active, dict) else None
+    profile_calc_defaults = PROFILE_TABLE_CALC_DEFAULTS.get(active_profile_name, [])
     default_cols.extend([
         c for c in profile_calc_defaults
         if c in filtered.columns and filtered[c].notna().any()
