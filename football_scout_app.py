@@ -1618,154 +1618,76 @@ def role_fit_detail_wheel(
     player_row: pd.Series,
     display_scale: str,
 ) -> go.Figure:
-    """Reuse the established single-player wheel architecture for Role Fit detail."""
+    """
+    Role Fit detail uses the canonical Single Player wheel renderer.
+
+    This keeps metric order, KPI grouping, category colours, angular gaps,
+    reference rings, performance colours, typography, centre panel and hover
+    behaviour identical across Single Player and Role Fit.
+    """
     metrics = list(fit_result.get("Resolved Metrics", []))
-    kpi_items = SINGLE_PLAYER_PROFILES[role_name]
-    kpi_lookup = {}
-    for kpi, requested in kpi_items:
-        rr, _ = resolve_metrics_aliases([requested], list(player_row.index))
-        if rr:
-            kpi_lookup[rr[0]] = kpi
+    if not metrics:
+        return go.Figure()
 
-    labels = [single_metric_display_label(m) for m in metrics]
-    z = pd.to_numeric(fit_result["Player Z"].reindex(metrics), errors="coerce")
-    B = fit_result["Benchmark Raw"]
+    benchmark_raw = fit_result.get("Benchmark Raw", pd.DataFrame())
+    player_z = fit_result.get("Player Z", pd.Series(dtype=float))
 
-    pct = pd.Series(index=metrics, dtype=float)
-    for m in metrics:
-        pct[m] = percentile_rank_against_population(
-            B[m], player_row.get(m, np.nan), lower_is_better=(m in LOWER_IS_BETTER)
-        )
+    # Resolve the canonical role KPI order against the actual usable metrics.
+    resolved_to_kpi: Dict[str, str] = {}
+    canonical_order: List[str] = []
+    for kpi, requested_metric in SINGLE_PLAYER_PROFILES[role_name]:
+        rr, _ = resolve_metrics_aliases([requested_metric], list(player_row.index))
+        if not rr:
+            continue
+        metric = rr[0]
+        if metric in metrics and metric not in canonical_order:
+            canonical_order.append(metric)
+            resolved_to_kpi[metric] = kpi
 
-    n = len(metrics)
-    theta = np.linspace(0, 360, n, endpoint=False)
-    perf_inner, perf_outer = 17.0, 77.0
-    perf_span = perf_outer - perf_inner
+    # Retain any usable metric that was not represented above, while keeping
+    # canonical profile metrics first.
+    for metric in metrics:
+        if metric not in canonical_order:
+            canonical_order.append(metric)
+            resolved_to_kpi.setdefault(metric, "Profile")
 
-    if display_scale == "Percentile":
-        vals = pct.fillna(50.0).clip(0, 100)
-        radius = perf_inner + (vals.to_numpy(dtype=float) / 100.0) * perf_span
-        ticks = [0, 25, 50, 75, 100]
-        tick_to_r = lambda t: perf_inner + (t / 100.0) * perf_span
-        centre = "<b>Percentile</b><br><span style='font-size:11px'>Higher = better · 50 = median</span>"
-    else:
-        vals = z.fillna(0.0).clip(-2, 2)
-        radius = perf_inner + ((vals.to_numpy(dtype=float) + 2.0) / 4.0) * perf_span
-        ticks = [-2, -1, 0, 1, 2]
-        tick_to_r = lambda t: perf_inner + ((t + 2.0) / 4.0) * perf_span
-        centre = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
+    rows = []
+    for metric in canonical_order:
+        raw_value = pd.to_numeric(
+            pd.Series([player_row.get(metric, np.nan)]), errors="coerce"
+        ).iloc[0]
+        z_value = pd.to_numeric(
+            pd.Series([player_z.get(metric, np.nan)]), errors="coerce"
+        ).iloc[0]
 
-    fig = go.Figure()
-    ring_theta = np.linspace(0, 360, 361)
-    ref = 50 if display_scale == "Percentile" else 0
-    for tick in ticks:
-        fig.add_trace(go.Scatterpolar(
-            r=[tick_to_r(tick)] * len(ring_theta), theta=ring_theta, mode="lines",
-            line=dict(
-                color="rgba(45,55,65,0.62)" if tick == ref else "rgba(120,130,140,0.16)",
-                width=2.8 if tick == ref else 1,
-            ),
-            hoverinfo="skip", showlegend=False,
-        ))
+        pct_value = np.nan
+        if isinstance(benchmark_raw, pd.DataFrame) and metric in benchmark_raw.columns:
+            pct_value = percentile_rank_against_population(
+                benchmark_raw[metric],
+                raw_value,
+                lower_is_better=(metric in LOWER_IS_BETTER),
+            )
 
-    custom = np.column_stack([
-        np.array([pd.to_numeric(pd.Series([player_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in metrics], dtype=float),
-        z.reindex(metrics).to_numpy(dtype=float),
-        pct.reindex(metrics).to_numpy(dtype=float),
-        np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
-        np.array(labels, dtype=object),
-    ])
-    role_perf_values = (
-        pct.reindex(metrics).to_numpy(dtype=float)
-        if display_scale == "Percentile"
-        else z.reindex(metrics).to_numpy(dtype=float)
+        rows.append({
+            "KPI Group": resolved_to_kpi.get(metric, "Profile"),
+            "Metric": metric,
+            "Raw Value": raw_value,
+            "Percentile": pct_value,
+            "Z-score": z_value,
+        })
+
+    profile_df = pd.DataFrame(rows)
+    if profile_df.empty:
+        return go.Figure()
+
+    # Match the Single Player subtitle structure while retaining Role Fit context.
+    subtitle = f"{role_name} | Role Fit benchmark"
+    return single_player_wheel(
+        profile_df=profile_df,
+        player_name=player_name,
+        subtitle=subtitle,
+        scale_mode=display_scale,
     )
-    role_perf_colors = [
-        performance_band_color(v, display_scale) for v in role_perf_values
-    ]
-
-    # Performance colour is encoded by each radial line and endpoint dot.
-    for i in range(n):
-        fig.add_trace(go.Scatterpolar(
-            r=[perf_inner, radius[i]],
-            theta=[theta[i], theta[i]],
-            mode="lines",
-            line=dict(color=role_perf_colors[i], width=7.5),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
-
-    fig.add_trace(go.Scatterpolar(
-        r=radius,
-        theta=theta,
-        mode="markers",
-        name=player_name,
-        marker=dict(
-            size=16,
-            color=role_perf_colors,
-            line=dict(color="white", width=2.2),
-        ),
-        customdata=custom,
-        hovertemplate=(
-            "%{customdata[4]}<br>KPI: %{customdata[3]}<br>"
-            "Raw value: %{customdata[0]:.2f}<br>"
-            "Percentile: %{customdata[2]:.0f}<br>"
-            "Z-score: %{customdata[1]:+.2f}<extra></extra>"
-        ),
-        showlegend=False,
-    ))
-
-    # KPI-colored outer tiles, following the same established wheel language.
-    # Neutral KPI colours; they identify categories rather than good/bad performance.
-    palette = ["#3478B8", "#8E5AB5", "#16A6B6", "#E58A2B", "#244A73", "#D4A72C", "#C44E8B", "#687684"]
-    unique_kpis = list(dict.fromkeys(kpi_lookup.get(m, "Profile") for m in metrics))
-    kpi_color = {k: palette[i % len(palette)] for i, k in enumerate(unique_kpis)}
-    width = 360.0 / max(1, n)
-    for ang, m, label in zip(theta, metrics, labels):
-        kpi = kpi_lookup.get(m, "Profile")
-        fig.add_trace(go.Barpolar(
-            r=[15], base=[80], theta=[ang], width=[width * 0.92],
-            marker_color=kpi_color[kpi], marker_line_color="white", marker_line_width=1,
-            opacity=0.80, hoverinfo="skip", showlegend=False,
-        ))
-        fig.add_annotation(
-            x=0.5 + 0.47 * np.cos(np.deg2rad(90-ang)),
-            y=0.5 + 0.47 * np.sin(np.deg2rad(90-ang)),
-            xref="paper", yref="paper", text=label, showarrow=False,
-            font=dict(size=15, color="#303A44"), align="center",
-        )
-
-    # Exact score values remain aligned with the outer KPI tiles for rapid reading.
-    outer_values = (
-        [f"<b>{int(round(v))}</b>" for v in pct.reindex(metrics).fillna(50.0)]
-        if display_scale == "Percentile"
-        else [f"<b>{v:+.2f}</b>" for v in z.reindex(metrics).fillna(0.0)]
-    )
-    fig.add_trace(go.Scatterpolar(
-        r=[87.0] * n,
-        theta=theta,
-        mode="text",
-        text=outer_values,
-        textfont=dict(size=17, color="white"),
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-
-    fig.add_annotation(
-        x=0.5, y=0.5, xref="paper", yref="paper", text=centre,
-        showarrow=False, align="center", font=dict(size=13),
-    )
-    fig.update_layout(
-        title=dict(text=f"{player_name} — {role_name}", x=0.5, xanchor="center"),
-        polar=dict(
-            radialaxis=dict(visible=False, range=[0, 100]),
-            angularaxis=dict(visible=False),
-        ),
-        showlegend=False,
-        height=900,
-        margin=dict(l=145, r=145, t=105, b=105),
-    )
-    return fig
 
 
 # =========================
