@@ -609,6 +609,163 @@ def build_single_player_profile(
     return pd.DataFrame(records), sorted(set(missing))
 
 
+
+def build_single_player_profile_league_adjusted(
+    player_row: pd.Series,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+    league_strength_lookup: pd.DataFrame,
+    reference_rating: float,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Build the Single Player wheel after translating every observation in the
+    multi-league benchmark to one explicit reference competition.
+
+    Method:
+      1) Standardize each role metric inside the selected pooled benchmark.
+      2) Make the z-score direction-aware (higher = better).
+      3) Add beta * (player league rating - reference rating) to every player's
+         metric z-score.
+      4) Rank the selected player's adjusted z-score against the adjusted
+         benchmark distribution for that metric.
+
+    Raw Wyscout values are never modified.
+    """
+    requested = SINGLE_PLAYER_PROFILES[role_name]
+    records, missing = [], []
+
+    if benchmark_df.empty or league_strength_lookup.empty or "League" not in benchmark_df.columns:
+        return pd.DataFrame(), [m for _, m in requested]
+
+    rating_map = league_strength_lookup.set_index("League")["rating"]
+    bench_ratings = benchmark_df["League"].map(rating_map)
+
+    player_league = player_row.get("League")
+    player_rating = rating_map.get(player_league, np.nan)
+    if pd.isna(player_rating):
+        return pd.DataFrame(), [m for _, m in requested]
+
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], benchmark_df.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+
+        metric = resolved[0]
+        series = pd.to_numeric(benchmark_df[metric], errors="coerce")
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        valid = series.notna() & bench_ratings.notna()
+        population = series.loc[valid]
+
+        if pd.isna(value) or len(population) < 2:
+            continue
+
+        mean = population.mean()
+        std = population.std(ddof=0)
+        if pd.isna(std) or std <= 1e-12:
+            continue
+
+        direction = -1.0 if metric in LOWER_IS_BETTER else 1.0
+        bench_z = direction * ((population - mean) / std)
+        bench_adj_z = bench_z + LEAGUE_TRANSLATION_BETA * (
+            bench_ratings.loc[valid].astype(float) - float(reference_rating)
+        )
+
+        player_z = direction * ((float(value) - mean) / std)
+        player_adj_z = player_z + LEAGUE_TRANSLATION_BETA * (
+            float(player_rating) - float(reference_rating)
+        )
+
+        pct = float((bench_adj_z <= player_adj_z).mean() * 100.0)
+        records.append({
+            "KPI Group": group,
+            "Metric": metric,
+            "Raw Value": float(value),
+            "Percentile": pct,
+            "Z-score": float(player_adj_z),
+        })
+
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+def build_role_similarity_table(
+    reference_row: pd.Series,
+    candidates: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+    coverage_threshold: float,
+) -> pd.DataFrame:
+    """
+    Playing-style similarity for one canonical role.
+
+    Each role metric is standardized against the selected multi-league role
+    benchmark. Similarity is based on weighted standardized distance, so league
+    strength does NOT alter style similarity. A weighted RMSE of 0 is identical;
+    similarity is mapped to 0-100 as exp(-0.5 * RMSE^2).
+
+    Missing metrics are handled pairwise and the available role weights are
+    renormalized. Candidates below the requested profile-weight coverage are
+    suppressed.
+    """
+    requested = list(PROFILES[role_name])
+    resolved_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_map[req] = rr[0]
+
+    metrics = list(dict.fromkeys(resolved_map.values()))
+    if not metrics or candidates.empty:
+        return pd.DataFrame()
+
+    weight_by_metric = {}
+    for req, metric in resolved_map.items():
+        weight_by_metric[metric] = weight_by_metric.get(metric, 0.0) + float(DEFAULT_WEIGHTS[role_name][req])
+    intended_weight = float(sum(weight_by_metric.values()))
+    if intended_weight <= 0:
+        return pd.DataFrame()
+
+    B = benchmark_df[metrics].apply(pd.to_numeric, errors="coerce")
+    means = B.mean(axis=0)
+    stds = B.std(axis=0, ddof=0)
+    usable = [m for m in metrics if pd.notna(stds.get(m)) and float(stds[m]) > 1e-12]
+    if not usable:
+        return pd.DataFrame()
+
+    means = means[usable]
+    stds = stds[usable]
+    weights = pd.Series({m: weight_by_metric[m] for m in usable}, dtype=float)
+
+    ref_vals = pd.Series(
+        {m: pd.to_numeric(pd.Series([reference_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in usable},
+        dtype=float,
+    )
+    ref_z = (ref_vals - means) / stds
+
+    C = candidates[usable].apply(pd.to_numeric, errors="coerce")
+    Z = (C - means) / stds
+
+    rows = []
+    for idx in candidates.index:
+        z = Z.loc[idx]
+        valid = z.notna() & ref_z.notna()
+        available_weight = float(weights.loc[valid].sum()) if valid.any() else 0.0
+        coverage = 100.0 * available_weight / intended_weight if intended_weight else 0.0
+        if available_weight <= 0 or coverage < coverage_threshold * 100.0:
+            continue
+        w = weights.loc[valid] / available_weight
+        diff2 = (z.loc[valid] - ref_z.loc[valid]) ** 2
+        weighted_rmse = float(np.sqrt((diff2 * w).sum()))
+        similarity = float(100.0 * np.exp(-0.5 * weighted_rmse ** 2))
+        rows.append({
+            "_row_index": idx,
+            "Similarity %": similarity,
+            "Similarity Coverage %": coverage,
+            "Style Distance": weighted_rmse,
+        })
+
+    return pd.DataFrame(rows)
+
 def performance_band_color(value: float, scale_mode: str) -> str:
     """Performance colour for percentile or direction-aware z-score."""
     if pd.isna(value):
@@ -2127,7 +2284,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -3540,17 +3697,80 @@ elif app_page in ("Single Player", "Multi Player"):
                 )
                 benchmark_desc = f"{benchmark_mode} · selected leagues · {min_minutes}+ min"
 
+            # Optional multi-league normalization. This keeps the raw Wyscout
+            # values intact and translates each metric's standardized performance
+            # to one selected reference competition using beta = 0.020.
+            single_adjustment_on = False
+            single_reference_league = None
+            single_reference_rating = None
+            single_strength_lookup = pd.DataFrame()
+
+            _benchmark_leagues = (
+                sorted(benchmark_df["League"].dropna().astype(str).unique().tolist())
+                if "League" in benchmark_df.columns else []
+            )
+            if len(_benchmark_leagues) >= 2 and OPTA_LEAGUE_META_PATH.exists():
+                single_strength_lookup = build_league_strength_lookup(
+                    tuple(_benchmark_leagues),
+                    str(OPTA_LEAGUE_META_PATH),
+                )
+                mapped_single_leagues = (
+                    single_strength_lookup["League"].dropna().astype(str).tolist()
+                    if not single_strength_lookup.empty else []
+                )
+                if len(mapped_single_leagues) >= 2:
+                    single_adjustment_on = st.toggle(
+                        "Apply league adjustment to benchmark",
+                        value=False,
+                        key="single_profile_league_adjustment",
+                        help=(
+                            "Translates players from the selected leagues to one reference competition "
+                            "before calculating the Single Player percentile wheel. Raw Wyscout values do not change."
+                        ),
+                    )
+                    if single_adjustment_on:
+                        # Prefer the selected player's own competition when it is mapped.
+                        _player_league = str(player_row.get("League", ""))
+                        _default_ref = mapped_single_leagues.index(_player_league) if _player_league in mapped_single_leagues else 0
+                        single_reference_league = st.selectbox(
+                            "Reference league for Single Player benchmark",
+                            options=mapped_single_leagues,
+                            index=_default_ref,
+                            key="single_profile_reference_league",
+                        )
+                        _ref_row = single_strength_lookup.loc[
+                            single_strength_lookup["League"].eq(single_reference_league)
+                        ].iloc[0]
+                        single_reference_rating = float(_ref_row["rating"])
+                        st.caption(
+                            f"League-adjusted benchmark · reference: {single_reference_league} "
+                            f"(Opta {single_reference_rating:.2f}) · β={LEAGUE_TRANSLATION_BETA:.3f}."
+                        )
+
             if len(benchmark_df) < int(min_benchmark_n):
                 st.warning(
                     f"Benchmark sample is small ({len(benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
                     "Consider broadening the benchmark."
                 )
 
-            profile_df, missing_single_metrics = build_single_player_profile(
-                player_row=player_row,
-                benchmark_df=benchmark_df,
-                role_name=single_role,
-            )
+            if single_adjustment_on and single_reference_rating is not None:
+                profile_df, missing_single_metrics = build_single_player_profile_league_adjusted(
+                    player_row=player_row,
+                    benchmark_df=benchmark_df,
+                    role_name=single_role,
+                    league_strength_lookup=single_strength_lookup,
+                    reference_rating=single_reference_rating,
+                )
+                benchmark_desc = (
+                    f"league-adjusted → {single_reference_league} · "
+                    f"{len(_benchmark_leagues)} selected leagues · {min_minutes}+ min"
+                )
+            else:
+                profile_df, missing_single_metrics = build_single_player_profile(
+                    player_row=player_row,
+                    benchmark_df=benchmark_df,
+                    role_name=single_role,
+                )
 
             team = str(player_row.get("Team", "")).strip()
             league = str(player_row.get("League", "")).strip()
@@ -4059,6 +4279,250 @@ elif app_page == "League Projection":
                     )
 
 
+elif app_page == "Similar Players":
+    st.header("🔎 Similar Players")
+    st.caption(
+        "Find players with the closest role-specific playing profile. Similarity measures style only; "
+        "Profile Score and League-Adjusted Score are shown separately so stylistic fit is not confused with level."
+    )
+
+    similar_pool = filtered_base.copy()
+    if similar_pool.empty or "Player" not in similar_pool.columns:
+        st.info("No players are available for the current filters.")
+    else:
+        # Reference player follows the current scouting filters.
+        ref_labels, ref_index = [], {}
+        for idx, row in similar_pool.iterrows():
+            label = f"{row.get('Player', '')} — {row.get('Team', '')} | {row.get('League', '')}"
+            if label in ref_index:
+                label = f"{label} [{idx}]"
+            ref_labels.append(label)
+            ref_index[label] = idx
+
+        s1, s2 = st.columns([1.35, 1])
+        with s1:
+            ref_label = st.selectbox("Reference player", ref_labels, key="similar_reference_player")
+        ref_row = similar_pool.loc[ref_index[ref_label]]
+
+        compatible_roles = [
+            r for r, eligible in PROFILE_POSITION_ELIGIBILITY.items()
+            if str(ref_row.get("Main Position", "")) in eligible
+        ]
+        if not compatible_roles:
+            st.warning(f"No Similar Players role mapping is defined for Main Position {ref_row.get('Main Position', '')}.")
+        else:
+            active_profile = st.session_state.get("active_profile", {}) or {}
+            preferred_role = active_profile.get("profile_name")
+            role_idx = compatible_roles.index(preferred_role) if preferred_role in compatible_roles else 0
+            with s2:
+                similar_role = st.selectbox("Role / profile", compatible_roles, index=role_idx, key="similar_role")
+
+            eligible_positions = PROFILE_POSITION_ELIGIBILITY[similar_role]
+
+            # Candidate universe uses the selected leagues/seasons/age/minutes filters,
+            # but only role-compatible Main Positions.
+            candidates = similar_pool.loc[
+                similar_pool["Main Position"].astype(str).isin(eligible_positions)
+            ].copy()
+
+            # Exclude only the selected row, not every player with the same display name.
+            candidates = candidates.drop(index=ref_index[ref_label], errors="ignore")
+
+            if candidates.empty:
+                st.info("No role-compatible comparison players remain under the current filters.")
+            else:
+                # Role benchmark uses the selected league/season universe and minimum minutes,
+                # consistent with the rest of the app, while ignoring team/age narrowing.
+                role_benchmark = benchmark_population_for_role(
+                    benchmark_source_global,
+                    similar_role,
+                    "Role position",
+                    selected_positions,
+                )
+
+                similarity_df = build_role_similarity_table(
+                    ref_row,
+                    candidates,
+                    role_benchmark,
+                    similar_role,
+                    float(coverage_threshold_pct) / 100.0,
+                )
+
+                if similarity_df.empty:
+                    st.info("No candidates have enough comparable role metrics for a reliable similarity score.")
+                else:
+                    result = similarity_df.merge(
+                        candidates.reset_index().rename(columns={"index": "_row_index"}),
+                        on="_row_index",
+                        how="left",
+                    )
+
+                    # Raw role quality: same role benchmark for reference and candidates.
+                    scored_candidates, role_distribution = role_score_for_population(
+                        candidates,
+                        role_benchmark,
+                        similar_role,
+                        float(coverage_threshold_pct) / 100.0,
+                    )
+                    score_map = pd.to_numeric(
+                        scored_candidates["_projection_role_score"], errors="coerce"
+                    )
+                    result["Profile Score"] = result["_row_index"].map(score_map)
+
+                    # League-adjusted quality is deliberately separate from similarity.
+                    league_strength_sim = build_league_strength_lookup(
+                        tuple(sorted(set(
+                            [str(ref_row.get("League", ""))]
+                            + result["League"].dropna().astype(str).tolist()
+                        ))),
+                        str(OPTA_LEAGUE_META_PATH),
+                    ) if OPTA_LEAGUE_META_PATH.exists() else pd.DataFrame()
+
+                    mapped_refs = (
+                        league_strength_sim["League"].dropna().astype(str).tolist()
+                        if not league_strength_sim.empty else []
+                    )
+
+                    reference_league = None
+                    reference_rating = None
+                    if mapped_refs:
+                        ref_current_league = str(ref_row.get("League", ""))
+                        default_ref_idx = mapped_refs.index(ref_current_league) if ref_current_league in mapped_refs else 0
+                        reference_league = st.selectbox(
+                            "Reference league for adjusted quality",
+                            mapped_refs,
+                            index=default_ref_idx,
+                            key="similar_reference_league",
+                            help="This affects League-Adjusted Score only. It never changes Similarity %.",
+                        )
+                        ref_strength_row = league_strength_sim.loc[
+                            league_strength_sim["League"].eq(reference_league)
+                        ].iloc[0]
+                        reference_rating = float(ref_strength_row["rating"])
+                        rating_map = league_strength_sim.set_index("League")["rating"]
+                        result["_league_rating"] = result["League"].map(rating_map)
+                        result["League-Adjusted Score"] = (
+                            pd.to_numeric(result["Profile Score"], errors="coerce")
+                            + LEAGUE_TRANSLATION_BETA
+                            * (pd.to_numeric(result["_league_rating"], errors="coerce") - reference_rating)
+                        )
+                        st.caption(
+                            f"Adjusted quality reference: {reference_league} (Opta {reference_rating:.2f}) · "
+                            f"β={LEAGUE_TRANSLATION_BETA:.3f}. Similarity itself remains league-independent."
+                        )
+                    else:
+                        result["League-Adjusted Score"] = np.nan
+
+                    # Candidate controls.
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        top_n_sim = st.slider("Number of similar players", 5, 30, 15, key="similar_top_n")
+                    with c2:
+                        max_age_gap = st.slider(
+                            "Maximum age difference",
+                            0, 10, 5,
+                            key="similar_age_gap",
+                            help="0 = same age only. Applied after the main sidebar age filter.",
+                        )
+
+                    ref_age = pd.to_numeric(pd.Series([ref_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+                    if pd.notna(ref_age):
+                        cand_age = pd.to_numeric(result["Age"], errors="coerce")
+                        result = result.loc[(cand_age - float(ref_age)).abs() <= max_age_gap]
+
+                    result = result.sort_values(
+                        ["Similarity %", "League-Adjusted Score", "Profile Score"],
+                        ascending=[False, False, False],
+                        na_position="last",
+                    ).head(top_n_sim).copy()
+
+                    if result.empty:
+                        st.info("No candidates remain after the Similar Players filters.")
+                    else:
+                        # Reference summary.
+                        r1, r2, r3, r4 = st.columns(4)
+                        r1.metric("Reference", str(ref_row.get("Player", "—")))
+                        r2.metric("Role", similar_role)
+                        r3.metric("Main Position", str(ref_row.get("Main Position", "—")))
+                        r4.metric("Candidates shown", f"{len(result):,}")
+
+                        table_cols = [
+                            "Player", "Team", "League", "Main Position", "Age", "Minutes played",
+                            "Similarity %", "Profile Score", "League-Adjusted Score",
+                            "Similarity Coverage %",
+                        ]
+                        table_cols = [c for c in table_cols if c in result.columns]
+                        table = result[table_cols].copy()
+                        for c in ["Similarity %", "Similarity Coverage %"]:
+                            if c in table:
+                                table[c] = pd.to_numeric(table[c], errors="coerce").round(0)
+                        for c in ["Profile Score", "League-Adjusted Score"]:
+                            if c in table:
+                                table[c] = pd.to_numeric(table[c], errors="coerce").round(2)
+
+                        st.subheader("Closest role-profile matches")
+                        st.dataframe(
+                            table,
+                            width="stretch",
+                            hide_index=True,
+                            column_config={
+                                "Main Position": st.column_config.TextColumn("Pos", width=55),
+                                "Minutes played": st.column_config.NumberColumn("Min", format="%d", width=70),
+                                "Similarity %": st.column_config.NumberColumn("Similarity %", format="%.0f", width=95),
+                                "Profile Score": st.column_config.NumberColumn("Profile Score", format="%.2f", width=95),
+                                "League-Adjusted Score": st.column_config.NumberColumn("League-Adjusted Score", format="%.2f", width=125),
+                                "Similarity Coverage %": st.column_config.NumberColumn("Coverage %", format="%.0f", width=85),
+                            },
+                        )
+
+                        # Recruitment map: style similarity vs adjusted quality.
+                        chart_df = result.dropna(subset=["Similarity %", "League-Adjusted Score"]).copy()
+                        if not chart_df.empty:
+                            st.subheader("Similarity vs adjusted quality")
+                            st.caption(
+                                "Right = more stylistically similar. Up = stronger performance after translating league strength "
+                                f"to {reference_league or 'the selected reference competition'}."
+                            )
+                            fig_sim = px.scatter(
+                                chart_df,
+                                x="Similarity %",
+                                y="League-Adjusted Score",
+                                color="Team",
+                                hover_name="Player",
+                                hover_data={
+                                    "League": True,
+                                    "Main Position": True,
+                                    "Age": True,
+                                    "Minutes played": ":.0f",
+                                    "Similarity %": ":.1f",
+                                    "Profile Score": ":.2f",
+                                    "League-Adjusted Score": ":.2f",
+                                    "Team": False,
+                                },
+                                text="Player",
+                                title=f"{similar_role}: similarity vs league-adjusted quality",
+                            )
+                            fig_sim.update_traces(textposition="top center", marker=dict(size=11))
+                            fig_sim.update_xaxes(range=[0, 100])
+                            fig_sim.update_layout(height=600, legend_title_text="Team")
+                            st.plotly_chart(fig_sim, width="stretch")
+
+                        csv_sim = StringIO()
+                        table.to_csv(csv_sim, index=False)
+                        st.download_button(
+                            "⬇️ Download similar players (CSV)",
+                            data=csv_sim.getvalue(),
+                            file_name=f"{safe_widget_key(str(ref_row.get('Player', 'player')), similar_role)}_similar_players.csv",
+                            mime="text/csv",
+                        )
+
+                        st.caption(
+                            "Similarity V1 uses weighted standardized distance across the selected role's canonical metrics. "
+                            "League strength is intentionally excluded from Similarity %. Profile Score measures current role performance; "
+                            "League-Adjusted Score translates that quality to the selected reference league using β = 0.020."
+                        )
+
+
 st.markdown("---")
 with st.expander("Methodology & score reliability", expanded=False):
     st.markdown(
@@ -4094,6 +4558,10 @@ player's role score by the difference between the current and target Opta `seaso
 β = 0.020 role-score units per Opta rating point. Projected percentile is then evaluated against the
 target league's actual role-score distribution for the selected role. This is a translation estimate,
 not a deterministic forecast.
+
+**Similar Players.** V1 similarity is a weighted standardized-distance comparison across the canonical
+metrics of the selected role. League strength does not alter Similarity %. Quality is displayed separately as
+Profile Score and League-Adjusted Score, preventing stylistic resemblance from being confused with competitive level.
 
 **Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
 warns when the benchmark falls below the configured minimum sample size.
