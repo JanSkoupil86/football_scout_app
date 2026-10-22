@@ -1715,9 +1715,15 @@ teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
 # A stable widget key allows Apply profile to set role-eligible Main Positions.
-# Remove stale values if the selected leagues do not contain them.
+# Apply any queued profile-driven selection BEFORE the widget is instantiated.
 _position_widget_options = [ALL_TOKEN] + positions
-if "main_position_filter" in st.session_state:
+
+_pending_positions = st.session_state.pop("_pending_main_position_filter", None)
+if _pending_positions is not None:
+    _pending_clean = [p for p in _pending_positions if p in positions]
+    st.session_state["main_position_filter"] = _pending_clean or [ALL_TOKEN]
+elif "main_position_filter" in st.session_state:
+    # Remove stale values if season/league changes make positions unavailable.
     _clean_positions = [
         p for p in st.session_state["main_position_filter"]
         if p in _position_widget_options
@@ -1945,7 +1951,10 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
             eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
             available_eligible_positions = [p for p in eligible_positions if p in positions]
             if available_eligible_positions:
-                st.session_state["main_position_filter"] = available_eligible_positions
+                # The Main Position widget has already been instantiated on this
+                # Streamlit run, so do not mutate its key here. Queue the change
+                # and apply it before widget creation on the next rerun.
+                st.session_state["_pending_main_position_filter"] = available_eligible_positions
 
             st.rerun()
 
