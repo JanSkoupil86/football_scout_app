@@ -748,7 +748,7 @@ def single_player_wheel(
         theta.append(cursor)
         cursor += unit
     theta = np.array(theta, dtype=float)
-    width = unit * 0.90
+    width = unit * 0.86
 
     # Thin fixed-radius KPI band: supporting context, while the inner profile is the focal layer.
     band_inner = 78.0
@@ -1735,15 +1735,15 @@ def league_projection_radar(
     theta = np.array(theta, dtype=float)
     width = unit * 0.90
 
-    band_inner, band_outer = 78.0, 86.0
+    band_inner, band_outer = 79.0, 89.0
     fig = go.Figure()
     for group in groups:
         idx = p.index[p["KPI Group"] == group].tolist()
         fig.add_trace(go.Barpolar(
             r=[band_outer-band_inner]*len(idx), base=[band_inner]*len(idx),
             theta=[float(theta[i]) for i in idx], width=[width]*len(idx),
-            marker_color=group_colors[group], marker_line_color="white", marker_line_width=1.2,
-            opacity=0.88, name=group, hoverinfo="skip", legendgroup="kpi",
+            marker_color=group_colors[group], marker_line_color="white", marker_line_width=1.5,
+            opacity=0.90, name=group, hoverinfo="skip", legendgroup="kpi",
         ))
 
     perf_inner, perf_outer = 20.0, 74.0
@@ -1776,21 +1776,29 @@ def league_projection_radar(
 
     fig.add_trace(go.Scatterpolar(
         r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
-        line=dict(color=current_color,width=3.2), marker=dict(size=9,color=current_color,line=dict(color="white",width=1.5)),
-        name=current_label, legendgroup="profiles", customdata=cur_custom_closed,
+        line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
+        name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
         hovertemplate="<b>%{customdata[3]}</b><br>Current: %{customdata[1]:.0f}th percentile<br>Raw value: %{customdata[0]:.2f}<extra></extra>",
     ))
     fig.add_trace(go.Scatterpolar(
         r=list(pro_r)+[pro_r[0]], theta=closed_theta, mode="lines+markers",
-        line=dict(color=projected_color,width=3.2,dash="dot"), marker=dict(size=9,color=projected_color,line=dict(color="white",width=1.5)),
-        name=f"{target_label} (Projected)", legendgroup="profiles", customdata=pro_custom_closed,
+        line=dict(color=projected_color,width=3.8,dash="dot"), marker=dict(size=10,color=projected_color,line=dict(color="white",width=1.7)),
+        name=f"{target_label} (Projected)", legendgroup="profiles", showlegend=False, customdata=pro_custom_closed,
         hovertemplate="<b>%{customdata[3]}</b><br>Projected: %{customdata[1]:.0f}th percentile<br>Current raw value: %{customdata[0]:.2f}<extra></extra>",
     ))
 
     # Outer tiles show current → projected percentile, making the translation readable without hover.
     tile_text = [f"<b>{int(round(c))}→{int(round(q))}</b>" for c,q in zip(cur_pct,pro_pct)]
-    fig.add_trace(go.Scatterpolar(r=[82.0]*n, theta=theta, mode="text", text=tile_text,
-                                  textfont=dict(size=14,color="white"), hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatterpolar(r=[84.0]*n, theta=theta, mode="text", text=tile_text,
+                                  textfont=dict(size=11,color="white"), hoverinfo="skip", showlegend=False))
+
+    # Compact profile legend below the subtitle, separate from the KPI-category legend.
+    fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
+                       text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
+                       showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
+    fig.add_annotation(x=0.61, y=1.045, xref="paper", yref="paper",
+                       text=f"<span style='color:{projected_color}'>┈┈●</span> {target_label} (Projected)",
+                       showarrow=False, xanchor="left", font=dict(size=11, color="#303A44"))
 
     fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
                        text=f"<b>{player_name}</b><br><span style='font-size:11px'>Current → Projected</span>",
@@ -1803,8 +1811,8 @@ def league_projection_radar(
         title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{current_label} → {target_label}</sup>",
                    x=0.5,xanchor="center",y=0.985,font=dict(size=20,color="#17202A")),
         template="plotly_white",height=920,margin=dict(l=180,r=180,t=150,b=125),paper_bgcolor="white",plot_bgcolor="white",
-        legend=dict(orientation="h",yanchor="bottom",y=1.025,xanchor="center",x=0.5,title_text="",font=dict(size=10)),
-        polar=dict(bgcolor="white",radialaxis=dict(range=[0,96],visible=False),
+        legend=dict(orientation="v", yanchor="top", y=1.015, xanchor="left", x=0.08, title_text="KPI groups", font=dict(size=10), bgcolor="rgba(255,255,255,0.72)"),
+        polar=dict(bgcolor="white",radialaxis=dict(range=[0,99],visible=False),
                    angularaxis=dict(tickmode="array",tickvals=theta,ticktext=labels,direction="clockwise",rotation=90,
                                     gridcolor="rgba(255,255,255,0)",tickfont=dict(size=16,color="#303A44"),showline=False)),
         barmode="overlay",
