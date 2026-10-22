@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import re
+import json
+from difflib import SequenceMatcher
+from pathlib import Path
 from io import BytesIO, StringIO
 from typing import Dict, List, Tuple
 
@@ -1475,6 +1478,150 @@ def build_benchmark_scoring_package(
     }
 
 
+
+
+# =========================
+# League Strength / League Projection v1
+# =========================
+# Empirical calibration from consecutive-season cross-league movers in the
+# supplied Wyscout dataset. 600+ minutes on both sides was selected as the V1
+# balance between sample size and reliability. One Opta league-rating point is
+# associated with ~0.020 role-score SD of translation difficulty.
+LEAGUE_TRANSLATION_BETA = 0.020
+OPTA_LEAGUE_META_PATH = Path(__file__).with_name("league-meta.json")
+
+# Wyscout -> Opta naming exceptions. The matcher still validates these against
+# the bundled Opta league metadata and falls back to conservative fuzzy matching.
+OPTA_LEAGUE_ALIASES = {
+    "england premier league": "English Premier League",
+    "england championship": "English Championship",
+    "england league one": "English League One",
+    "england league two": "English League Two",
+    "england national league": "English National League",
+    "germany bundesliga": "German Bundesliga",
+    "germany 2 bundesliga": "German 2. Bundesliga",
+    "germany 3 liga": "German 3. Liga",
+    "france ligue 1": "French Ligue 1",
+    "france ligue 2": "French Ligue 2",
+    "france championnat national": "French National",
+    "italy serie a": "Italian Serie A",
+    "italy serie b": "Italian Serie B",
+    "spain la liga": "Spanish La Liga",
+    "spain segunda": "Spanish Segunda División",
+    "spain primera division rfef": "Spanish Primera Division RFEF",
+    "netherlands eredivisie": "Dutch Eredivisie",
+    "netherlands eerste divisie": "Dutch Eerste Divisie",
+    "portugal primeira liga": "Portuguese Primeira Liga",
+    "portugal segunda liga": "Portuguese Segunda Liga",
+    "belgium first division a": "Belgian First Division A",
+    "belgium first division b": "Belgian First Division B",
+    "czech fortuna liga": "Czech First League",
+    "czech chance national liga": "FNL",
+    "denmark superliga": "Danish Superligaen",
+    "denmark 1st division": "Danish 1st Division",
+    "norway eliteserien": "Norwegian Eliteserien",
+    "norway first division": "Norwegian 1. divisjon",
+    "sweden allsvenskan": "Swedish Allsvenskan",
+    "sweden superettan": "Swedish Superettan",
+    "finland veikkausliiga": "Finnish Veikkausliiga",
+    "latvia virsliga": "Latvian Virsliga",
+    "usa mls": "US Major League Soccer",
+    "usa mls next pro": "MLS Next Pro",
+    "usa usl championship": "USL Championship",
+    "usa usl league 1": "USL League One",
+    "canada premier league": "Canadian Premier League",
+}
+
+def _league_identity(label: object) -> str:
+    s = str(label or "").strip()
+    s = re.sub(r"\s+(?:20\d{2}-\d{2}|20\d{2})$", "", s)
+    return s.strip()
+
+def _league_key(label: object) -> str:
+    s = _league_identity(label).lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def load_opta_league_meta(path_str: str) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+        out = pd.DataFrame(records)
+        keep = [c for c in ["leagueId", "leagueName", "countryName", "globalRank", "seasonAverageRating", "lastWeekSeasonAverageRating"] if c in out.columns]
+        out = out[keep].copy()
+        out["seasonAverageRating"] = pd.to_numeric(out.get("seasonAverageRating"), errors="coerce")
+        out["globalRank"] = pd.to_numeric(out.get("globalRank"), errors="coerce")
+        out = out.dropna(subset=["leagueName", "seasonAverageRating"]).drop_duplicates("leagueId")
+        out["_name_key"] = out["leagueName"].map(_league_key)
+        out["_country_key"] = out.get("countryName", pd.Series(index=out.index, dtype=object)).map(_league_key)
+        return out
+    except Exception:
+        return pd.DataFrame()
+
+def match_wyscout_league_to_opta(wyscout_league: object, opta: pd.DataFrame) -> dict | None:
+    if opta.empty:
+        return None
+    comp = _league_identity(wyscout_league)
+    key = _league_key(comp)
+    alias_name = OPTA_LEAGUE_ALIASES.get(key)
+    if alias_name:
+        exact = opta.loc[opta["leagueName"].str.casefold().eq(alias_name.casefold())]
+        if not exact.empty:
+            r = exact.iloc[0]
+            return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": 1.0}
+
+    # Conservative fuzzy fallback. Country tokens are rewarded and a low score
+    # is left unmatched rather than forcing a potentially wrong competition.
+    first = key.split(" ")[0] if key else ""
+    best = None
+    for _, r in opta.iterrows():
+        name_key = str(r.get("_name_key", ""))
+        country_key = str(r.get("_country_key", ""))
+        score = SequenceMatcher(None, key, name_key).ratio()
+        if first and (first in name_key.split() or first in country_key.split()):
+            score += 0.08
+        # Also compare after removing the leading Wyscout country token.
+        rest = " ".join(key.split(" ")[1:])
+        if rest:
+            score = max(score, SequenceMatcher(None, rest, name_key).ratio() + (0.05 if first in country_key.split() else 0.0))
+        if best is None or score > best[0]:
+            best = (score, r)
+    if best is None or best[0] < 0.78:
+        return None
+    r = best[1]
+    return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": float(min(best[0], 0.99))}
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) -> pd.DataFrame:
+    opta = load_opta_league_meta(path_str)
+    rows = []
+    for league in league_labels:
+        m = match_wyscout_league_to_opta(league, opta)
+        if m:
+            rows.append({"League": league, **m})
+    return pd.DataFrame(rows)
+
+def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
+    requested = list(PROFILES[role])
+    resolved, _ = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return score_df.assign(_projection_role_score=np.nan), pd.Series(dtype=float)
+    weights_pct = np.array(defaults_for_resolved(role, resolved), dtype=float)
+    weights = normalize_weights(weights_pct)
+    scored, _, _, _ = make_profile_score_vectorized(
+        score_df, benchmark_df, resolved, weights, "_projection_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    benchmark_scored, _, _, _ = make_profile_score_vectorized(
+        benchmark_df, benchmark_df, resolved, weights, "_projection_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    return scored, pd.to_numeric(benchmark_scored["_projection_role_score"], errors="coerce").dropna()
+
+
 # =========================
 # Role Fit v1
 # =========================
@@ -1783,7 +1930,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -2268,7 +2415,7 @@ else:
 
 # Calculated Metrics v1.
 # Step 3: enrich only the Players workspace. Compare / Single Player / Multi Player /
-# Role Fit do not use Calc: columns, so they should not pay the cost of building the
+# Role Fit / League Projection do not use Calc: columns, so they should not pay the cost of building the
 # 14 positional composites and 3 efficiency metrics on every widget rerun.
 CALCULATED_OUTPUT_COLUMNS = CALCULATED_INDEX_NAMES + EFFICIENCY_METRICS
 calc_metric_cols = []
@@ -3389,6 +3536,152 @@ elif app_page == "Role Fit":
     else:
         st.info("Upload/filter player data to use Role Fit.")
 
+elif app_page == "League Projection":
+    st.header("🌍 League Projection")
+    st.caption(
+        "Estimate how a player's role performance may translate to another competition. "
+        "V1 uses the Opta league season-average rating and the empirically calibrated β = 0.020. "
+        "The player's underlying Wyscout metrics are not multiplied or altered."
+    )
+
+    league_strength = build_league_strength_lookup(
+        tuple(sorted(df_all["League"].dropna().astype(str).unique().tolist())),
+        str(OPTA_LEAGUE_META_PATH),
+    )
+    if league_strength.empty:
+        st.error(
+            "League Projection requires league-meta.json beside football_scout_app.py. "
+            "Add the supplied Opta league metadata file to the repository."
+        )
+    else:
+        # Player pool follows the scouting filters, while projection benchmarks
+        # deliberately ignore team and age filters.
+        projection_pool = filtered_base.copy()
+        projection_pool = projection_pool.loc[projection_pool["League"].isin(set(league_strength["League"]))]
+        if projection_pool.empty:
+            st.info("No players in the current filters have a matched Opta league rating.")
+        else:
+            player_options = []
+            player_index = {}
+            for idx, row in projection_pool.iterrows():
+                label = f"{row.get('Player', '')} — {row.get('Team', '')} | {row.get('League', '')}"
+                # Keep duplicate labels selectable without relying on Player name as an ID.
+                if label in player_index:
+                    label = f"{label} [{idx}]"
+                player_options.append(label)
+                player_index[label] = idx
+
+            c1, c2 = st.columns([1.35, 1])
+            with c1:
+                selected_player_label = st.selectbox("Player", player_options, key="projection_player")
+            selected_idx = player_index[selected_player_label]
+            player_row = projection_pool.loc[selected_idx]
+            current_league = str(player_row["League"])
+            current_match = league_strength.loc[league_strength["League"].eq(current_league)].iloc[0]
+
+            compatible_roles = [
+                r for r, eligible in PROFILE_POSITION_ELIGIBILITY.items()
+                if str(player_row.get("Main Position", "")) in eligible
+            ]
+            if not compatible_roles:
+                st.warning(f"No built-in projection role is mapped to Main Position {player_row.get('Main Position', '')}.")
+            else:
+                preferred = st.session_state.get("active_profile", {}) or {}
+                preferred_role = preferred.get("profile_name")
+                default_role_idx = compatible_roles.index(preferred_role) if preferred_role in compatible_roles else 0
+                with c2:
+                    projection_role = st.selectbox("Role", compatible_roles, index=default_role_idx, key="projection_role")
+
+                # Target competitions are taken from the same season group(s) selected
+                # in the sidebar, but do not need to be among the current league filters.
+                target_labels = sorted(df_season["League"].dropna().astype(str).unique().tolist())
+                target_strength = league_strength.loc[league_strength["League"].isin(target_labels)].copy()
+                target_strength = target_strength.loc[~target_strength["League"].eq(current_league)]
+                if target_strength.empty:
+                    st.info("No other matched target competitions are available in the selected season group.")
+                else:
+                    target_display = {
+                        f"{r.League}  ·  Opta {r.rating:.2f}": r.League
+                        for r in target_strength.itertuples()
+                    }
+                    target_label = st.selectbox(
+                        "Target league",
+                        list(target_display.keys()),
+                        key="projection_target_league",
+                    )
+                    target_league = target_display[target_label]
+                    target_match = target_strength.loc[target_strength["League"].eq(target_league)].iloc[0]
+
+                    eligible_positions = PROFILE_POSITION_ELIGIBILITY[projection_role]
+                    current_benchmark = df_all.loc[
+                        df_all["League"].eq(current_league)
+                        & df_all["Main Position"].isin(eligible_positions)
+                    ]
+                    target_benchmark = df_all.loc[
+                        df_all["League"].eq(target_league)
+                        & df_all["Main Position"].isin(eligible_positions)
+                    ]
+                    if "Minutes played" in df_all.columns:
+                        current_benchmark = current_benchmark.loc[current_benchmark["Minutes played"] >= min_minutes]
+                        target_benchmark = target_benchmark.loc[target_benchmark["Minutes played"] >= min_minutes]
+
+                    one_player = pd.DataFrame([player_row])
+                    scored_player, current_distribution = role_score_for_population(
+                        one_player, current_benchmark, projection_role, float(coverage_threshold_pct) / 100.0
+                    )
+                    _, target_distribution = role_score_for_population(
+                        target_benchmark, target_benchmark, projection_role, float(coverage_threshold_pct) / 100.0
+                    )
+                    current_score = pd.to_numeric(scored_player["_projection_role_score"], errors="coerce").iloc[0]
+
+                    current_rating = float(current_match["rating"])
+                    target_rating = float(target_match["rating"])
+                    rating_delta = target_rating - current_rating
+                    projected_score = current_score - LEAGUE_TRANSLATION_BETA * rating_delta if pd.notna(current_score) else np.nan
+                    current_pct = percentile_rank_against_population(current_distribution, current_score) if pd.notna(current_score) else np.nan
+                    projected_pct = percentile_rank_against_population(target_distribution, projected_score) if pd.notna(projected_score) else np.nan
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Current Role Score", f"{current_score:+.2f}" if pd.notna(current_score) else "—")
+                    m2.metric("Current Role Percentile", f"{current_pct:.0f}" if pd.notna(current_pct) else "—")
+                    m3.metric("Projected Role Score", f"{projected_score:+.2f}" if pd.notna(projected_score) else "—", delta=f"{(projected_score-current_score):+.2f}" if pd.notna(projected_score) and pd.notna(current_score) else None)
+                    m4.metric("Projected Target Percentile", f"{projected_pct:.0f}" if pd.notna(projected_pct) else "—")
+
+                    left, right = st.columns(2)
+                    with left:
+                        st.subheader("Competition translation")
+                        summary = pd.DataFrame([
+                            {"Competition": "Current", "League": current_league, "Opta League": current_match["opta_name"], "Opta Rating": current_rating, "Global Rank": current_match["rank"]},
+                            {"Competition": "Target", "League": target_league, "Opta League": target_match["opta_name"], "Opta Rating": target_rating, "Global Rank": target_match["rank"]},
+                        ])
+                        st.dataframe(summary, width="stretch", hide_index=True)
+                    with right:
+                        st.subheader("Projection")
+                        direction = "stronger" if rating_delta > 0 else "weaker" if rating_delta < 0 else "equivalent"
+                        st.write(f"**League-strength change:** {rating_delta:+.2f} Opta points ({direction} target).")
+                        st.write(f"**Translation adjustment:** {-LEAGUE_TRANSLATION_BETA * rating_delta:+.2f} Role Score.")
+                        st.write(f"**Target benchmark N:** {len(target_distribution):,} usable {projection_role} observations.")
+
+                    if pd.notna(current_score) and pd.notna(projected_score):
+                        chart_df = pd.DataFrame({
+                            "Context": ["Current league", "Projected target league"],
+                            "Role Score": [current_score, projected_score],
+                        })
+                        fig = px.bar(chart_df, x="Context", y="Role Score", text="Role Score", title=f"{player_row.get('Player', '')} — {projection_role}")
+                        fig.update_traces(texttemplate="%{text:+.2f}", textposition="outside")
+                        pad = max(0.35, abs(current_score) * 0.25, abs(projected_score) * 0.25)
+                        lo = min(0, current_score, projected_score) - pad
+                        hi = max(0, current_score, projected_score) + pad
+                        fig.update_yaxes(range=[lo, hi], zeroline=True, title="Role Score (Z-based)")
+                        fig.update_layout(template="plotly_white", height=430, showlegend=False)
+                        st.plotly_chart(fig, width="stretch")
+
+                    st.caption(
+                        "V1 projection: Projected Role Score = Current Role Score − 0.020 × "
+                        "(Target Opta rating − Current Opta rating). The coefficient was calibrated from "
+                        "cross-league movers; it is an estimate, not a guarantee of future performance. "
+                        "Projected percentile compares the translated score with the target league's actual role-score distribution."
+                    )
 
 
 st.markdown("---")
@@ -3420,6 +3713,12 @@ view. Both use the same benchmark population; the weighted Profile Score remains
 **Visual colour.** KPI colours are categorical only. They identify KPI families and deliberately avoid a
 traffic-light red/green/orange performance meaning. Performance is communicated by radial length and the
 numeric percentile, not by colour.
+
+**League Projection.** The V1 translation model keeps raw Wyscout metrics unchanged. It adjusts the
+player's role score by the difference between the current and target Opta `seasonAverageRating`, using
+β = 0.020 role-score units per Opta rating point. Projected percentile is then evaluated against the
+target league's actual role-score distribution for the selected role. This is a translation estimate,
+not a deterministic forecast.
 
 **Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
 warns when the benchmark falls below the configured minimum sample size.
