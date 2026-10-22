@@ -1548,6 +1548,69 @@ def role_fit_for_player(
     }
 
 
+def single_metric_display_label(metric: str) -> str:
+    """Compact display label used by Role Fit detail wheels."""
+    aliases = {
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+    return aliases.get(metric, metric)
+
+
 def role_fit_detail_wheel(
     player_name: str,
     role_name: str,
@@ -3075,26 +3138,49 @@ elif app_page == "Role Fit":
                 "It is the cleaner cross-role reference; raw Role Scores are still shown for transparency."
             )
 
-            # Horizontal percentile chart.
+            # Horizontal percentile chart with the same four performance bands
+            # used by the Single Player wheel.
             chart_df = fit_df.dropna(subset=["Role Percentile"]).copy()
             if not chart_df.empty:
                 chart_df = chart_df.sort_values("Role Percentile", ascending=True)
+                chart_df["Performance Band"] = pd.cut(
+                    pd.to_numeric(chart_df["Role Percentile"], errors="coerce"),
+                    bins=[-np.inf, 25, 50, 75, np.inf],
+                    labels=["<25", "25–49", "50–74", "75+"],
+                    right=False,
+                )
+
+                role_band_colors = {
+                    "<25": "#8B1E1E",
+                    "25–49": "#E57373",
+                    "50–74": "#81C784",
+                    "75+": "#1B5E20",
+                }
+
                 role_fig = px.bar(
                     chart_df,
                     x="Role Percentile",
                     y="Role",
                     orientation="h",
                     text="Role Percentile",
+                    color="Performance Band",
+                    color_discrete_map=role_band_colors,
+                    category_orders={"Performance Band": ["<25", "25–49", "50–74", "75+"]},
                     hover_data={
                         "Role Score": ":.2f",
                         "Coverage %": ":.0f",
                         "Benchmark N": True,
                         "Role Percentile": ":.0f",
+                        "Performance Band": False,
                     },
                     range_x=[0, 100],
                     title="Role percentile by compatible profile",
                 )
-                role_fig.update_traces(texttemplate="%{text:.0f}", textposition="outside", cliponaxis=False)
+                role_fig.update_traces(
+                    texttemplate="%{text:.0f}",
+                    textposition="outside",
+                    cliponaxis=False,
+                )
                 role_fig.update_layout(
                     height=max(330, 75 * len(chart_df)),
                     xaxis_title="Role Percentile",
@@ -3104,10 +3190,53 @@ elif app_page == "Role Fit":
                 )
                 st.plotly_chart(role_fig, width="stretch")
 
+            # Ranked audit table. Role Percentile is the primary cross-role
+            # comparison; raw weighted z-score remains visible for transparency.
             display_fit = fit_df.copy()
+            display_fit["Role Percentile"] = pd.to_numeric(
+                display_fit["Role Percentile"], errors="coerce"
+            )
+            display_fit = display_fit.sort_values(
+                ["Role Percentile", "Role Score"],
+                ascending=[False, False],
+                na_position="last",
+            ).reset_index(drop=True)
+            display_fit.insert(0, "Rank", np.arange(1, len(display_fit) + 1))
+
             for c in ["Role Score", "Role Percentile", "Coverage %"]:
-                display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(2 if c == "Role Score" else 0)
-            st.dataframe(display_fit, width="stretch", hide_index=True)
+                display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(
+                    2 if c == "Role Score" else 0
+                )
+            if "Benchmark N" in display_fit.columns:
+                display_fit["Benchmark N"] = pd.to_numeric(
+                    display_fit["Benchmark N"], errors="coerce"
+                ).round(0).astype("Int64")
+
+            display_fit = display_fit[
+                ["Rank", "Role", "Role Percentile", "Role Score", "Coverage %", "Benchmark N"]
+            ]
+
+            st.dataframe(
+                display_fit,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Rank": st.column_config.NumberColumn("Rank", format="%d", width=55),
+                    "Role": st.column_config.TextColumn("Role", width="medium"),
+                    "Role Percentile": st.column_config.NumberColumn(
+                        "Role Percentile", format="%.0f", width="small"
+                    ),
+                    "Role Score": st.column_config.NumberColumn(
+                        "Role Score", format="%.2f", width="small"
+                    ),
+                    "Coverage %": st.column_config.NumberColumn(
+                        "Coverage %", format="%.0f", width="small"
+                    ),
+                    "Benchmark N": st.column_config.NumberColumn(
+                        "Benchmark N", format="%d", width="small"
+                    ),
+                },
+            )
 
             low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
             if low_n_roles:
@@ -3116,7 +3245,13 @@ elif app_page == "Role Fit":
                     f". Recommended minimum is {int(min_benchmark_n)}."
                 )
 
-            selectable_roles = fit_df["Role"].tolist()
+            selectable_roles = (
+                fit_df.assign(
+                    _role_pct_sort=pd.to_numeric(fit_df["Role Percentile"], errors="coerce")
+                )
+                .sort_values("_role_pct_sort", ascending=False, na_position="last")["Role"]
+                .tolist()
+            )
 
             preferred_role_fit = st.session_state.pop("_preferred_role_fit_detail", None)
             if preferred_role_fit in selectable_roles:
