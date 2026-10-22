@@ -1794,6 +1794,21 @@ if uploaded is None:
     st.stop()
 
 file_bytes = uploaded.getvalue()
+
+# Stability guard: fail cleanly before large allocations can destabilize a
+# constrained Streamlit deployment.
+MAX_UPLOAD_MB = 200
+_upload_mb = len(file_bytes) / (1024 * 1024)
+if not file_bytes:
+    st.error("The uploaded CSV file is empty.")
+    st.stop()
+if _upload_mb > MAX_UPLOAD_MB:
+    st.error(
+        f"The uploaded CSV is {_upload_mb:.1f} MB. "
+        f"For stability, this app accepts files up to {MAX_UPLOAD_MB} MB."
+    )
+    st.stop()
+
 try:
     df_raw = load_csv(file_bytes, uploaded.name)
 except pd.errors.EmptyDataError:
@@ -1811,7 +1826,20 @@ if missing:
     st.error(f"Missing critical column(s): {', '.join(missing)}.")
     st.stop()
 
-df_all = preprocess(df_raw)
+try:
+    df_all = preprocess(df_raw)
+except Exception as e:
+    st.error(
+        "The CSV was read, but preprocessing failed. "
+        "Check that the Wyscout export has consistent columns and a valid League field."
+    )
+    with st.expander("Technical details"):
+        st.code(str(e))
+    st.stop()
+
+if df_all.empty:
+    st.error("The uploaded CSV contains no usable player rows after preprocessing.")
+    st.stop()
 
 # =========================
 # Sidebar filters
@@ -1893,10 +1921,14 @@ selected_positions, _ = multiselect_all(
 
 # Age — quick scouting presets plus the existing manual range slider.
 age_series = df_league["Age"]
-age_min = int(age_series.min(skipna=True) or 0)
-age_max = int(age_series.max(skipna=True) or 0)
+_age_valid = age_series.dropna()
+if _age_valid.empty:
+    age_min, age_max = 0, 100
+else:
+    age_min = int(_age_valid.min())
+    age_max = int(_age_valid.max())
 if age_max < age_min:
-    age_min, age_max = 0, 0
+    age_min, age_max = 0, 100
 
 age_preset = st.sidebar.radio(
     "Age preset",
@@ -1932,7 +1964,8 @@ age_range = st.sidebar.slider(
 min_minutes = 0
 if "Minutes played" in df_league.columns:
     mm = df_league["Minutes played"]
-    min_minutes_max = int(mm.max(skipna=True) or 0)
+    _mm_max = mm.max(skipna=True)
+    min_minutes_max = int(_mm_max) if pd.notna(_mm_max) else 0
 
     minute_preset = st.sidebar.radio(
         "Minutes preset",
@@ -2018,6 +2051,13 @@ if "Minutes played" in benchmark_source_global.columns:
     benchmark_source_global = benchmark_source_global.loc[
         benchmark_source_global["Minutes played"] >= min_minutes
     ]
+
+if benchmark_source_global.empty:
+    st.warning(
+        "The current league/season/minutes selection leaves no benchmark population. "
+        "Lower the minutes threshold or broaden the selected leagues."
+    )
+    st.stop()
 
 # =========================
 # Profile builder
