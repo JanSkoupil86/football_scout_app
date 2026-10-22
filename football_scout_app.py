@@ -4289,7 +4289,7 @@ elif app_page == "Similar Players":
     # IMPORTANT: the reference-player universe is intentionally broader than the
     # sidebar League filter. The sidebar still controls season group, age and minutes,
     # but target competitions are selected independently inside this workspace.
-    reference_pool = data.copy()
+    reference_pool = df_all.copy()
 
     if "Season group" in reference_pool.columns and selected_season_groups:
         reference_pool = reference_pool.loc[
@@ -4343,7 +4343,7 @@ elif app_page == "Similar Players":
             # Independent target-league selector. Default to the sidebar league(s)
             # when those are explicitly selected; otherwise use the reference league.
             available_target_leagues = sorted(
-                data["League"].dropna().astype(str).unique().tolist()
+                df_all["League"].dropna().astype(str).unique().tolist()
             )
             sidebar_target_defaults = [
                 str(x) for x in selected_leagues
@@ -4372,7 +4372,7 @@ elif app_page == "Similar Players":
                 # Candidate universe: same season-group / exact-season / age / minutes
                 # framework, but target leagues are controlled here rather than by the
                 # sidebar League filter.
-                candidates = data.copy()
+                candidates = df_all.copy()
                 if "Season group" in candidates.columns and selected_season_groups:
                     candidates = candidates.loc[
                         candidates["Season group"].isin(selected_season_groups)
