@@ -1342,9 +1342,22 @@ def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -
     bench = add_efficiency_metrics(benchmark_df)
     families_score = out["Main Position"].map(calculated_position_family)
     families_bench = bench["Main Position"].map(calculated_position_family)
+    active_score_families = set(families_score.dropna().unique().tolist())
+
     for index_name, cfg in CALCULATED_METRICS.items():
         out[index_name] = np.nan
-        for family in cfg["families"]:
+
+        # Skip the whole composite when it is irrelevant to every player in the
+        # current Players workspace. The output column still exists, preserving
+        # the app's schema and selector logic.
+        relevant_families = [
+            family for family in cfg["families"]
+            if family in active_score_families
+        ]
+        if not relevant_families:
+            continue
+
+        for family in relevant_families:
             score_mask = families_score.eq(family)
             bench_mask = families_bench.eq(family)
             if not score_mask.any() or not bench_mask.any():
@@ -1808,7 +1821,7 @@ selected_positions, _ = multiselect_all(
 )
 
 # Age — quick scouting presets plus the existing manual range slider.
-age_series = pd.to_numeric(df_league["Age"], errors="coerce")
+age_series = df_league["Age"]
 age_min = int(age_series.min(skipna=True) or 0)
 age_max = int(age_series.max(skipna=True) or 0)
 if age_max < age_min:
@@ -1847,7 +1860,7 @@ age_range = st.sidebar.slider(
 # Minutes — quick presets plus the existing slider. Default remains 500.
 min_minutes = 0
 if "Minutes played" in df_league.columns:
-    mm = pd.to_numeric(df_league["Minutes played"], errors="coerce")
+    mm = df_league["Minutes played"]
     min_minutes_max = int(mm.max(skipna=True) or 0)
 
     minute_preset = st.sidebar.radio(
@@ -1885,10 +1898,10 @@ with st.sidebar.expander("Advanced / Plot settings", expanded=False):
 mask = (
     df_league["Team"].isin(selected_teams)
     & df_league["Main Position"].isin(selected_positions)
-    & pd.to_numeric(df_league["Age"], errors="coerce").between(age_range[0], age_range[1])
+    & df_league["Age"].between(age_range[0], age_range[1])
 )
 if "Minutes played" in df_league.columns:
-    mask = mask & (pd.to_numeric(df_league["Minutes played"], errors="coerce") >= min_minutes)
+    mask = mask & (df_league["Minutes played"] >= min_minutes)
 
 filtered_base = df_league.loc[mask]
 st.sidebar.markdown(f"**Players matching filters: {len(filtered_base)}**")
@@ -1932,7 +1945,7 @@ coverage_threshold_pct = st.sidebar.slider(
 benchmark_source_global = df_league
 if "Minutes played" in benchmark_source_global.columns:
     benchmark_source_global = benchmark_source_global.loc[
-        pd.to_numeric(benchmark_source_global["Minutes played"], errors="coerce") >= min_minutes
+        benchmark_source_global["Minutes played"] >= min_minutes
     ]
 
 # =========================
@@ -2157,13 +2170,12 @@ if app_page == "Players":
     # season/league/minutes universe. Step 2 caching still applies inside this call.
     filtered = add_calculated_indices(filtered, benchmark_source_global)
 
-    # Force calculated outputs to numeric after enrichment so sparse slices remain
-    # available in selectors and table/scatter controls.
-    for _calc_col in CALCULATED_OUTPUT_COLUMNS:
-        if _calc_col in filtered.columns:
-            filtered[_calc_col] = pd.to_numeric(filtered[_calc_col], errors="coerce")
-
-    calc_metric_cols = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
+    # Calculated outputs are numeric by construction. Avoid reparsing every
+    # calculated column on each rerun.
+    calc_metric_cols = [
+        c for c in CALCULATED_OUTPUT_COLUMNS
+        if c in filtered.columns and pd.api.types.is_numeric_dtype(filtered[c])
+    ]
 
     # Runtime contract for Calculated Metrics v1.1, displayed only in Players.
     current_families = sorted({
@@ -2175,7 +2187,7 @@ if app_page == "Players":
     ]
     populated_family_indices = [
         c for c in expected_family_indices
-        if c in filtered.columns and pd.to_numeric(filtered[c], errors="coerce").notna().any()
+        if c in filtered.columns and filtered[c].notna().any()
     ]
 
 # Build the final numeric pool after any page-specific enrichment.
