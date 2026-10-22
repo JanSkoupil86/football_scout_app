@@ -1650,7 +1650,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Compare", "Single Player", "Multi Player", "Role Fit"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -2489,13 +2489,14 @@ if app_page == "Players":
         st.plotly_chart(fig, width="stretch")
 
 
-elif app_page in ("Compare", "Single Player", "Multi Player"):
+elif app_page in ("Single Player", "Multi Player"):
     # =========================
-    # Player comparison visualizations
+    # Player profile / comparison visualizations
     # =========================
     st.subheader(
-        "Single-Player Profile" if app_page == "Single Player"
-        else ("Multi-Player Comparison" if app_page == "Multi Player" else "Player Comparison")
+        "Single-Player Profile"
+        if app_page == "Single Player"
+        else "Multi-Player Comparison"
     )
 
     comparison_mode = (
