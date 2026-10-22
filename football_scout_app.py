@@ -1399,6 +1399,83 @@ def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -
     return out
 
 # =========================
+# Cached benchmark scoring package
+# =========================
+@st.cache_data(show_spinner=False, max_entries=64)
+def build_benchmark_scoring_package(
+    benchmark_numeric: pd.DataFrame,
+    metrics: Tuple[str, ...],
+    weights: Tuple[float, ...],
+    coverage_threshold: float,
+) -> Dict[str, object]:
+    """
+    Build the reusable mathematical part of a weighted role/profile benchmark.
+
+    The package contains the benchmark mean/std, direction-adjusted Z matrix,
+    normalized metric weights, row-level coverage and weighted benchmark score
+    distribution. Because all benchmark-defining inputs are arguments, Streamlit
+    can safely reuse it only for the identical benchmark/metric/weight setup.
+    """
+    cols = [m for m in metrics if m in benchmark_numeric.columns]
+    if not cols:
+        return {
+            "usable": [], "means": pd.Series(dtype=float),
+            "stds": pd.Series(dtype=float), "weights": pd.Series(dtype=float),
+            "benchmark_z": pd.DataFrame(index=benchmark_numeric.index),
+            "benchmark_scores": pd.Series(np.nan, index=benchmark_numeric.index, dtype=float),
+        }
+
+    B = benchmark_numeric.loc[:, cols]
+    # Preprocessing already makes Wyscout feature columns numeric. Keep a
+    # defensive conversion only when an unexpected non-numeric column arrives.
+    non_numeric = [c for c in cols if not pd.api.types.is_numeric_dtype(B[c])]
+    if non_numeric:
+        B = B.copy()
+        B[non_numeric] = B[non_numeric].apply(pd.to_numeric, errors="coerce")
+
+    sparse = sparse_mask(B, threshold=0.95)
+    usable = [m for m in cols if not bool(sparse.get(m, False))]
+    if not usable:
+        return {
+            "usable": [], "means": pd.Series(dtype=float),
+            "stds": pd.Series(dtype=float), "weights": pd.Series(dtype=float),
+            "benchmark_z": pd.DataFrame(index=B.index),
+            "benchmark_scores": pd.Series(np.nan, index=B.index, dtype=float),
+        }
+
+    weight_map = {m: float(w) for m, w in zip(metrics, weights)}
+    W = pd.Series({m: weight_map.get(m, 0.0) for m in usable}, dtype=float)
+    if float(W.sum()) <= 0:
+        W[:] = 1.0
+    W = W / float(W.sum())
+
+    stats = benchmark_metric_stats(B[usable])
+    means = stats["mean"]
+    stds = stats["std"].replace(0, np.nan)
+
+    Zb = (B[usable] - means) / stds
+    flip = [m for m in usable if m in LOWER_IS_BETTER]
+    if flip:
+        Zb[flip] = -Zb[flip]
+
+    avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
+    score_b = (
+        Zb.fillna(0.0).mul(W, axis=1).sum(axis=1)
+        / avail_b.replace(0, np.nan)
+    )
+    score_b = score_b.where(avail_b >= float(coverage_threshold))
+
+    return {
+        "usable": usable,
+        "means": means,
+        "stds": stds,
+        "weights": W,
+        "benchmark_z": Zb,
+        "benchmark_scores": score_b,
+    }
+
+
+# =========================
 # Role Fit v1
 # =========================
 ROLE_FIT_POSITION_MAP: Dict[str, List[str]] = {
@@ -1484,9 +1561,14 @@ def role_fit_for_player(
         weight_by_resolved[col] = weight_by_resolved.get(col, 0.0) + float(DEFAULT_WEIGHTS[role_name][req])
     weights = np.array([weight_by_resolved[m] for m in resolved], dtype=float)
 
-    B = benchmark_df[resolved].apply(pd.to_numeric, errors="coerce")
-    sparse = sparse_mask(B, threshold=0.95)
-    usable = [m for m in resolved if not bool(sparse.get(m, False))]
+    B = benchmark_df[resolved]
+    package = build_benchmark_scoring_package(
+        B,
+        tuple(resolved),
+        tuple(float(weight_by_resolved[m]) for m in resolved),
+        float(coverage_threshold),
+    )
+    usable = list(package["usable"])
     if not usable:
         return {
             "Role": role_name, "Role Score": np.nan, "Role Percentile": np.nan,
@@ -1494,25 +1576,20 @@ def role_fit_for_player(
             "Resolved Metrics": resolved, "Missing Metrics": missing,
         }
 
-    W = pd.Series({m: weight_by_resolved[m] for m in usable}, dtype=float)
-    positive_total = float(W.sum())
-    if positive_total <= 0:
-        W[:] = 1.0
-        positive_total = float(W.sum())
-    W = W / positive_total
-
-    stats = benchmark_metric_stats(B[usable])
-    means = stats["mean"]
-    stds = stats["std"].replace(0, np.nan)
+    W = package["weights"]
+    means = package["means"]
+    stds = package["stds"]
+    Zb = package["benchmark_z"]
+    score_b = package["benchmark_scores"]
 
     player_vals = pd.Series(
         {m: pd.to_numeric(pd.Series([player_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in usable},
         dtype=float,
     )
     z = (player_vals - means) / stds
-    for m in usable:
-        if m in LOWER_IS_BETTER:
-            z[m] = -z[m]
+    flip = [m for m in usable if m in LOWER_IS_BETTER]
+    if flip:
+        z[flip] = -z[flip]
 
     available_weight = float(W[z.notna()].sum())
     coverage = available_weight * 100.0
@@ -1520,15 +1597,9 @@ def role_fit_for_player(
     if available_weight < coverage_threshold:
         score = np.nan
 
-    # Build the benchmark's role-score distribution using identical row-level missing-data handling.
-    Zb = (B[usable] - means) / stds
-    flip = [m for m in usable if m in LOWER_IS_BETTER]
-    if flip:
-        Zb[flip] = -Zb[flip]
-    avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
-    score_b = Zb.fillna(0.0).mul(W, axis=1).sum(axis=1) / avail_b.replace(0, np.nan)
-    score_b = score_b.where(avail_b >= coverage_threshold)
-    role_pct = percentile_rank_against_population(score_b, score, lower_is_better=False) if pd.notna(score) else np.nan
+    role_pct = percentile_rank_against_population(
+        score_b, score, lower_is_better=False
+    ) if pd.notna(score) else np.nan
 
     # KPI decomposition for this player.
     kpi_scores: Dict[str, float] = {}
