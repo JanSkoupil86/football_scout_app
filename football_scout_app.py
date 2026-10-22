@@ -651,15 +651,18 @@ def single_player_wheel(
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
     # Avoid traffic-light red/green/orange semantics.
+    # High-separation categorical palette for KPI families.
+    # Red and green are deliberately excluded because those colours are reserved
+    # for performance bands on the radial lines / endpoint dots.
     palette = [
-        "#4C78A8",  # blue
-        "#7A5195",  # purple
-        "#2F8F9D",  # teal-blue
-        "#5C6BC0",  # indigo
-        "#008C95",  # deep cyan
-        "#8C6D9E",  # muted violet
-        "#577590",  # slate blue
-        "#6C7A89",  # blue-grey
+        "#3478B8",  # blue
+        "#8E5AB5",  # purple
+        "#16A6B6",  # cyan / teal
+        "#E58A2B",  # orange
+        "#244A73",  # navy
+        "#D4A72C",  # gold
+        "#C44E8B",  # magenta
+        "#687684",  # slate
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
@@ -1052,15 +1055,18 @@ def multi_player_profile_wheel(
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
     # Avoid traffic-light red/green/orange semantics.
+    # High-separation categorical palette for KPI families.
+    # Red and green are deliberately excluded because those colours are reserved
+    # for performance bands on the radial lines / endpoint dots.
     palette = [
-        "#4C78A8",  # blue
-        "#7A5195",  # purple
-        "#2F8F9D",  # teal-blue
-        "#5C6BC0",  # indigo
-        "#008C95",  # deep cyan
-        "#8C6D9E",  # muted violet
-        "#577590",  # slate blue
-        "#6C7A89",  # blue-grey
+        "#3478B8",  # blue
+        "#8E5AB5",  # purple
+        "#16A6B6",  # cyan / teal
+        "#E58A2B",  # orange
+        "#244A73",  # navy
+        "#D4A72C",  # gold
+        "#C44E8B",  # magenta
+        "#687684",  # slate
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
@@ -1648,7 +1654,7 @@ def role_fit_detail_wheel(
 
     # KPI-colored outer tiles, following the same established wheel language.
     # Neutral KPI colours; they identify categories rather than good/bad performance.
-    palette = ["#4C78A8", "#7A5195", "#2F8F9D", "#5C6BC0", "#008C95", "#8C6D9E", "#577590", "#6C7A89"]
+    palette = ["#3478B8", "#8E5AB5", "#16A6B6", "#E58A2B", "#244A73", "#D4A72C", "#C44E8B", "#687684"]
     unique_kpis = list(dict.fromkeys(kpi_lookup.get(m, "Profile") for m in metrics))
     kpi_color = {k: palette[i % len(palette)] for i, k in enumerate(unique_kpis)}
     width = 360.0 / max(1, n)
