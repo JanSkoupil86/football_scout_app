@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import json
+import math
 from difflib import SequenceMatcher
 from pathlib import Path
 from io import BytesIO, StringIO
