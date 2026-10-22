@@ -438,6 +438,38 @@ def percentile_rank_against_population(
     return float(np.clip(pct, 0.0, 100.0))
 
 
+
+def percentile_ranks_against_population_vectorized(
+    population: pd.Series,
+    values: pd.Series,
+    lower_is_better: bool = False,
+) -> pd.Series:
+    """Vectorized equivalent of percentile_rank_against_population.
+
+    Preserves the app's existing midpoint tie handling exactly:
+    percentile = 100 * (count_less + 0.5 * count_equal) / N.
+    Uses NumPy searchsorted instead of one Python function call per player.
+    """
+    pop = pd.to_numeric(population, errors="coerce").dropna().to_numpy(dtype=float)
+    result = pd.Series(np.nan, index=values.index, dtype=float)
+    if pop.size == 0:
+        return result
+
+    pop.sort()
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    valid = numeric_values.notna()
+    if not valid.any():
+        return result
+
+    vals = numeric_values.loc[valid].to_numpy(dtype=float)
+    left = np.searchsorted(pop, vals, side="left")
+    right = np.searchsorted(pop, vals, side="right")
+    pct = 100.0 * (left + 0.5 * (right - left)) / pop.size
+    if lower_is_better:
+        pct = 100.0 - pct
+    result.loc[valid] = np.clip(pct, 0.0, 100.0)
+    return result
+
 def position_family_mask(series: pd.Series, role_name: str) -> pd.Series:
     """Best-effort position-relevant benchmark using Main Position text."""
     hints = ROLE_POSITION_HINTS.get(role_name, [])
@@ -1261,7 +1293,9 @@ def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -
             avail = Z.notna().mul(W, axis=1).sum(axis=1)
             composite = Z.fillna(0).mul(W, axis=1).sum(axis=1) / avail.replace(0, np.nan)
             composite = composite.where(avail >= 0.70)
-            out.loc[score_mask, index_name] = composite.apply(lambda v: percentile_rank_against_population(score_b, v) if pd.notna(v) else np.nan)
+            out.loc[score_mask, index_name] = percentile_ranks_against_population_vectorized(
+                score_b, composite, lower_is_better=False
+            )
     return out
 
 # =========================
