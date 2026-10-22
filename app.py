@@ -1765,7 +1765,7 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
                 slider_key = safe_widget_key("w", profile_name, m)
                 if slider_key not in st.session_state:
                     st.session_state[slider_key] = default_w
-                w = st.slider(f"{m}", 0, 100, int(st.session_state[slider_key]), 1, key=slider_key)
+                w = st.slider(f"{m}", min_value=0, max_value=100, step=1, key=slider_key)
                 weights_pct.append(int(w))
 
         total_weight = int(sum(weights_pct))
@@ -2003,7 +2003,7 @@ if app_page == "Players":
         for c in table_df.select_dtypes(include="number").columns:
             table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
 
-        st.dataframe(table_df.reset_index(drop=True), use_container_width=True)
+        st.dataframe(table_df.reset_index(drop=True), width="stretch")
 
     # CSV download
     csv_buf = StringIO()
@@ -2113,7 +2113,7 @@ if app_page == "Players":
             yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 elif app_page in ("Compare", "Single Player", "Multi Player"):
@@ -2352,7 +2352,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
                 )
                 table_for_display = pd.concat([score_df, table_for_display], axis=0)
 
-            st.dataframe(table_for_display, use_container_width=True)
+            st.dataframe(table_for_display, width="stretch")
 
             comparison_scale = st.radio(
                 "Comparison scale",
@@ -2392,7 +2392,7 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
                     kpi_lookup=custom_kpi_lookup,
                 )
 
-            st.plotly_chart(fig_radar, use_container_width=True)
+            st.plotly_chart(fig_radar, width="stretch")
 
             st.caption(
                 "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
@@ -2533,13 +2533,13 @@ elif app_page in ("Compare", "Single Player", "Multi Player"):
                     subtitle=subtitle,
                     scale_mode=scale_mode,
                 )
-                st.plotly_chart(fig_single, use_container_width=True)
+                st.plotly_chart(fig_single, width="stretch")
 
                 profile_table = profile_df.copy()
                 profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
                 profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
                 profile_table["Z-score"] = profile_table["Z-score"].round(2)
-                st.dataframe(profile_table, use_container_width=True, hide_index=True)
+                st.dataframe(profile_table, width="stretch", hide_index=True)
 
                 csv_single = StringIO()
                 profile_table.to_csv(csv_single, index=False)
@@ -2666,12 +2666,12 @@ elif app_page == "Role Fit":
                     showlegend=False,
                     margin=dict(l=20, r=45, t=55, b=35),
                 )
-                st.plotly_chart(role_fig, use_container_width=True)
+                st.plotly_chart(role_fig, width="stretch")
 
             display_fit = fit_df.copy()
             for c in ["Role Score", "Role Percentile", "Coverage %"]:
                 display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(2 if c == "Role Score" else 0)
-            st.dataframe(display_fit, use_container_width=True, hide_index=True)
+            st.dataframe(display_fit, width="stretch", hide_index=True)
 
             low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
             if low_n_roles:
@@ -2719,7 +2719,7 @@ elif app_page == "Role Fit":
                 rf_player_row,
                 rf_scale,
             )
-            st.plotly_chart(wheel, use_container_width=True)
+            st.plotly_chart(wheel, width="stretch")
 
             st.markdown("#### Underlying role metrics")
             metric_rows = []
@@ -2750,7 +2750,7 @@ elif app_page == "Role Fit":
                 metric_df["Raw Value"] = pd.to_numeric(metric_df["Raw Value"], errors="coerce").round(2)
                 metric_df["Z-score"] = pd.to_numeric(metric_df["Z-score"], errors="coerce").round(2)
                 metric_df["Percentile"] = pd.to_numeric(metric_df["Percentile"], errors="coerce").round(0)
-                st.dataframe(metric_df, use_container_width=True, hide_index=True)
+                st.dataframe(metric_df, width="stretch", hide_index=True)
 
             st.caption(
                 "Role Fit does not assign qualitative labels such as Excellent/Good/Poor. "
