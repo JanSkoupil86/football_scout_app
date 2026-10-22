@@ -186,7 +186,7 @@ def multiselect_all(label: str, options: List[str], default_all: bool = True, he
     return (options if use_all else [o for o in picked if o != ALL_TOKEN]), use_all
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=3)
 def load_csv(file_bytes: bytes, filename: str) -> pd.DataFrame:
     # cache key includes bytes + filename
     try:
@@ -231,7 +231,7 @@ def parse_market_value(series: pd.Series) -> pd.Series:
     return series.apply(to_float)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=3)
 def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Coerce numeric columns + create season fields."""
     df = df_raw.copy()
@@ -341,7 +341,7 @@ def sparse_mask(X: pd.DataFrame, threshold: float = 0.95) -> pd.Series:
 
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=64)
 def benchmark_metric_stats(benchmark_numeric: pd.DataFrame) -> pd.DataFrame:
     """Cache benchmark means/SDs/counts; input is already numeric and role-filtered."""
     return pd.DataFrame({
@@ -351,6 +351,7 @@ def benchmark_metric_stats(benchmark_numeric: pd.DataFrame) -> pd.DataFrame:
     })
 
 
+@st.cache_data(show_spinner=False, max_entries=32)
 def benchmark_population_for_role(
     source_df: pd.DataFrame,
     role_name: str | None,
@@ -1437,6 +1438,7 @@ def compatible_roles_for_position(value: object) -> List[str]:
     return ROLE_FIT_POSITION_MAP.get(normalize_main_position_for_role_fit(value), [])
 
 
+@st.cache_data(show_spinner=False, max_entries=96)
 def role_fit_for_player(
     player_row: pd.Series,
     role_name: str,
