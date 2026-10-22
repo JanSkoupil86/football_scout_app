@@ -4291,20 +4291,20 @@ elif app_page == "Similar Players":
     # but target competitions are selected independently inside this workspace.
     reference_pool = df_all.copy()
 
-    if "Season group" in reference_pool.columns and selected_season_groups:
+    if "Season group" in reference_pool.columns and selected_groups:
         reference_pool = reference_pool.loc[
-            reference_pool["Season group"].isin(selected_season_groups)
+            reference_pool["Season group"].isin(selected_groups)
         ].copy()
 
-    if exact_season_toggle and selected_season_labels and "Season label" in reference_pool.columns:
+    if use_exact_label and selected_labels and "Season label" in reference_pool.columns:
         reference_pool = reference_pool.loc[
-            reference_pool["Season label"].isin(selected_season_labels)
+            reference_pool["Season label"].isin(selected_labels)
         ].copy()
 
     if "Age" in reference_pool.columns:
         _ref_age = pd.to_numeric(reference_pool["Age"], errors="coerce")
         reference_pool = reference_pool.loc[
-            _ref_age.between(float(age_min), float(age_max), inclusive="both")
+            _ref_age.between(float(age_range[0]), float(age_range[1]), inclusive="both")
         ].copy()
 
     if "Minutes played" in reference_pool.columns:
@@ -4373,13 +4373,13 @@ elif app_page == "Similar Players":
                 # framework, but target leagues are controlled here rather than by the
                 # sidebar League filter.
                 candidates = df_all.copy()
-                if "Season group" in candidates.columns and selected_season_groups:
+                if "Season group" in candidates.columns and selected_groups:
                     candidates = candidates.loc[
-                        candidates["Season group"].isin(selected_season_groups)
+                        candidates["Season group"].isin(selected_groups)
                     ].copy()
-                if exact_season_toggle and selected_season_labels and "Season label" in candidates.columns:
+                if use_exact_label and selected_labels and "Season label" in candidates.columns:
                     candidates = candidates.loc[
-                        candidates["Season label"].isin(selected_season_labels)
+                        candidates["Season label"].isin(selected_labels)
                     ].copy()
                 candidates = candidates.loc[
                     candidates["League"].astype(str).isin([str(x) for x in target_leagues])
@@ -4389,7 +4389,7 @@ elif app_page == "Similar Players":
                 if "Age" in candidates.columns:
                     _cand_age = pd.to_numeric(candidates["Age"], errors="coerce")
                     candidates = candidates.loc[
-                        _cand_age.between(float(age_min), float(age_max), inclusive="both")
+                        _cand_age.between(float(age_range[0]), float(age_range[1]), inclusive="both")
                     ].copy()
                 if "Minutes played" in candidates.columns:
                     _cand_min = pd.to_numeric(candidates["Minutes played"], errors="coerce")
