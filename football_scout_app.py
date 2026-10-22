@@ -2052,32 +2052,60 @@ if app_page == "Players":
         for c in table_df.select_dtypes(include="number").columns:
             table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
 
-        # Position-aware column widths for a cleaner scouting table.
-        # The dataframe index is hidden because it is only a display row number.
+        # Compact, one-frame scouting table.
+        # Keep source dataframe names unchanged; only display labels/widths are shortened.
         table_column_config = {}
+
+        compact_labels = {
+            "Season label": "Season",
+            "Main Position": "Pos",
+            "Minutes played": "Min",
+            "Save rate, %": "Save %",
+            "Prevented goals per 90": "Prev G/90",
+            "KPI: Shot Stopping": "Shot Stop",
+            "KPI: Area Control": "Area Ctrl",
+            "KPI: Distribution": "Distrib.",
+            "KPI: Build-Up": "Build-Up",
+        }
+
         for c in table_df.columns:
             c_low = str(c).lower()
+            display_label = compact_labels.get(c, c)
 
-            if c == "Player":
-                table_column_config[c] = st.column_config.TextColumn(c, width="medium")
+            # Role score keeps its real dataframe name internally but uses a compact header.
+            if c.startswith("Score:"):
+                display_label = "Profile Score"
+
+            if c == "Season label":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=65)
+            elif c == "Player":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=105)
             elif c == "Team":
-                table_column_config[c] = st.column_config.TextColumn(c, width="medium")
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=115)
             elif c == "League":
-                table_column_config[c] = st.column_config.TextColumn(c, width="large")
-            elif c in {"Season label", "Main Position"}:
-                table_column_config[c] = st.column_config.TextColumn(c, width="small")
-            elif c in {"Age", "Minutes played", "Matches played"}:
-                table_column_config[c] = st.column_config.NumberColumn(c, width="small")
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=180)
+            elif c == "Main Position":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=50)
+            elif c == "Age":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=45, format="%d")
+            elif c == "Minutes played":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=60, format="%d")
             elif c.startswith("Score:"):
-                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
+            elif c == "Save rate, %":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
+            elif c == "Prevented goals per 90":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%.2f")
             elif c.startswith("KPI:"):
-                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=78, format="%.2f")
             elif c.startswith("Calc:"):
-                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=85, format="%.2f")
             elif "%" in str(c) or c_low.endswith("rate"):
-                table_column_config[c] = st.column_config.NumberColumn(c, width="small", format="%.2f")
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
             elif pd.api.types.is_numeric_dtype(table_df[c]):
-                table_column_config[c] = st.column_config.NumberColumn(c, width="small", format="%.2f")
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
+            else:
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=90)
 
         st.dataframe(
             table_df,
