@@ -1622,6 +1622,96 @@ def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame
     return scored, pd.to_numeric(benchmark_scored["_projection_role_score"], errors="coerce").dropna()
 
 
+
+def build_projected_target_profile(
+    player_row: pd.Series,
+    target_benchmark: pd.DataFrame,
+    role_name: str,
+    rating_delta: float,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Project the player's role metrics against the actual target-league position population.
+
+    V1 uses the player's unchanged raw Wyscout values, standardizes each metric against
+    the target-league compatible-position population, then applies the empirically
+    calibrated league-strength penalty to the direction-aware z-score. The adjusted
+    z-score is converted to a 0-100 normal percentile for radar presentation.
+    """
+    requested = SINGLE_PLAYER_PROFILES[role_name]
+    records, missing = [], []
+    adjustment = LEAGUE_TRANSLATION_BETA * float(rating_delta)
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], target_benchmark.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+        metric = resolved[0]
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            continue
+        lower_better = metric in LOWER_IS_BETTER
+        target_z = directional_z_against_population(target_benchmark[metric], value, lower_is_better=lower_better)
+        if pd.isna(target_z):
+            continue
+        projected_z = float(target_z) - adjustment
+        # Normal-CDF conversion avoids pretending that the translated raw value itself
+        # was observed in the target league while retaining an intuitive percentile scale.
+        projected_pct = 50.0 * (1.0 + math.erf(projected_z / math.sqrt(2.0)))
+        records.append({
+            "KPI Group": group, "Metric": metric, "Raw Value": float(value),
+            "Percentile": float(np.clip(projected_pct, 0.0, 100.0)),
+            "Z-score": projected_z,
+        })
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+def league_projection_radar(
+    current_profile: pd.DataFrame,
+    projected_profile: pd.DataFrame,
+    player_name: str,
+    current_label: str,
+    target_label: str,
+) -> go.Figure:
+    """Current-vs-projected percentile radar using the same role metric order as Single Player."""
+    if current_profile.empty or projected_profile.empty:
+        return go.Figure()
+    cur = current_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Current"})
+    pro = projected_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Projected"})
+    d = cur.merge(pro, on="Metric", how="inner")
+    if d.empty:
+        return go.Figure()
+    aliases = {
+        "Successful defensive actions per 90": "Def. Actions /90", "Defensive duels won, %": "Def. Duel Win %",
+        "Aerial duels won, %": "Aerial Win %", "PAdj Interceptions": "PAdj Interceptions",
+        "PAdj Sliding tackles": "PAdj Tackles", "Accurate passes, %": "Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90", "Accurate progressive passes, %": "Prog. Pass Acc. %",
+        "Passes to final third per 90": "Final Third Passes /90", "Progressive runs per 90": "Progressive Runs /90",
+        "Dribbles per 90": "Dribbles /90", "Successful dribbles, %": "Dribble Success %",
+        "xA per 90": "xA /90", "Key passes per 90": "Key Passes /90", "xG per 90": "xG /90",
+        "Non-penalty goals per 90": "NPG /90", "Touches in box per 90": "Box Touches /90",
+        "Shots per 90": "Shots /90", "Save rate, %": "Save Rate %", "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓", "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90", "Accurate long passes, %": "Long Pass Acc. %",
+        "Shot assists per 90": "Shot Assists /90", "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %", "Offensive duels won, %": "Off. Duel Win %",
+        "Received passes per 90": "Passes Received /90", "Received long passes per 90": "Long Passes Rec. /90",
+    }
+    labels = [aliases.get(m, m) for m in d["Metric"]]
+    labels_closed = labels + [labels[0]]
+    cur_vals = d["Current"].astype(float).tolist(); cur_vals += [cur_vals[0]]
+    pro_vals = d["Projected"].astype(float).tolist(); pro_vals += [pro_vals[0]]
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(r=cur_vals, theta=labels_closed, mode="lines+markers", name=current_label,
+                                  line=dict(width=3), marker=dict(size=7), fill=None))
+    fig.add_trace(go.Scatterpolar(r=pro_vals, theta=labels_closed, mode="lines+markers", name=f"{target_label} (Projected)",
+                                  line=dict(width=3, dash="dot"), marker=dict(size=7), fill=None))
+    fig.update_layout(
+        title=f"Projected performance of {player_name}", template="plotly_white", height=680,
+        polar=dict(radialaxis=dict(range=[0,100], tickvals=[25,50,75,100], ticksuffix="", showline=False),
+                   angularaxis=dict(direction="clockwise")),
+        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center"), margin=dict(l=80,r=80,t=80,b=100),
+    )
+    return fig
+
 # =========================
 # Role Fit v1
 # =========================
@@ -3662,19 +3752,36 @@ elif app_page == "League Projection":
                         st.write(f"**Translation adjustment:** {-LEAGUE_TRANSLATION_BETA * rating_delta:+.2f} Role Score.")
                         st.write(f"**Target benchmark N:** {len(target_distribution):,} usable {projection_role} observations.")
 
-                    if pd.notna(current_score) and pd.notna(projected_score):
-                        chart_df = pd.DataFrame({
-                            "Context": ["Current league", "Projected target league"],
-                            "Role Score": [current_score, projected_score],
-                        })
-                        fig = px.bar(chart_df, x="Context", y="Role Score", text="Role Score", title=f"{player_row.get('Player', '')} — {projection_role}")
-                        fig.update_traces(texttemplate="%{text:+.2f}", textposition="outside")
-                        pad = max(0.35, abs(current_score) * 0.25, abs(projected_score) * 0.25)
-                        lo = min(0, current_score, projected_score) - pad
-                        hi = max(0, current_score, projected_score) + pad
-                        fig.update_yaxes(range=[lo, hi], zeroline=True, title="Role Score (Z-based)")
-                        fig.update_layout(template="plotly_white", height=430, showlegend=False)
+                    # Current vs projected role-metric radar. The current shape is benchmarked
+                    # against the player's present competition; the projected shape uses the actual
+                    # target-league compatible-position population plus the calibrated league penalty.
+                    current_profile, _ = build_single_player_profile(player_row, current_benchmark, projection_role)
+                    projected_profile, _ = build_projected_target_profile(
+                        player_row, target_benchmark, projection_role, rating_delta
+                    )
+                    if not current_profile.empty and not projected_profile.empty:
+                        st.subheader("Current vs projected performance profile")
+                        st.caption(
+                            f"Percentile profile for {projection_role}. Current values are relative to {current_league}; "
+                            f"projected values are relative to actual {target_league} players in compatible Main Positions, "
+                            f"with the β = {LEAGUE_TRANSLATION_BETA:.3f} competition-strength adjustment applied."
+                        )
+                        fig = league_projection_radar(
+                            current_profile, projected_profile, str(player_row.get("Player", "")),
+                            current_league, target_league,
+                        )
                         st.plotly_chart(fig, width="stretch")
+
+                        radar_table = current_profile[["KPI Group", "Metric", "Percentile"]].rename(columns={"Percentile": "Current %ile"})
+                        radar_table = radar_table.merge(
+                            projected_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Projected %ile"}),
+                            on="Metric", how="inner"
+                        )
+                        radar_table["Change"] = radar_table["Projected %ile"] - radar_table["Current %ile"]
+                        for c in ["Current %ile", "Projected %ile", "Change"]:
+                            radar_table[c] = radar_table[c].round(0)
+                        with st.expander("Projected metric detail", expanded=False):
+                            st.dataframe(radar_table, width="stretch", hide_index=True)
 
                     st.caption(
                         "V1 projection: Projected Role Score = Current Role Score − 0.020 × "
