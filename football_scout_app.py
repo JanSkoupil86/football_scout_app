@@ -2782,6 +2782,9 @@ if app_page == "Players":
     ]
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
+    # Opta league strength remains available internally for adjustment/hover logic,
+    # but is intentionally hidden from the Players table selector.
+    exclude_cols.update({"Opta League Rating", "Opta Global Rank", "League Adjustment"})
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
@@ -2791,7 +2794,8 @@ if app_page == "Players":
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.append(calc_col_name)
         if league_adjustment_on and adjusted_score_col in filtered.columns:
-            default_cols.extend(["Opta League Rating", adjusted_score_col])
+            # Keep Opta rating internal; only show the adjusted result by default.
+            default_cols.append(adjusted_score_col)
 
     if _gk_only_selection:
         # GK-specific raw indicators replace attacking output columns in the default view.
@@ -2820,7 +2824,12 @@ if app_page == "Players":
 
     # The active profile score is the primary scouting ranking. Calculated
     # indicators remain available but no longer override the role score default.
-    rank_candidates = [calc_col_name] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
+    # When league adjustment is active, rank by the adjusted score automatically.
+    # Otherwise preserve the existing raw profile-score default.
+    _primary_rank_col = adjusted_score_col if (
+        league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns
+    ) else calc_col_name
+    rank_candidates = [_primary_rank_col] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
     rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
     default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
 
@@ -2870,7 +2879,7 @@ if app_page == "Players":
             "Calc: Link Play": "Link Play",
             "Opta League Rating": "League Rating",
             "Opta Global Rank": "Opta Rank",
-            "League-Adjusted Score": "Adjusted Score",
+            "League-Adjusted Score": "League-Adjusted Score",
             "League Adjustment": "Adjustment",
         }
 
