@@ -1935,37 +1935,46 @@ if active and active.get("metrics"):
 else:
     filtered = filtered_base
 
-# Calculated Metrics v1: benchmark-aware positional-family indices + direct efficiency metrics.
-# Benchmark remains independent from team/age filters and follows the selected season/league/minutes universe.
-filtered = add_calculated_indices(filtered, benchmark_source_global)
-
-# Force every calculated output to numeric after enrichment. This avoids pandas dtype
-# inference hiding calculated columns from selectors when a filtered slice is sparse.
+# Calculated Metrics v1.
+# Step 3: enrich only the Players workspace. Compare / Single Player / Multi Player /
+# Role Fit do not use Calc: columns, so they should not pay the cost of building the
+# 14 positional composites and 3 efficiency metrics on every widget rerun.
 CALCULATED_OUTPUT_COLUMNS = CALCULATED_INDEX_NAMES + EFFICIENCY_METRICS
-for _calc_col in CALCULATED_OUTPUT_COLUMNS:
-    if _calc_col in filtered.columns:
-        filtered[_calc_col] = pd.to_numeric(filtered[_calc_col], errors="coerce")
+calc_metric_cols = []
+current_families = []
+expected_family_indices = []
+populated_family_indices = []
 
-# IMPORTANT: build the UI metric pool from the FINAL enriched dataframe.
-# Calculated outputs are injected explicitly so they cannot disappear because of
-# pandas dtype inference, sparse slices, or an earlier cached numeric-column list.
+if app_page == "Players":
+    # Benchmark remains independent from team/age filters and follows the selected
+    # season/league/minutes universe. Step 2 caching still applies inside this call.
+    filtered = add_calculated_indices(filtered, benchmark_source_global)
+
+    # Force calculated outputs to numeric after enrichment so sparse slices remain
+    # available in selectors and table/scatter controls.
+    for _calc_col in CALCULATED_OUTPUT_COLUMNS:
+        if _calc_col in filtered.columns:
+            filtered[_calc_col] = pd.to_numeric(filtered[_calc_col], errors="coerce")
+
+    calc_metric_cols = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
+
+    # Runtime contract for Calculated Metrics v1.1, displayed only in Players.
+    current_families = sorted({
+        f for f in filtered["Main Position"].map(calculated_position_family).dropna().tolist()
+    }) if "Main Position" in filtered.columns else []
+    expected_family_indices = [
+        name for name, cfg in CALCULATED_METRICS.items()
+        if any(f in cfg["families"] for f in current_families)
+    ]
+    populated_family_indices = [
+        c for c in expected_family_indices
+        if c in filtered.columns and pd.to_numeric(filtered[c], errors="coerce").notna().any()
+    ]
+
+# Build the final numeric pool after any page-specific enrichment.
+# On non-Players workspaces this is intentionally just the raw/profile-score pool.
 raw_numeric_cols = list(get_numeric_columns(filtered))
-calc_metric_cols = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
 numeric_cols = list(dict.fromkeys(raw_numeric_cols + calc_metric_cols))
-
-# Runtime contract for Calculated Metrics v1.1. This is intentionally visible in
-# Players so deployment/main-file mistakes are immediately obvious.
-current_families = sorted({
-    f for f in filtered["Main Position"].map(calculated_position_family).dropna().tolist()
-}) if "Main Position" in filtered.columns else []
-expected_family_indices = [
-    name for name, cfg in CALCULATED_METRICS.items()
-    if any(f in cfg["families"] for f in current_families)
-]
-populated_family_indices = [
-    c for c in expected_family_indices
-    if c in filtered.columns and pd.to_numeric(filtered[c], errors="coerce").notna().any()
-]
 
 # Two headline calculated indicators shown by default for each canonical profile.
 # Presentation only: role scores, weights, benchmarks and KPI calculations are unchanged.
