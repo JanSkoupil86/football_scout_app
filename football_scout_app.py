@@ -4325,6 +4325,19 @@ elif app_page == "Similar Players":
                 similar_pool["Main Position"].astype(str).isin(eligible_positions)
             ].copy()
 
+            # Similar Players results must stay inside the league(s) selected in the
+            # main sidebar. This is explicit rather than relying only on upstream
+            # filtering, so the results table/scatter can never leak candidates from
+            # unselected competitions.
+            _selected_similarity_leagues = [
+                str(x) for x in selected_leagues
+                if str(x) != ALL_TOKEN
+            ]
+            if _selected_similarity_leagues and "League" in candidates.columns:
+                candidates = candidates.loc[
+                    candidates["League"].astype(str).isin(_selected_similarity_leagues)
+                ].copy()
+
             # Exclude only the selected row, not every player with the same display name.
             candidates = candidates.drop(index=ref_index[ref_label], errors="ignore")
 
@@ -4429,6 +4442,13 @@ elif app_page == "Similar Players":
                     if pd.notna(ref_age):
                         cand_age = pd.to_numeric(result["Age"], errors="coerce")
                         result = result.loc[(cand_age - float(ref_age)).abs() <= max_age_gap]
+
+                    # Final defensive league filter: output table and scatter show
+                    # only the competition(s) selected in the main sidebar.
+                    if _selected_similarity_leagues and "League" in result.columns:
+                        result = result.loc[
+                            result["League"].astype(str).isin(_selected_similarity_leagues)
+                        ].copy()
 
                     result = result.sort_values(
                         ["Similarity %", "League-Adjusted Score", "Profile Score"],
