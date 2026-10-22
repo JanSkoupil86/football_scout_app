@@ -1250,6 +1250,7 @@ def add_efficiency_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["Calc: Chance Quality (xA/Key Pass)"] = n("xA per 90") / key_passes
     return out
 
+@st.cache_data(show_spinner=False, max_entries=12)
 def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
     out = add_efficiency_metrics(score_df)
     bench = add_efficiency_metrics(benchmark_df)
@@ -1991,6 +1992,8 @@ if app_page == "Players":
     # in the selector; this only controls what is shown initially.
     _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
 
+    # Default order: identity/context -> Age -> Minutes -> active role Score ->
+    # position-relevant headline metrics -> other defaults -> KPI sub-scores.
     ID_COLS = [
         "Season label",
         "Player",
@@ -1998,24 +2001,32 @@ if app_page == "Players":
         "League",
         "Main Position",
         "Age",
+        "Minutes played",
     ]
-    if _gk_only_selection:
-        ID_COLS.extend(["Save rate, %", "Prevented goals per 90"])
-    else:
-        ID_COLS.extend(["Goals", "Assists", "xG", "xA"])
-    ID_COLS.append("Minutes played")
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
-    calc_defaults = [c for c in ["Calc: Box Threat", "Calc: Chance Creation", "Calc: Passing Progression", "Calc: Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
-    default_cols.extend(calc_defaults[:2])
+
+    # Put the active weighted role Z-score immediately after Minutes played.
+    # Coverage remains available in the selector but is not shown by default.
     if calc_col_name and calc_col_name in filtered.columns:
-        # Show the role score and KPI sub-scores by default, but keep Coverage %
-        # available only as an optional user-selected column.
-        default_cols = default_cols + [calc_col_name]
+        default_cols.append(calc_col_name)
+
+    if _gk_only_selection:
+        # GK-specific raw indicators replace attacking output columns in the default view.
+        default_cols.extend([c for c in ["Save rate, %", "Prevented goals per 90"] if c in filtered.columns])
+    else:
+        default_cols.extend([c for c in ["Goals", "Assists", "xG", "xA"] if c in filtered.columns])
+        calc_defaults = [c for c in ["Calc: Box Threat", "Calc: Chance Creation", "Calc: Passing Progression", "Calc: Defensive Activity"] if c in filtered.columns and filtered[c].notna().any()]
+        default_cols.extend(calc_defaults[:2])
+
+    if calc_col_name and calc_col_name in filtered.columns:
         default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
+
+    # Defensive dedupe while preserving the deliberate display order above.
+    default_cols = list(dict.fromkeys(default_cols))
 
     selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
@@ -2041,7 +2052,39 @@ if app_page == "Players":
         for c in table_df.select_dtypes(include="number").columns:
             table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
 
-        st.dataframe(table_df.reset_index(drop=True), width="stretch")
+        # Position-aware column widths for a cleaner scouting table.
+        # The dataframe index is hidden because it is only a display row number.
+        table_column_config = {}
+        for c in table_df.columns:
+            c_low = str(c).lower()
+
+            if c == "Player":
+                table_column_config[c] = st.column_config.TextColumn(c, width="medium")
+            elif c == "Team":
+                table_column_config[c] = st.column_config.TextColumn(c, width="medium")
+            elif c == "League":
+                table_column_config[c] = st.column_config.TextColumn(c, width="large")
+            elif c in {"Season label", "Main Position"}:
+                table_column_config[c] = st.column_config.TextColumn(c, width="small")
+            elif c in {"Age", "Minutes played", "Matches played"}:
+                table_column_config[c] = st.column_config.NumberColumn(c, width="small")
+            elif c.startswith("Score:"):
+                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+            elif c.startswith("KPI:"):
+                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+            elif c.startswith("Calc:"):
+                table_column_config[c] = st.column_config.NumberColumn(c, width="medium", format="%.2f")
+            elif "%" in str(c) or c_low.endswith("rate"):
+                table_column_config[c] = st.column_config.NumberColumn(c, width="small", format="%.2f")
+            elif pd.api.types.is_numeric_dtype(table_df[c]):
+                table_column_config[c] = st.column_config.NumberColumn(c, width="small", format="%.2f")
+
+        st.dataframe(
+            table_df,
+            width="stretch",
+            hide_index=True,
+            column_config=table_column_config,
+        )
 
     # CSV download
     csv_buf = StringIO()
