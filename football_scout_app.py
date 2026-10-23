@@ -4661,57 +4661,6 @@ elif app_page == "Similar Players":
                                 y_lo = float(y_vals.min()) - 0.15 * y_span
                                 y_hi = float(y_vals.max()) + 0.18 * y_span
 
-                                # Reference player: similarity to self is 100%. Calculate the same role score
-                                # against the current similarity benchmark and place it on the selected quality axis.
-                                ref_score_df, _ = role_score_for_population(
-                                    reference_pool.loc[[ref_index[ref_label]]],
-                                    role_benchmark,
-                                    similar_role,
-                                    float(coverage_threshold_pct) / 100.0,
-                                )
-                                ref_profile_score = np.nan
-                                if not ref_score_df.empty and "_projection_role_score" in ref_score_df.columns:
-                                    ref_profile_score = pd.to_numeric(
-                                        ref_score_df["_projection_role_score"], errors="coerce"
-                                    ).iloc[0]
-
-                                ref_quality = ref_profile_score
-                                if quality_axis == "League-Adjusted Score" and pd.notna(ref_profile_score):
-                                    ref_current_league = str(ref_row.get("League", ""))
-                                    if reference_rating is not None and not league_strength_sim.empty:
-                                        _rating_map = league_strength_sim.set_index("League")["rating"]
-                                        _ref_player_rating = pd.to_numeric(
-                                            pd.Series([_rating_map.get(ref_current_league, np.nan)]), errors="coerce"
-                                        ).iloc[0]
-                                        if pd.notna(_ref_player_rating):
-                                            ref_quality = float(ref_profile_score) + LEAGUE_TRANSLATION_BETA * (
-                                                float(_ref_player_rating) - float(reference_rating)
-                                            )
-
-                                if pd.notna(ref_quality):
-                                    fig_sim.add_trace(
-                                        go.Scatter(
-                                            x=[100.0],
-                                            y=[float(ref_quality)],
-                                            mode="markers+text",
-                                            text=[str(ref_row.get("Player", "Reference"))],
-                                            textposition="bottom center",
-                                            marker=dict(size=16, symbol="star", line=dict(width=2)),
-                                            name="Reference player",
-                                            hovertemplate=(
-                                                f"<b>{str(ref_row.get('Player', 'Reference'))}</b><br>"
-                                                f"Team: {str(ref_row.get('Team', ''))}<br>"
-                                                f"League: {str(ref_row.get('League', ''))}<br>"
-                                                "Similarity: 100.0%<br>"
-                                                f"Profile Score: {float(ref_profile_score):.2f}<br>"
-                                                f"{quality_axis}: {float(ref_quality):.2f}<extra></extra>"
-                                            ),
-                                        )
-                                    )
-                                    x_hi = 100.0
-                                    y_lo = min(y_lo, float(ref_quality) - 0.08 * y_span)
-                                    y_hi = max(y_hi, float(ref_quality) + 0.10 * y_span)
-
                                 # Quadrant labels are intentionally descriptive rather than evaluative grades.
                                 fig_sim.add_annotation(x=x_hi, y=y_hi, text="High similarity / High quality", showarrow=False, xanchor="right", yanchor="top")
                                 fig_sim.add_annotation(x=x_lo, y=y_hi, text="Lower similarity / High quality", showarrow=False, xanchor="left", yanchor="top")
