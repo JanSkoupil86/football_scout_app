@@ -4334,11 +4334,42 @@ elif app_page == "Similar Players":
         if not compatible_roles:
             st.warning(f"No Similar Players role mapping is defined for Main Position {ref_row.get('Main Position', '')}.")
         else:
+            # Preset Similar Players to the currently selected built-in profile.
+            # If that profile is not compatible with the reference player's Main
+            # Position, fall back to the first compatible role. Users can still
+            # manually change the role afterwards.
             active_profile = st.session_state.get("active_profile", {}) or {}
             preferred_role = active_profile.get("profile_name")
-            role_idx = compatible_roles.index(preferred_role) if preferred_role in compatible_roles else 0
+
+            if preferred_role not in PROFILES:
+                # The sidebar's built-in profile selector is the authoritative
+                # fallback when active_profile has not yet been applied.
+                preferred_role = st.session_state.get("profile_select", preferred_role)
+
+            desired_similar_role = (
+                preferred_role if preferred_role in compatible_roles else compatible_roles[0]
+            )
+
+            # Synchronize only when the selected profile changes or the existing
+            # Similar Players role is no longer compatible. This preserves manual
+            # role changes during normal reruns.
+            sync_token = f"{preferred_role}|{ref_row.get('Main Position', '')}"
+            previous_sync_token = st.session_state.get("_similar_role_sync_token")
+            current_similar_role = st.session_state.get("similar_role")
+
+            if (
+                previous_sync_token != sync_token
+                or current_similar_role not in compatible_roles
+            ):
+                st.session_state["similar_role"] = desired_similar_role
+                st.session_state["_similar_role_sync_token"] = sync_token
+
             with s2:
-                similar_role = st.selectbox("Role / profile", compatible_roles, index=role_idx, key="similar_role")
+                similar_role = st.selectbox(
+                    "Role / profile",
+                    compatible_roles,
+                    key="similar_role",
+                )
 
             # Independent target-league selector. Default to the sidebar league(s)
             # when those are explicitly selected; otherwise use the reference league.
