@@ -4667,10 +4667,10 @@ elif app_page == "Similar Players":
                                 y_hi = float(y_vals.max()) + 0.18 * y_span
 
                                 # Quadrant labels are intentionally descriptive rather than evaluative grades.
-                                fig_sim.add_annotation(x=x_hi, y=y_hi, text="High similarity / High quality", showarrow=False, xanchor="right", yanchor="top")
-                                fig_sim.add_annotation(x=x_lo, y=y_hi, text="Lower similarity / High quality", showarrow=False, xanchor="left", yanchor="top")
-                                fig_sim.add_annotation(x=x_hi, y=y_lo, text="High similarity / Lower quality", showarrow=False, xanchor="right", yanchor="bottom")
-                                fig_sim.add_annotation(x=x_lo, y=y_lo, text="Lower similarity / Lower quality", showarrow=False, xanchor="left", yanchor="bottom")
+                                fig_sim.add_annotation(x=x_hi, y=y_hi, text="Priority Targets", showarrow=False, xanchor="right", yanchor="top")
+                                fig_sim.add_annotation(x=x_lo, y=y_hi, text="High Quality / Different Profile", showarrow=False, xanchor="left", yanchor="top")
+                                fig_sim.add_annotation(x=x_hi, y=y_lo, text="Style Match / Lower Level", showarrow=False, xanchor="right", yanchor="bottom")
+                                fig_sim.add_annotation(x=x_lo, y=y_lo, text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom")
 
                                 fig_sim.update_xaxes(range=[x_lo, x_hi], title="Similarity %")
                                 fig_sim.update_yaxes(range=[y_lo, y_hi], title=quality_axis)
