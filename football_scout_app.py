@@ -4621,9 +4621,8 @@ elif app_page == "Similar Players":
                                 )
 
                                 # Label only the five strongest similarity matches to keep the map readable.
-                                label_idx = chart_df.nlargest(min(5, len(chart_df)), "Similarity %").index
-                                chart_df["_map_label"] = ""
-                                chart_df.loc[label_idx, "_map_label"] = chart_df.loc[label_idx, "Player"].astype(str)
+                                # Show every candidate name on the recruitment map.
+                                chart_df["_map_label"] = chart_df["Player"].fillna("").astype(str)
 
                                 fig_sim = px.scatter(
                                     chart_df,
