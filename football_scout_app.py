@@ -4629,7 +4629,7 @@ elif app_page == "Similar Players":
                                     chart_df,
                                     x="Similarity %",
                                     y=quality_axis,
-                                    color="League",
+                                    color="Team",
                                     hover_name="Player",
                                     hover_data={
                                         "Team": True,
@@ -4645,7 +4645,12 @@ elif app_page == "Similar Players":
                                     text="_map_label",
                                     title=f"{similar_role}: similarity vs {quality_axis.lower()}",
                                 )
-                                fig_sim.update_traces(textposition="top center", marker=dict(size=11))
+                                fig_sim.update_traces(
+                                    textposition="top center",
+                                    marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
+                                    textfont=dict(size=13),
+                                    cliponaxis=False,
+                                )
 
                                 x_med = float(pd.to_numeric(chart_df["Similarity %"], errors="coerce").median())
                                 y_med = float(pd.to_numeric(chart_df[quality_axis], errors="coerce").median())
@@ -4671,7 +4676,7 @@ elif app_page == "Similar Players":
                                 fig_sim.update_yaxes(range=[y_lo, y_hi], title=quality_axis)
                                 fig_sim.update_layout(
                                     height=650,
-                                    legend_title_text="Target League",
+                                    legend_title_text="Team",
                                     margin=dict(t=70, r=35, b=55, l=55),
                                 )
                                 st.plotly_chart(fig_sim, width="stretch")
