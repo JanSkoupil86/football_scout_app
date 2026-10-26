@@ -143,6 +143,109 @@ def validate_builtin_profile_framework() -> List[str]:
 
 BUILTIN_PROFILE_FRAMEWORK_ISSUES = validate_builtin_profile_framework()
 
+# =========================
+# Profile depth system
+# =========================
+# Core 5 = specialist identification; Balanced 10 = recruitment screening;
+# Complete 15 = full role assessment. Custom lets the user override a built-in
+# profile for the current analysis without creating a new role taxonomy.
+PROFILE_DEPTH_OPTIONS = ["Core 5", "Balanced 10", "Complete 15", "Custom"]
+
+CORE_5_METRICS = {
+    "Classic Goalkeeper": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Exits per 90"],
+    "Sweeper Keeper": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %", "Progressive passes per 90", "Accurate forward passes, %"],
+    "Build-Up Keeper": ["Accurate passes, %", "Accurate forward passes, %", "Accurate long passes, %", "Progressive passes per 90", "Back passes received as GK per 90"],
+    "Ball-Playing CB": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate long passes, %", "PAdj Interceptions"],
+    "Combative CB / Stopper": ["Defensive duels per 90", "Defensive duels won, %", "Aerial duels per 90", "Aerial duels won, %", "PAdj Interceptions"],
+    "Libero / Middle Pin CB": ["Progressive passes per 90", "Accurate progressive passes, %", "Long passes per 90", "PAdj Interceptions", "Accurate passes, %"],
+    "Wide CB (in 3)": ["Progressive runs per 90", "Progressive passes per 90", "Defensive duels won, %", "Accelerations per 90", "Accurate progressive passes, %"],
+    "Defensive Midfielder #6": ["PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels won, %", "Accurate passes, %", "Progressive passes per 90"],
+    "Deep-Lying Playmaker": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate long passes, %", "Accurate passes, %"],
+    "Box-to-Box Midfielder": ["Progressive runs per 90", "Successful defensive actions per 90", "Progressive passes per 90", "Touches in box per 90", "Defensive duels won, %"],
+    "Playmaker #10": ["xA per 90", "Key passes per 90", "Shot assists per 90", "Passes to penalty area per 90", "Deep completions per 90"],
+    "Full-Back": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Defensive duels won, %", "Progressive passes per 90"],
+    "Wing-Back": ["Progressive runs per 90", "Accelerations per 90", "Crosses per 90", "Touches in box per 90", "Successful dribbles, %"],
+    "Inverted Full-Back": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %", "PAdj Interceptions", "Passes to final third per 90"],
+    "Classic Winger": ["Crosses per 90", "Accurate crosses, %", "Dribbles per 90", "Successful dribbles, %", "Passes to penalty area per 90"],
+    "Inverted Winger": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Successful dribbles, %", "Progressive runs per 90"],
+    "Target Man #9": ["Aerial duels won, %", "Aerial duels per 90", "Received long passes per 90", "Touches in box per 90", "xG per 90"],
+    "Poacher": ["Non-penalty goals per 90", "xG per 90", "Touches in box per 90", "Shots per 90", "Goal conversion, %"],
+    "Pressing Forward": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Offensive duels per 90", "Fouls per 90"],
+    "Creative Forward / False 9": ["xA per 90", "Shot assists per 90", "Key passes per 90", "Received passes per 90", "Accurate passes, %"],
+    "Wide Forward / Inside 9": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Progressive runs per 90", "Successful dribbles, %"],
+}
+
+BALANCED_10_METRICS = {
+    "Classic Goalkeeper": CORE_5_METRICS["Classic Goalkeeper"] + ["Clean sheets", "Shots against per 90", "Aerial duels won, %", "Aerial duels per 90.1", "Accurate long passes, %"],
+    "Sweeper Keeper": CORE_5_METRICS["Sweeper Keeper"] + ["Accurate long passes, %", "Back passes received as GK per 90", "Accurate passes, %", "Save rate, %", "Prevented goals per 90"],
+    "Build-Up Keeper": CORE_5_METRICS["Build-Up Keeper"] + ["Long passes per 90", "Passes per 90", "Exits per 90", "Save rate, %", "Prevented goals per 90"],
+    "Ball-Playing CB": CORE_5_METRICS["Ball-Playing CB"] + ["Forward passes per 90", "Accurate forward passes, %", "Long passes per 90", "Defensive duels won, %", "Aerial duels won, %"],
+    "Combative CB / Stopper": CORE_5_METRICS["Combative CB / Stopper"] + ["PAdj Sliding tackles", "Successful defensive actions per 90", "Shots blocked per 90", "Fouls per 90", "Accurate passes, %"],
+    "Libero / Middle Pin CB": CORE_5_METRICS["Libero / Middle Pin CB"] + ["Passes to final third per 90", "Accurate forward passes, %", "Defensive duels won, %", "Aerial duels won, %", "Received passes per 90"],
+    "Wide CB (in 3)": CORE_5_METRICS["Wide CB (in 3)"] + ["Dribbles per 90", "Successful dribbles, %", "PAdj Interceptions", "Aerial duels won, %", "Accurate forward passes, %"],
+    "Defensive Midfielder #6": CORE_5_METRICS["Defensive Midfielder #6"] + ["PAdj Sliding tackles", "Aerial duels won, %", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate forward passes, %"],
+    "Deep-Lying Playmaker": CORE_5_METRICS["Deep-Lying Playmaker"] + ["Forward passes per 90", "Accurate forward passes, %", "Long passes per 90", "PAdj Interceptions", "Received passes per 90"],
+    "Box-to-Box Midfielder": CORE_5_METRICS["Box-to-Box Midfielder"] + ["Accelerations per 90", "PAdj Interceptions", "xA per 90", "xG per 90", "Accurate progressive passes, %"],
+    "Playmaker #10": CORE_5_METRICS["Playmaker #10"] + ["Smart passes per 90", "Accurate smart passes, %", "Through passes per 90", "Progressive passes per 90", "Successful dribbles, %"],
+    "Full-Back": CORE_5_METRICS["Full-Back"] + ["Passes to penalty area per 90", "Progressive runs per 90", "PAdj Interceptions", "Successful defensive actions per 90", "Accurate progressive passes, %"],
+    "Wing-Back": CORE_5_METRICS["Wing-Back"] + ["Accurate crosses, %", "Crosses to goalie box per 90", "Dribbles per 90", "Passes to penalty area per 90", "Defensive duels won, %"],
+    "Inverted Full-Back": CORE_5_METRICS["Inverted Full-Back"] + ["Received passes per 90", "Forward passes per 90", "Accurate forward passes, %", "Defensive duels won, %", "Progressive runs per 90"],
+    "Classic Winger": CORE_5_METRICS["Classic Winger"] + ["Crosses to goalie box per 90", "Progressive runs per 90", "Accelerations per 90", "xA per 90", "Shot assists per 90"],
+    "Inverted Winger": CORE_5_METRICS["Inverted Winger"] + ["Shots per 90", "Shots on target, %", "xA per 90", "Passes to penalty area per 90", "Offensive duels won, %"],
+    "Target Man #9": CORE_5_METRICS["Target Man #9"] + ["Non-penalty goals per 90", "Received passes per 90", "Offensive duels won, %", "Shot assists per 90", "Fouls suffered per 90"],
+    "Poacher": CORE_5_METRICS["Poacher"] + ["Shots on target, %", "Head goals per 90", "Received passes per 90", "Offensive duels won, %", "Progressive runs per 90"],
+    "Pressing Forward": CORE_5_METRICS["Pressing Forward"] + ["Offensive duels won, %", "Progressive runs per 90", "xG per 90", "Non-penalty goals per 90", "Touches in box per 90"],
+    "Creative Forward / False 9": CORE_5_METRICS["Creative Forward / False 9"] + ["Deep completions per 90", "Smart passes per 90", "Progressive passes per 90", "Successful dribbles, %", "Touches in box per 90"],
+    "Wide Forward / Inside 9": CORE_5_METRICS["Wide Forward / Inside 9"] + ["Shots per 90", "Shots on target, %", "Offensive duels won, %", "xA per 90", "Passes to penalty area per 90"],
+}
+
+CORE_5_WEIGHTS = {role: [25, 22, 20, 18, 15] for role in CORE_5_METRICS}
+CORE_5_WEIGHTS.update({
+    "Poacher": [28, 25, 18, 16, 13],
+    "Target Man #9": [25, 23, 20, 17, 15],
+    "Playmaker #10": [25, 22, 20, 18, 15],
+})
+BALANCED_10_WEIGHTS = {role: [16, 14, 12, 11, 10, 9, 8, 7, 7, 6] for role in BALANCED_10_METRICS}
+
+def profile_definition(role_name: str, depth: str = "Complete 15") -> Tuple[List[str], List[int]]:
+    """Return requested metric names and weights for one built-in role/depth."""
+    if depth == "Core 5":
+        return list(CORE_5_METRICS.get(role_name, PROFILES[role_name])[:5]), list(CORE_5_WEIGHTS.get(role_name, [25,22,20,18,15]))
+    if depth == "Balanced 10":
+        return list(BALANCED_10_METRICS.get(role_name, PROFILES[role_name])[:10]), list(BALANCED_10_WEIGHTS.get(role_name, [16,14,12,11,10,9,8,7,7,6]))
+    requested = list(PROFILES[role_name])
+    return requested, [int(DEFAULT_WEIGHTS[role_name][m]) for m in requested]
+
+def active_depth_for_role(role_name: str) -> str:
+    depth = st.session_state.get("profile_depth_global", "Complete 15")
+    # A Custom override belongs only to the currently active built-in role. Other
+    # role comparisons remain on Complete 15 rather than inheriting unrelated metrics.
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        if active.get("profile_name") == role_name and active.get("depth") == "Custom":
+            return "Custom"
+        return "Complete 15"
+    return depth
+
+def requested_profile_metrics(role_name: str) -> List[str]:
+    depth = active_depth_for_role(role_name)
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        return list(active.get("requested_metrics", active.get("metrics", [])))
+    return profile_definition(role_name, depth)[0]
+
+def requested_profile_weights(role_name: str) -> List[int]:
+    depth = active_depth_for_role(role_name)
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        return [int(x) for x in active.get("weights_pct", [])]
+    return profile_definition(role_name, depth)[1]
+
+def single_player_profile_for_depth(role_name: str) -> List[Tuple[str, str]]:
+    wanted = set(requested_profile_metrics(role_name))
+    return [(kpi, metric) for kpi, metric in SINGLE_PLAYER_PROFILES[role_name] if metric in wanted]
+
+
 
 # Main Position eligibility used when a built-in profile is applied.
 # Applying a profile updates the Main Position filter to these Wyscout labels.
@@ -572,7 +675,7 @@ def build_single_player_profile(
     role_name: str,
 ) -> Tuple[pd.DataFrame, List[str]]:
     """Return KPI group, resolved metric, raw value and directional percentile."""
-    requested = SINGLE_PLAYER_PROFILES[role_name]
+    requested = single_player_profile_for_depth(role_name)
     records = []
     missing = []
 
@@ -631,7 +734,7 @@ def build_single_player_profile_league_adjusted(
 
     Raw Wyscout values are never modified.
     """
-    requested = SINGLE_PLAYER_PROFILES[role_name]
+    requested = single_player_profile_for_depth(role_name)
     records, missing = [], []
 
     if benchmark_df.empty or league_strength_lookup.empty or "League" not in benchmark_df.columns:
@@ -707,7 +810,9 @@ def build_role_similarity_table(
     renormalized. Candidates below the requested profile-weight coverage are
     suppressed.
     """
-    requested = list(PROFILES[role_name])
+    requested = requested_profile_metrics(role_name)
+    depth_weights = requested_profile_weights(role_name)
+    depth_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
     resolved_map = {}
     for req in requested:
         rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
@@ -720,7 +825,7 @@ def build_role_similarity_table(
 
     weight_by_metric = {}
     for req, metric in resolved_map.items():
-        weight_by_metric[metric] = weight_by_metric.get(metric, 0.0) + float(DEFAULT_WEIGHTS[role_name][req])
+        weight_by_metric[metric] = weight_by_metric.get(metric, 0.0) + float(depth_weight_map.get(req, 0.0))
     intended_weight = float(sum(weight_by_metric.values()))
     if intended_weight <= 0:
         return pd.DataFrame()
@@ -1763,11 +1868,18 @@ def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) 
     return pd.DataFrame(rows)
 
 def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
-    requested = list(PROFILES[role])
+    requested = requested_profile_metrics(role)
     resolved, _ = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
     if not resolved:
         return score_df.assign(_projection_role_score=np.nan), pd.Series(dtype=float)
-    weights_pct = np.array(defaults_for_resolved(role, resolved), dtype=float)
+    depth_weights = requested_profile_weights(role)
+    requested_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved_weight_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0.0) + requested_weight_map.get(req, 0.0)
+    weights_pct = np.array([resolved_weight_map.get(m, 0.0) for m in resolved], dtype=float)
     weights = normalize_weights(weights_pct)
     scored, _, _, _ = make_profile_score_vectorized(
         score_df, benchmark_df, resolved, weights, "_projection_role_score",
@@ -1794,7 +1906,7 @@ def build_projected_target_profile(
     calibrated league-strength penalty to the direction-aware z-score. The adjusted
     z-score is converted to a 0-100 normal percentile for radar presentation.
     """
-    requested = SINGLE_PLAYER_PROFILES[role_name]
+    requested = single_player_profile_for_depth(role_name)
     records, missing = [], []
     adjustment = LEAGUE_TRANSLATION_BETA * float(rating_delta)
     for group, requested_metric in requested:
@@ -2029,7 +2141,6 @@ def compatible_roles_for_position(value: object) -> List[str]:
     return ROLE_FIT_POSITION_MAP.get(normalize_main_position_for_role_fit(value), [])
 
 
-@st.cache_data(show_spinner=False, max_entries=96)
 def role_fit_for_player(
     player_row: pd.Series,
     role_name: str,
@@ -2037,7 +2148,9 @@ def role_fit_for_player(
     coverage_threshold: float,
 ) -> Dict[str, object]:
     """Evaluate one player under one canonical built-in role."""
-    requested = PROFILES[role_name]
+    requested = requested_profile_metrics(role_name)
+    depth_weights = requested_profile_weights(role_name)
+    depth_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
     resolved, missing = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
     if not resolved:
         return {
@@ -2052,14 +2165,14 @@ def role_fit_for_player(
         rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
         if rr:
             requested_to_resolved[req] = rr[0]
-            resolved_weights.append(float(DEFAULT_WEIGHTS[role_name][req]))
+            resolved_weights.append(float(depth_weight_map.get(req, 0.0)))
 
     resolved = [requested_to_resolved[r] for r in requested if r in requested_to_resolved]
     # Deduplicate while retaining canonical order.
     resolved = list(dict.fromkeys(resolved))
     weight_by_resolved = {}
     for req, col in requested_to_resolved.items():
-        weight_by_resolved[col] = weight_by_resolved.get(col, 0.0) + float(DEFAULT_WEIGHTS[role_name][req])
+        weight_by_resolved[col] = weight_by_resolved.get(col, 0.0) + float(depth_weight_map.get(req, 0.0))
     weights = np.array([weight_by_resolved[m] for m in resolved], dtype=float)
 
     B = benchmark_df[resolved]
@@ -2109,9 +2222,9 @@ def role_fit_for_player(
         kws = []
         for req, default_w in metric_weights.items():
             col = requested_to_resolved.get(req)
-            if col in usable:
+            if col in usable and req in depth_weight_map:
                 cols.append(col)
-                kws.append(float(default_w))
+                kws.append(float(depth_weight_map.get(req, default_w)))
         if not cols:
             continue
         kz = z[cols]
@@ -2222,7 +2335,7 @@ def role_fit_detail_wheel(
     # Resolve the canonical role KPI order against the actual usable metrics.
     resolved_to_kpi: Dict[str, str] = {}
     canonical_order: List[str] = []
-    for kpi, requested_metric in SINGLE_PLAYER_PROFILES[role_name]:
+    for kpi, requested_metric in single_player_profile_for_depth(role_name):
         rr, _ = resolve_metrics_aliases([requested_metric], list(player_row.index))
         if not rr:
             continue
@@ -2576,86 +2689,148 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
 
     if mode == "Built-in":
         profile_name = st.selectbox("Choose profile", list(PROFILES.keys()))
-        requested_metrics = PROFILES[profile_name]
-        resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
 
-        preset_key = f"preset::{profile_name}"
-        defaults = defaults_for_resolved(profile_name, resolved_metrics)
-        if preset_key not in st.session_state:
-            st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
+        depth = st.segmented_control(
+            "Profile Depth",
+            PROFILE_DEPTH_OPTIONS,
+            default=st.session_state.get("profile_depth_global", "Complete 15"),
+            selection_mode="single",
+            help="Core 5 finds specialists; Balanced 10 is the recruitment screen; Complete 15 evaluates the full role; Custom lets you choose metrics and weights manually.",
+            key="profile_depth_selector",
+        ) or "Complete 15"
+        st.session_state["profile_depth_global"] = depth
 
-        state = st.session_state[preset_key]
-        if state.get("metrics") != resolved_metrics:
-            old_map = {m: int(w) for m, w in zip(state.get("metrics", []), state.get("weights", []))}
-            state = {
-                "metrics": resolved_metrics[:],
-                "weights": [int(old_map.get(m, d)) for m, d in zip(resolved_metrics, defaults)],
-            }
-            st.session_state[preset_key] = state
+        depth_help = {
+            "Core 5": "Specialist identification — five defining characteristics of the role.",
+            "Balanced 10": "Recruitment screening — role identity plus broader functional requirements.",
+            "Complete 15": "Comprehensive assessment — the complete existing role model.",
+            "Custom": "Manual built-in-role override — choose any available metrics and weights.",
+        }
+        st.caption(depth_help[depth])
 
-        if st.button("Reset weights to defaults", key=f"reset::{profile_name}"):
-            st.session_state[preset_key] = {"metrics": resolved_metrics[:], "weights": defaults[:]}
-            for m, d in zip(resolved_metrics, defaults):
-                st.session_state[safe_widget_key("w", profile_name, m)] = int(d)
-            st.rerun()
+        if depth != "Custom":
+            requested_metrics, preset_weights = profile_definition(profile_name, depth)
+            resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
+            requested_weight_map = {m: int(w) for m, w in zip(requested_metrics, preset_weights)}
+            resolved_weight_map = {}
+            for req in requested_metrics:
+                rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
+                if rr:
+                    resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0) + requested_weight_map[req]
+            weights_pct = [int(resolved_weight_map.get(m, 0)) for m in resolved_metrics]
+            # Missing metrics do not invalidate a preset. Renormalize available preset
+            # weight so the selected depth remains a 100% model for this dataset.
+            if weights_pct and sum(weights_pct) != 100:
+                raw = np.asarray(weights_pct, dtype=float)
+                raw = raw / raw.sum() * 100.0 if raw.sum() > 0 else np.ones(len(raw)) * (100.0 / len(raw))
+                ints = np.floor(raw).astype(int)
+                for i in np.argsort(-(raw - ints))[:100 - ints.sum()]:
+                    ints[i] += 1
+                weights_pct = ints.tolist()
 
-        weights_pct = []
-        resolved_to_requested = {}
-        for req in requested_metrics:
-            rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
-            if rr:
-                resolved_to_requested[rr[0]] = req
+            st.markdown(f"**Active definition · {profile_name} · {depth}**")
+            definition_df = pd.DataFrame({"Metric": resolved_metrics, "Weight %": weights_pct})
+            st.dataframe(definition_df, hide_index=True, width="stretch", height=min(390, 38 + 35 * max(1, len(definition_df))))
+            if missing_names:
+                st.caption("Unavailable metrics omitted and available weights renormalized: " + ", ".join(missing_names))
 
-        for kpi, metric_weights in PROFILE_CONFIG[profile_name].items():
-            st.markdown(f"**{kpi}**")
-            for requested_metric in metric_weights:
-                rr, _ = resolve_metrics_aliases([requested_metric], filtered_base.columns.tolist())
-                if not rr:
-                    continue
-                m = rr[0]
-                default_w = int(DEFAULT_WEIGHTS[profile_name][requested_metric])
-                slider_key = safe_widget_key("w", profile_name, m)
-                if slider_key not in st.session_state:
-                    st.session_state[slider_key] = default_w
-                w = st.slider(f"{m}", min_value=0, max_value=100, step=1, key=slider_key)
-                weights_pct.append(int(w))
+            if st.button("Apply profile", key=f"apply::{profile_name}::{depth}", disabled=not resolved_metrics, type="primary"):
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {profile_name} [{depth}]",
+                    "profile_name": profile_name,
+                    "depth": depth,
+                    "requested_metrics": requested_metrics[:],
+                    "metrics": resolved_metrics[:],
+                    "weights_pct": [int(x) for x in weights_pct],
+                }
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
+                available_eligible_positions = [p for p in eligible_positions if p in positions]
+                if available_eligible_positions:
+                    st.session_state["_pending_main_position_filter"] = available_eligible_positions
+                st.session_state["_pending_workspace_profile_sync"] = profile_name
+                st.rerun()
+        else:
+            # Seed Custom from whichever preset the user chooses, then allow full
+            # metric selection. This remains a built-in role override, not a new role.
+            seed_depth = st.selectbox("Load Custom from", ["Core 5", "Balanced 10", "Complete 15"], index=1, key=f"custom_seed::{profile_name}")
+            seed_metrics, seed_weights = profile_definition(profile_name, seed_depth)
+            seed_resolved, _ = resolve_metrics_aliases(seed_metrics, filtered_base.columns.tolist())
+            seed_map = {}
+            for req, w in zip(seed_metrics, seed_weights):
+                rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
+                if rr:
+                    seed_map[rr[0]] = seed_map.get(rr[0], 0) + int(w)
 
-        total_weight = int(sum(weights_pct))
-        st.metric("Total profile weight", f"{total_weight}%")
-        if total_weight != 100:
-            st.warning("Weights must total exactly 100% before the profile can be applied.")
+            custom_metrics_key = f"builtin_custom_metrics::{profile_name}"
+            if custom_metrics_key not in st.session_state:
+                st.session_state[custom_metrics_key] = seed_resolved
+            custom_metrics = st.multiselect(
+                "Choose metrics manually",
+                options=numeric_cols_base,
+                key=custom_metrics_key,
+                help="Choose any numerical Wyscout metrics for this built-in role.",
+            )
 
-        if missing_names:
-            st.caption("Unavailable metrics: " + ", ".join(missing_names))
+            def _reload_builtin_custom_preset():
+                st.session_state[custom_metrics_key] = seed_resolved
+                for _m in seed_resolved:
+                    st.session_state[safe_widget_key("builtin_custom_w", profile_name, _m)] = int(seed_map.get(_m, max(1, 100 // max(1, len(seed_resolved)))))
 
-        if st.button(
-            "Apply profile",
-            key=f"apply::{profile_name}",
-            disabled=(not resolved_metrics or total_weight != 100),
-            type="primary",
-        ):
-            st.session_state["active_profile"] = {
-                "calc_col": f"Score: {profile_name}",
-                "profile_name": profile_name,
-                "metrics": resolved_metrics[:],
-                "weights_pct": [int(x) for x in weights_pct],
-            }
+            st.button(
+                "Reload selected preset",
+                key=f"reload_custom::{profile_name}",
+                on_click=_reload_builtin_custom_preset,
+            )
 
-            # Automatically focus the Main Position filter on players eligible
-            # for the applied built-in profile. The user can edit it afterward.
-            eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
-            available_eligible_positions = [p for p in eligible_positions if p in positions]
-            if available_eligible_positions:
-                # The Main Position widget has already been instantiated on this
-                # Streamlit run, so do not mutate its key here. Queue the change
-                # and apply it before widget creation on the next rerun.
-                st.session_state["_pending_main_position_filter"] = available_eligible_positions
+            custom_weights = []
+            if custom_metrics:
+                equal_default = max(1, int(100 / len(custom_metrics)))
+                for m in custom_metrics:
+                    key = safe_widget_key("builtin_custom_w", profile_name, m)
+                    if key not in st.session_state:
+                        st.session_state[key] = int(seed_map.get(m, equal_default))
+                    custom_weights.append(int(st.number_input(f"{m} weight %", min_value=0, max_value=100, step=1, key=key)))
 
-            # Synchronize role selectors across workspaces on the next rerun.
-            # Users may still manually change a workspace role afterward.
-            st.session_state["_pending_workspace_profile_sync"] = profile_name
+            total_custom = int(sum(custom_weights))
+            c_norm, c_total = st.columns([1, 1])
+            with c_total:
+                st.metric("Total custom weight", f"{total_custom}%")
+            def _normalize_builtin_custom_weights():
+                raw = np.asarray(custom_weights, dtype=float)
+                if raw.sum() <= 0:
+                    raw = np.ones(len(custom_metrics), dtype=float)
+                scaled = raw / raw.sum() * 100.0
+                ints = np.floor(scaled).astype(int)
+                for _i in np.argsort(-(scaled - ints))[:100 - ints.sum()]:
+                    ints[_i] += 1
+                for _m, _w in zip(custom_metrics, ints.tolist()):
+                    st.session_state[safe_widget_key("builtin_custom_w", profile_name, _m)] = int(_w)
 
-            st.rerun()
+            with c_norm:
+                st.button(
+                    "Normalize weights to 100%",
+                    key=f"normalize_builtin_custom::{profile_name}",
+                    disabled=not custom_metrics,
+                    on_click=_normalize_builtin_custom_weights,
+                )
+            if custom_metrics and total_custom != 100:
+                st.warning("Custom weights must total exactly 100%. Use Normalize weights to 100% if needed.")
+
+            if st.button("Apply custom depth", key=f"apply_builtin_custom::{profile_name}", disabled=(not custom_metrics or total_custom != 100), type="primary"):
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {profile_name} [Custom {len(custom_metrics)}]",
+                    "profile_name": profile_name,
+                    "depth": "Custom",
+                    "requested_metrics": custom_metrics[:],
+                    "metrics": custom_metrics[:],
+                    "weights_pct": [int(x) for x in custom_weights],
+                }
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
+                available_eligible_positions = [p for p in eligible_positions if p in positions]
+                if available_eligible_positions:
+                    st.session_state["_pending_main_position_filter"] = available_eligible_positions
+                st.session_state["_pending_workspace_profile_sync"] = profile_name
+                st.rerun()
 
     else:
         custom_name = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
@@ -2740,7 +2915,7 @@ if active and active.get("metrics"):
     # KPI sub-scores for built-in profiles.
     if active_role in PROFILE_CONFIG and not score_z.empty:
         requested_to_resolved = {}
-        for requested_metric in PROFILES[active_role]:
+        for requested_metric in requested_profile_metrics(active_role):
             rr, _ = resolve_metrics_aliases([requested_metric], filtered.columns.tolist())
             if rr:
                 requested_to_resolved[requested_metric] = rr[0]
@@ -2761,7 +2936,7 @@ if active and active.get("metrics"):
         st.caption("⚠️ Skipped sparse benchmark metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
 
     st.caption(
-        f"Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+        f"Profile depth: {active.get('depth', 'Complete 15')} · Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
         f"N={len(active_benchmark_df):,} · score coverage threshold={coverage_threshold_pct}%"
     )
 else:
@@ -3433,12 +3608,8 @@ elif app_page in ("Single Player", "Multi Player"):
         # Keep the multi-player comparison tied to the same canonical role framework
         # as the weighted Profile Score and single-player radar.
         active_builtin_profile = None
-        if active and isinstance(active.get("calc_col"), str):
-            active_label = str(active.get("calc_col"))
-            if active_label.startswith("Score: "):
-                candidate = active_label.replace("Score: ", "", 1)
-                if candidate in PROFILES:
-                    active_builtin_profile = candidate
+        if active and active.get("profile_name") in PROFILES:
+            active_builtin_profile = active.get("profile_name")
 
         radar_metric_mode = st.radio(
             "Radar metric mode",
@@ -3459,20 +3630,20 @@ elif app_page in ("Single Player", "Multi Player"):
                 options=profile_names,
                 index=default_profile_index,
                 key="multi_radar_profile",
-                help="Uses the same 15 metrics as the selected built-in Profile Score and single-player role profile.",
+                help="Uses the active Profile Depth definition for the selected built-in role.",
             )
 
-            requested_compare_metrics = PROFILES[selected_radar_profile]
+            requested_compare_metrics = requested_profile_metrics(selected_radar_profile)
             comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
                 requested_compare_metrics,
                 filtered.columns.tolist(),
             )
             radar_kpi_lookup = {
-                metric: kpi for kpi, metric in SINGLE_PLAYER_PROFILES[selected_radar_profile]
+                metric: kpi for kpi, metric in single_player_profile_for_depth(selected_radar_profile)
             }
 
             st.caption(
-                f"{selected_radar_profile}: {len(comp_metrics)} of 15 profile metrics available. "
+                f"{selected_radar_profile} · {active_depth_for_role(selected_radar_profile)}: {len(comp_metrics)} profile metrics available. "
                 "The radar uses direction-aware z-scores against the current filtered player population."
             )
             if missing_compare_metrics:
@@ -3652,7 +3823,7 @@ elif app_page in ("Single Player", "Multi Player"):
                 help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
             )
             st.caption(
-                f"Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+                f"Profile depth: {active.get('depth', 'Complete 15')} · Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
                 f"N={len(multi_benchmark_df):,}"
             )
 
@@ -4160,7 +4331,7 @@ elif app_page == "Role Fit":
 
             st.markdown("#### Underlying role metrics")
             metric_rows = []
-            for kpi, requested_metric in SINGLE_PLAYER_PROFILES[detail_role]:
+            for kpi, requested_metric in single_player_profile_for_depth(detail_role):
                 rr, _ = resolve_metrics_aliases([requested_metric], role_fit_pool.columns.tolist())
                 if not rr:
                     continue
