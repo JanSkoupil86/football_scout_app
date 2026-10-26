@@ -153,7 +153,7 @@ PROFILE_DEPTH_OPTIONS = ["Core 5", "Balanced 10", "Complete 15", "Custom"]
 
 CORE_5_METRICS = {
     "Classic Goalkeeper": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Exits per 90"],
-    "Sweeper Keeper": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %", "Progressive passes per 90", "Accurate forward passes, %"],
+    "Sweeper Keeper": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %", "Progressive passes per 90", "Back passes received as GK per 90"],
     "Build-Up Keeper": ["Accurate passes, %", "Accurate forward passes, %", "Accurate long passes, %", "Progressive passes per 90", "Back passes received as GK per 90"],
     "Ball-Playing CB": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate long passes, %", "PAdj Interceptions"],
     "Combative CB / Stopper": ["Defensive duels per 90", "Defensive duels won, %", "Aerial duels per 90", "Aerial duels won, %", "PAdj Interceptions"],
@@ -170,14 +170,14 @@ CORE_5_METRICS = {
     "Inverted Winger": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Successful dribbles, %", "Progressive runs per 90"],
     "Target Man #9": ["Aerial duels won, %", "Aerial duels per 90", "Received long passes per 90", "Touches in box per 90", "xG per 90"],
     "Poacher": ["Non-penalty goals per 90", "xG per 90", "Touches in box per 90", "Shots per 90", "Goal conversion, %"],
-    "Pressing Forward": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Offensive duels per 90", "Fouls per 90"],
+    "Pressing Forward": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Offensive duels per 90", "Progressive runs per 90"],
     "Creative Forward / False 9": ["xA per 90", "Shot assists per 90", "Key passes per 90", "Received passes per 90", "Accurate passes, %"],
     "Wide Forward / Inside 9": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Progressive runs per 90", "Successful dribbles, %"],
 }
 
 BALANCED_10_METRICS = {
-    "Classic Goalkeeper": CORE_5_METRICS["Classic Goalkeeper"] + ["Clean sheets", "Shots against per 90", "Aerial duels won, %", "Aerial duels per 90.1", "Accurate long passes, %"],
-    "Sweeper Keeper": CORE_5_METRICS["Sweeper Keeper"] + ["Accurate long passes, %", "Back passes received as GK per 90", "Accurate passes, %", "Save rate, %", "Prevented goals per 90"],
+    "Classic Goalkeeper": CORE_5_METRICS["Classic Goalkeeper"] + ["Aerial duels won, %", "Aerial duels per 90.1", "Shots against per 90", "Accurate long passes, %", "Back passes received as GK per 90"],
+    "Sweeper Keeper": CORE_5_METRICS["Sweeper Keeper"] + ["Accurate forward passes, %", "Accurate long passes, %", "Accurate passes, %", "Save rate, %", "Prevented goals per 90"],
     "Build-Up Keeper": CORE_5_METRICS["Build-Up Keeper"] + ["Long passes per 90", "Passes per 90", "Exits per 90", "Save rate, %", "Prevented goals per 90"],
     "Ball-Playing CB": CORE_5_METRICS["Ball-Playing CB"] + ["Forward passes per 90", "Accurate forward passes, %", "Long passes per 90", "Defensive duels won, %", "Aerial duels won, %"],
     "Combative CB / Stopper": CORE_5_METRICS["Combative CB / Stopper"] + ["PAdj Sliding tackles", "Successful defensive actions per 90", "Shots blocked per 90", "Fouls per 90", "Accurate passes, %"],
@@ -194,27 +194,61 @@ BALANCED_10_METRICS = {
     "Inverted Winger": CORE_5_METRICS["Inverted Winger"] + ["Shots per 90", "Shots on target, %", "xA per 90", "Passes to penalty area per 90", "Offensive duels won, %"],
     "Target Man #9": CORE_5_METRICS["Target Man #9"] + ["Non-penalty goals per 90", "Received passes per 90", "Offensive duels won, %", "Shot assists per 90", "Fouls suffered per 90"],
     "Poacher": CORE_5_METRICS["Poacher"] + ["Shots on target, %", "Head goals per 90", "Received passes per 90", "Offensive duels won, %", "Progressive runs per 90"],
-    "Pressing Forward": CORE_5_METRICS["Pressing Forward"] + ["Offensive duels won, %", "Progressive runs per 90", "xG per 90", "Non-penalty goals per 90", "Touches in box per 90"],
+    "Pressing Forward": CORE_5_METRICS["Pressing Forward"] + ["Offensive duels won, %", "Fouls per 90", "xG per 90", "Non-penalty goals per 90", "Touches in box per 90"],
     "Creative Forward / False 9": CORE_5_METRICS["Creative Forward / False 9"] + ["Deep completions per 90", "Smart passes per 90", "Progressive passes per 90", "Successful dribbles, %", "Touches in box per 90"],
     "Wide Forward / Inside 9": CORE_5_METRICS["Wide Forward / Inside 9"] + ["Shots per 90", "Shots on target, %", "Offensive duels won, %", "xA per 90", "Passes to penalty area per 90"],
+}
+
+COMPLETE_15_ADDITIONS = {
+    "Classic Goalkeeper": ["Accurate passes, %", "Accurate forward passes, %", "Progressive passes per 90", "Long passes per 90", "Clean sheets"],
+    "Sweeper Keeper": ["Long passes per 90", "Passes per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    "Build-Up Keeper": ["Aerial duels won, %", "Aerial duels per 90.1", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    "Ball-Playing CB": ["Successful defensive actions per 90", "PAdj Sliding tackles", "Aerial duels per 90", "Accurate passes, %", "Progressive runs per 90"],
+    "Combative CB / Stopper": ["Progressive passes per 90", "Accurate progressive passes, %", "Forward passes per 90", "Long passes per 90", "Progressive runs per 90"],
+    "Libero / Middle Pin CB": ["Progressive runs per 90", "Forward passes per 90", "Successful defensive actions per 90", "PAdj Sliding tackles", "Aerial duels per 90"],
+    "Wide CB (in 3)": ["Successful defensive actions per 90", "Defensive duels per 90", "Passes to final third per 90", "Accurate long passes, %", "Aerial duels per 90"],
+    "Defensive Midfielder #6": ["Received passes per 90", "Forward passes per 90", "Long passes per 90", "Progressive runs per 90", "Fouls per 90"],
+    "Deep-Lying Playmaker": ["Key passes per 90", "xA per 90", "Smart passes per 90", "Defensive duels won, %", "Progressive runs per 90"],
+    "Box-to-Box Midfielder": ["Non-penalty goals per 90", "Shot assists per 90", "Passes to final third per 90", "Offensive duels won, %", "Aerial duels won, %"],
+    "Playmaker #10": ["Touches in box per 90", "xG per 90", "Progressive runs per 90", "Offensive duels won, %", "Received passes per 90"],
+    "Full-Back": ["Aerial duels won, %", "Accelerations per 90", "Accurate forward passes, %", "Dribbles per 90", "Successful dribbles, %"],
+    "Wing-Back": ["xA per 90", "Shot assists per 90", "Successful defensive actions per 90", "Offensive duels won, %", "Progressive passes per 90"],
+    "Inverted Full-Back": ["PAdj Sliding tackles", "Long passes per 90", "Successful defensive actions per 90", "Key passes per 90", "xA per 90"],
+    "Classic Winger": ["Key passes per 90", "Offensive duels won, %", "Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+    "Inverted Winger": ["Dribbles per 90", "Accelerations per 90", "Shot assists per 90", "Key passes per 90", "Goal conversion, %"],
+    "Target Man #9": ["Shots per 90", "Head goals per 90", "Accurate passes, %", "Key passes per 90", "Passes to penalty area per 90"],
+    "Poacher": ["Accelerations per 90", "Fouls suffered per 90", "Successful dribbles, %", "xA per 90", "Shot assists per 90"],
+    "Pressing Forward": ["Shots per 90", "Received passes per 90", "Fouls suffered per 90", "Shot assists per 90", "Passes to penalty area per 90"],
+    "Creative Forward / False 9": ["xG per 90", "Non-penalty goals per 90", "Passes to penalty area per 90", "Offensive duels won, %", "Progressive runs per 90"],
+    "Wide Forward / Inside 9": ["Accelerations per 90", "Dribbles per 90", "Shot assists per 90", "Goal conversion, %", "Received passes per 90"],
+}
+
+COMPLETE_15_METRICS = {
+    role: BALANCED_10_METRICS[role] + COMPLETE_15_ADDITIONS[role]
+    for role in CORE_5_METRICS
 }
 
 CORE_5_WEIGHTS = {role: [25, 22, 20, 18, 15] for role in CORE_5_METRICS}
 CORE_5_WEIGHTS.update({
     "Poacher": [28, 25, 18, 16, 13],
     "Target Man #9": [25, 23, 20, 17, 15],
-    "Playmaker #10": [25, 22, 20, 18, 15],
 })
 BALANCED_10_WEIGHTS = {role: [16, 14, 12, 11, 10, 9, 8, 7, 7, 6] for role in BALANCED_10_METRICS}
+# Complete 15 is deliberately nested. The first five identity metrics retain 50%
+# of the score, metrics 6-10 add 32% functional breadth, and metrics 11-15 add
+# 18% completeness. This makes Core-vs-Complete comparisons interpretable.
+COMPLETE_15_WEIGHTS = {role: [12, 11, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 4, 3, 3] for role in COMPLETE_15_METRICS}
+
+# Lower values are desirable for these metrics; the scoring engine flips them.
+# They are already handled by the app's direction-aware metric policy.
 
 def profile_definition(role_name: str, depth: str = "Complete 15") -> Tuple[List[str], List[int]]:
-    """Return requested metric names and weights for one built-in role/depth."""
+    """Return one nested built-in role definition for the requested depth."""
     if depth == "Core 5":
-        return list(CORE_5_METRICS.get(role_name, PROFILES[role_name])[:5]), list(CORE_5_WEIGHTS.get(role_name, [25,22,20,18,15]))
+        return list(CORE_5_METRICS.get(role_name, PROFILES[role_name])[:5]), list(CORE_5_WEIGHTS.get(role_name, [25, 22, 20, 18, 15]))
     if depth == "Balanced 10":
-        return list(BALANCED_10_METRICS.get(role_name, PROFILES[role_name])[:10]), list(BALANCED_10_WEIGHTS.get(role_name, [16,14,12,11,10,9,8,7,7,6]))
-    requested = list(PROFILES[role_name])
-    return requested, [int(DEFAULT_WEIGHTS[role_name][m]) for m in requested]
+        return list(BALANCED_10_METRICS.get(role_name, PROFILES[role_name])[:10]), list(BALANCED_10_WEIGHTS.get(role_name, [16, 14, 12, 11, 10, 9, 8, 7, 7, 6]))
+    return list(COMPLETE_15_METRICS.get(role_name, PROFILES[role_name])[:15]), list(COMPLETE_15_WEIGHTS.get(role_name, [12, 11, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 4, 3, 3]))
 
 def active_depth_for_role(role_name: str) -> str:
     depth = st.session_state.get("profile_depth_global", "Complete 15")
