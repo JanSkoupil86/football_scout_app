@@ -3117,16 +3117,16 @@ if app_page == "Players":
     st.subheader("Player Performance Visualization")
 
     plot_metrics = [c for c in numeric_cols if c not in {"Age", "Market value"}]
-    # Final selector contract: explicitly append every attached calculated output.
-    # This makes Scatter independent of any upstream numeric-column inference.
     plot_metrics = list(dict.fromkeys(plot_metrics + calc_metric_cols))
     if calc_metric_cols:
         st.caption(f"Scatter calculated metrics available: {len(calc_metric_cols)} (type `Calc:` in X/Y to filter them)")
+
     if not plot_metrics:
         st.warning("No numerical metrics available for plotting.")
     else:
-        # Profile-aware scatter defaults: pair the active weighted role score
-        # with the most relevant calculated indicator for that role.
+        # X = the role's defining characteristic; Y = overall role fit.
+        # Wide CB intentionally retains Carrying Progression: stepping out with
+        # the ball is a useful discriminator from BPC / Libero profiles.
         PROFILE_SCATTER_X_DEFAULT = {
             "Classic Goalkeeper": "Calc: GK Shot Stopping",
             "Sweeper Keeper": "Calc: GK Area Control",
@@ -3139,8 +3139,8 @@ if app_page == "Players":
             "Deep-Lying Playmaker": "Calc: Passing Progression",
             "Box-to-Box Midfielder": "Calc: Carrying Progression",
             "Playmaker #10": "Calc: Chance Creation",
-            "Full-Back": "Calc: Passing Progression",
-            "Wing-Back": "Calc: Wide Delivery",
+            "Full-Back": "Calc: Wide Delivery",          # Step 27 change
+            "Wing-Back": "Calc: Carrying Progression",  # Step 27 change
             "Inverted Full-Back": "Calc: Passing Progression",
             "Classic Winger": "Calc: Wide Delivery",
             "Inverted Winger": "Calc: Box Threat",
@@ -3150,9 +3150,44 @@ if app_page == "Players":
             "Creative Forward / False 9": "Calc: Chance Creation",
             "Wide Forward / Inside 9": "Calc: Box Threat",
         }
+
+        # Useful secondary X metrics are surfaced immediately after the default;
+        # all remaining numeric metrics stay available for full flexibility.
+        PROFILE_SCATTER_X_ALTERNATIVES = {
+            "Classic Goalkeeper": ["Calc: GK Area Control", "Calc: GK Distribution"],
+            "Sweeper Keeper": ["Calc: GK Distribution", "Calc: GK Shot Stopping"],
+            "Build-Up Keeper": ["Calc: GK Shot Stopping", "Calc: GK Area Control"],
+            "Ball-Playing CB": ["Calc: Duel Dominance", "Calc: Defensive Activity"],
+            "Combative CB / Stopper": ["Calc: Duel Dominance", "Calc: Aerial Impact"],
+            "Libero / Middle Pin CB": ["Calc: Defensive Activity", "Calc: Duel Dominance"],
+            "Wide CB (in 3)": ["Calc: Passing Progression", "Calc: Duel Dominance"],
+            "Defensive Midfielder #6": ["Calc: Duel Dominance", "Calc: Passing Progression"],
+            "Deep-Lying Playmaker": ["Calc: Defensive Activity", "Calc: Chance Creation"],
+            "Box-to-Box Midfielder": ["Calc: Defensive Activity", "Calc: Passing Progression"],
+            "Playmaker #10": ["Calc: 1v1 Threat", "Calc: Box Threat"],
+            "Full-Back": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+            "Wing-Back": ["Calc: Wide Delivery", "Calc: 1v1 Threat"],
+            "Inverted Full-Back": ["Calc: Defensive Activity", "Calc: Carrying Progression"],
+            "Classic Winger": ["Calc: 1v1 Threat", "Calc: Chance Creation"],
+            "Inverted Winger": ["Calc: 1v1 Threat", "Calc: Finishing"],
+            "Target Man #9": ["Calc: Link Play", "Calc: Box Threat"],
+            "Poacher": ["Calc: Box Threat", "Calc: Shot Quality (xG/Shot)"],
+            "Pressing Forward": ["Calc: Box Threat", "Calc: Link Play"],
+            "Creative Forward / False 9": ["Calc: Link Play", "Calc: Passing Progression"],
+            "Wide Forward / Inside 9": ["Calc: 1v1 Threat", "Calc: Finishing"],
+        }
+
         _profile_x = PROFILE_SCATTER_X_DEFAULT.get(active_role) if active else None
+        _preferred = []
         if _profile_x in plot_metrics and filtered[_profile_x].notna().any():
-            x_default = _profile_x
+            _preferred.append(_profile_x)
+        for _m in PROFILE_SCATTER_X_ALTERNATIVES.get(active_role, []):
+            if _m in plot_metrics and filtered[_m].notna().any() and _m not in _preferred:
+                _preferred.append(_m)
+        x_options = _preferred + [m for m in plot_metrics if m not in _preferred]
+
+        if _preferred:
+            x_default = _preferred[0]
         elif _gk_only_selection and "Calc: GK Shot Stopping" in plot_metrics:
             x_default = "Calc: GK Shot Stopping"
         elif "Goals per 90" in plot_metrics:
@@ -3160,39 +3195,74 @@ if app_page == "Players":
         else:
             x_default = plot_metrics[0]
 
-        if calc_col_name and calc_col_name in plot_metrics:
-            y_default = calc_col_name
-        elif "Assists per 90" in plot_metrics:
-            y_default = "Assists per 90"
-        else:
-            y_default = plot_metrics[1] if len(plot_metrics) > 1 else plot_metrics[0]
+        # Optional percentile representation of the active Profile Score.
+        role_pct_col = None
+        if active and calc_col_name and calc_col_name in filtered.columns:
+            role_pct_col = f"Role Percentile: {active_role or 'Custom Profile'}"
+            try:
+                _bench_scored, _, _, _ = make_profile_score_vectorized(
+                    active_benchmark_df,
+                    active_benchmark_df,
+                    profile_metrics_in_use,
+                    weights,
+                    "__scatter_benchmark_score__",
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                _bench_scores = pd.to_numeric(_bench_scored["__scatter_benchmark_score__"], errors="coerce").dropna().to_numpy(dtype=float)
+                _bench_scores.sort()
+                _player_scores = pd.to_numeric(filtered[calc_col_name], errors="coerce").to_numpy(dtype=float)
+                if len(_bench_scores):
+                    _pct = np.searchsorted(_bench_scores, _player_scores, side="right") / len(_bench_scores) * 100.0
+                    _pct[~np.isfinite(_player_scores)] = np.nan
+                    filtered[role_pct_col] = np.round(_pct, 1)
+                else:
+                    filtered[role_pct_col] = np.nan
+            except Exception:
+                filtered[role_pct_col] = np.nan
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            x_axis = st.selectbox("X-axis", plot_metrics, index=plot_metrics.index(x_default))
+            x_axis = st.selectbox("X-axis · defining characteristic", x_options, index=x_options.index(x_default))
         with c2:
-            y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(y_default))
+            if active and calc_col_name in filtered.columns and role_pct_col in filtered.columns:
+                y_representation = st.selectbox(
+                    "Y-axis · overall role fit",
+                    ["Profile Score", "Role Percentile"],
+                    index=0,
+                    help="Profile Score is the direction-aware weighted z-score. Role Percentile shows the same score as a 0–100 percentile against the role benchmark.",
+                )
+                y_axis = role_pct_col if y_representation == "Role Percentile" else calc_col_name
+            else:
+                y_representation = "Metric"
+                _fallback_y = calc_col_name if calc_col_name in plot_metrics else ("Assists per 90" if "Assists per 90" in plot_metrics else plot_metrics[min(1, len(plot_metrics)-1)])
+                y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(_fallback_y))
         with c3:
             _color_options = [o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns]
             _color_default = _color_options.index("Team") if "Team" in _color_options else 0
-            color_by = st.selectbox(
-                "Color by",
-                options=_color_options,
-                index=_color_default,
-            )
+            color_by = st.selectbox("Color by", options=_color_options, index=_color_default)
 
         _size_options = [o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns]
-        size_by = st.selectbox(
-            "Size by",
-            options=_size_options,
-            index=_size_options.index("None"),
-        )
+        size_by = st.selectbox("Size by", options=_size_options, index=_size_options.index("None"))
 
-        rank_axis = st.radio("Sort Top-N players by", ["X-axis", "Y-axis"], index=1, horizontal=True)
-        sort_metric = y_axis if rank_axis == "Y-axis" else x_axis
+        # Recruitment-oriented Top-N ranking. Y remains the default behavior,
+        # with league-adjusted quality available whenever adjustment is active.
+        rank_options = ["Overall role fit", "X-axis characteristic"]
+        if role_pct_col and role_pct_col in filtered.columns:
+            rank_options.append("Role Percentile")
+        if league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns:
+            rank_options.append("League-Adjusted Score")
+        rank_choice = st.radio("Rank Top-N players by", rank_options, index=0, horizontal=True)
+        if rank_choice == "X-axis characteristic":
+            sort_metric = x_axis
+        elif rank_choice == "Role Percentile":
+            sort_metric = role_pct_col
+        elif rank_choice == "League-Adjusted Score":
+            sort_metric = adjusted_score_col
+        else:
+            sort_metric = y_axis
+
         plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(10, len(filtered)))
-
-        plot_df = filtered.sort_values(by=sort_metric, ascending=False).head(plot_limit).copy()
+        plot_df = filtered.sort_values(by=sort_metric, ascending=False, na_position="last").head(plot_limit).copy()
 
         if remove_outliers:
             for ax in [x_axis, y_axis]:
@@ -3204,41 +3274,74 @@ if app_page == "Players":
 
         plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
         plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
-
         show_labels = st.checkbox("Show player labels on chart", value=True)
+
+        # Recruitment hover fields: context first, then the two chart dimensions.
+        hover_data = {}
+        for _h in ["Team", "Age", "Main Position", "League", "Minutes played"]:
+            if _h in plot_df.columns:
+                hover_data[_h] = True
+        if calc_col_name and calc_col_name in plot_df.columns and calc_col_name != y_axis:
+            hover_data[calc_col_name] = ":.2f"
+        if role_pct_col and role_pct_col in plot_df.columns and role_pct_col != y_axis:
+            hover_data[role_pct_col] = ":.1f"
+        if league_adjustment_on and adjusted_score_col and adjusted_score_col in plot_df.columns:
+            hover_data[adjusted_score_col] = ":.2f"
 
         fig = px.scatter(
             plot_df,
             x=x_axis,
             y=y_axis,
             hover_name="Player" if "Player" in plot_df.columns else None,
+            hover_data=hover_data,
             color=None if color_by == "None" else color_by,
             size=None if size_by == "None" else size_by,
             text=plot_df["Player"] if show_labels and "Player" in plot_df.columns else None,
-            title=f"{y_axis} vs. {x_axis} by Player",
+            title=f"{active_role or 'Player profile'} · {y_axis} vs. {x_axis}",
             template="plotly_white",
-            height=620,
+            height=650,
         )
-
         fig.update_traces(
             marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
             textposition="top center",
             textfont=dict(size=16, color="black"),
-            hovertemplate="Player: %{hovertext}<br>" + x_axis + ": %{x:.2f}<br>" + y_axis + ": %{y:.2f}<extra></extra>",
             cliponaxis=False,
         )
         fig.update_layout(
-            font=dict(size=14),
-            title_font=dict(size=20),
-            legend=dict(font=dict(size=12)),
+            font=dict(size=14), title_font=dict(size=20), legend=dict(font=dict(size=12)),
             xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
             yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
         )
 
-        # When Profile Score is the Y-axis and league adjustment is enabled,
-        # overlay each player's adjusted score at the same X coordinate. The
-        # lighter point preserves the original team/category colour, while a
-        # thin connector makes the size and direction of the adjustment visible.
+        # Meaningful, stable quadrant lines rather than filter-dependent medians.
+        # Calculated composites are 0–100 benchmark percentiles => X=50.
+        # Profile Score is standardized => Y=0. Role Percentile => Y=50.
+        x_ref = 50.0 if str(x_axis).startswith("Calc:") and x_axis in CALCULATED_INDEX_NAMES else None
+        y_ref = 50.0 if y_axis == role_pct_col else (0.0 if y_axis == calc_col_name else None)
+        if x_ref is not None:
+            fig.add_vline(x=x_ref, line_width=1.3, line_dash="dash", line_color="gray", opacity=0.65)
+        if y_ref is not None:
+            fig.add_hline(y=y_ref, line_width=1.3, line_dash="dash", line_color="gray", opacity=0.65)
+
+        # Label quadrants only when both axes have a meaningful benchmark boundary.
+        if x_ref is not None and y_ref is not None and len(plot_df):
+            xv = pd.to_numeric(plot_df[x_axis], errors="coerce").dropna()
+            yv = pd.to_numeric(plot_df[y_axis], errors="coerce").dropna()
+            if not xv.empty and not yv.empty:
+                xmin, xmax = float(xv.min()), float(xv.max())
+                ymin, ymax = float(yv.min()), float(yv.max())
+                xpad = max((xmax - xmin) * 0.06, 1.0)
+                ypad = max((ymax - ymin) * 0.06, 0.08 if y_axis == calc_col_name else 1.0)
+                # Ensure the benchmark lines are visible even if Top-N falls on one side.
+                fig.update_xaxes(range=[min(xmin - xpad, x_ref - xpad), max(xmax + xpad, x_ref + xpad)])
+                fig.update_yaxes(range=[min(ymin - ypad, y_ref - ypad), max(ymax + ypad, y_ref + ypad)])
+                fig.add_annotation(x=0.985, y=0.985, xref="paper", yref="paper", text="Priority Targets", showarrow=False, xanchor="right", yanchor="top", font=dict(size=12))
+                fig.add_annotation(x=0.015, y=0.985, xref="paper", yref="paper", text="Strong Fit / Weaker Speciality", showarrow=False, xanchor="left", yanchor="top", font=dict(size=12))
+                fig.add_annotation(x=0.985, y=0.015, xref="paper", yref="paper", text="Specialist / Incomplete Profile", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12))
+                fig.add_annotation(x=0.015, y=0.015, xref="paper", yref="paper", text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom", font=dict(size=12))
+
+        # League adjustment remains contextual quality only. Never alter X.
+        # Overlay is intentionally available only when raw Profile Score is Y.
         if (
             league_adjustment_on
             and adjusted_score_col in plot_df.columns
@@ -3246,7 +3349,6 @@ if app_page == "Players":
             and plot_df[adjusted_score_col].notna().any()
         ):
             import plotly.graph_objects as go
-
             original_color_by = None if color_by == "None" else color_by
             color_lookup = {}
             for tr in fig.data:
@@ -3254,25 +3356,16 @@ if app_page == "Players":
                     color_lookup[str(tr.name)] = getattr(tr.marker, "color", None)
             fallback_color = "#636EFA"
 
-            # Connector segments are drawn first so both endpoints stay crisp.
             for _, r in plot_df.dropna(subset=[x_axis, y_axis, adjusted_score_col]).iterrows():
                 category = str(r[original_color_by]) if original_color_by else ""
                 base_color = color_lookup.get(category, fallback_color)
                 fig.add_trace(go.Scatter(
-                    x=[r[x_axis], r[x_axis]],
-                    y=[r[y_axis], r[adjusted_score_col]],
-                    mode="lines",
-                    line=dict(color=base_color, width=1.5),
-                    opacity=0.28,
-                    hoverinfo="skip",
-                    showlegend=False,
+                    x=[r[x_axis], r[x_axis]], y=[r[y_axis], r[adjusted_score_col]], mode="lines",
+                    line=dict(color=base_color, width=1.5), opacity=0.28,
+                    hoverinfo="skip", showlegend=False,
                 ))
 
-            if original_color_by:
-                grouped = plot_df.groupby(original_color_by, dropna=False, sort=False)
-            else:
-                grouped = [("Adjusted", plot_df)]
-
+            grouped = plot_df.groupby(original_color_by, dropna=False, sort=False) if original_color_by else [("Adjusted", plot_df)]
             for category, g in grouped:
                 g = g.dropna(subset=[x_axis, adjusted_score_col])
                 if g.empty:
@@ -3288,22 +3381,13 @@ if app_page == "Players":
                     pd.to_numeric(g.get("League Adjustment", np.nan), errors="coerce"),
                 ])
                 fig.add_trace(go.Scatter(
-                    x=g[x_axis],
-                    y=g[adjusted_score_col],
-                    mode="markers",
+                    x=g[x_axis], y=g[adjusted_score_col], mode="markers",
                     name="Adjusted" if not original_color_by else f"{category} · adjusted",
-                    legendgroup=f"adjusted_{category_key}",
-                    showlegend=False,
-                    marker=dict(
-                        size=16,
-                        color=base_color,
-                        opacity=0.35,
-                        line=dict(width=1.5, color=base_color),
-                    ),
+                    legendgroup=f"adjusted_{category_key}", showlegend=False,
+                    marker=dict(size=16, color=base_color, opacity=0.35, line=dict(width=1.5, color=base_color)),
                     customdata=custom,
                     hovertemplate=(
-                        "Player: %{customdata[0]}<br>"
-                        + x_axis + ": %{x:.2f}<br>"
+                        "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
                         + "Original Profile Score: %{customdata[1]:.2f}<br>"
                         + "Adjusted Score: %{customdata[2]:.2f}<br>"
                         + "League: %{customdata[4]}<br>"
@@ -3313,13 +3397,11 @@ if app_page == "Players":
                         + "<extra>League-adjusted</extra>"
                     ),
                 ))
-
-            fig.update_layout(
-                title=f"{y_axis} vs. {x_axis} by Player · original + league-adjusted",
-            )
+            fig.update_layout(title=f"{active_role or 'Profile'} · original + league-adjusted role fit vs. {x_axis}")
         elif league_adjustment_on and y_axis != calc_col_name:
-            st.caption("League-adjusted overlay appears when the active Profile Score is selected on the Y-axis.")
+            st.caption("League-adjusted overlay appears when Profile Score is selected as the Y-axis. Raw performance / percentile axes are never league-adjusted.")
 
+        st.caption("Scatter logic: → stronger defining characteristic · ↑ stronger overall role fit. Benchmark lines: calculated composite = 50th percentile; Profile Score = 0; Role Percentile = 50.")
         st.plotly_chart(fig, width="stretch")
 
 
