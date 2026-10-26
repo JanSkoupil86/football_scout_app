@@ -2910,6 +2910,8 @@ calc_col_name: str | None = None
 profile_metrics_in_use: List[str] = []
 active_benchmark_df = benchmark_source_global
 active_kpi_cols: List[str] = []
+depth_score_cols: List[str] = []
+specialist_delta_col: str | None = None
 
 if active and active.get("metrics"):
     calc_col_name = str(active.get("calc_col", "Score"))
@@ -2965,6 +2967,61 @@ if active and active.get("metrics"):
         for c in kpi_df.columns:
             filtered[c] = kpi_df[c]
             active_kpi_cols.append(c)
+
+    # ---------------------------------------------------------
+    # Profile Depth Comparison
+    # ---------------------------------------------------------
+    # For every active built-in role, calculate the three canonical nested
+    # depth scores against the SAME benchmark population. The currently
+    # selected depth remains the active Profile Score; these parallel scores
+    # are diagnostic columns used to expose specialists that a broad model
+    # may smooth out. Custom mode still receives the canonical 5/10/15
+    # comparison for its parent built-in role.
+    depth_score_cols = []
+    specialist_delta_col = None
+    if active_role in PROFILES:
+        for _depth_name in ["Core 5", "Balanced 10", "Complete 15"]:
+            _requested, _preset_weights = profile_definition(active_role, _depth_name)
+            _resolved, _ = resolve_metrics_aliases(_requested, filtered_base.columns.tolist())
+            _req_weight_map = {m: float(w) for m, w in zip(_requested, _preset_weights)}
+            _resolved_weight_map = {}
+            for _req in _requested:
+                _rr, _missing = resolve_metrics_aliases([_req], filtered_base.columns.tolist())
+                if _rr:
+                    _resolved_weight_map[_rr[0]] = _resolved_weight_map.get(_rr[0], 0.0) + _req_weight_map[_req]
+
+            _weights = np.asarray([_resolved_weight_map.get(m, 0.0) for m in _resolved], dtype=float)
+            if len(_weights) and _weights.sum() > 0:
+                _weights = _weights / _weights.sum()
+
+            _depth_col = f"Score: {active_role} [{_depth_name}]"
+            depth_score_cols.append(_depth_col)
+
+            # Reuse the already-calculated active score when it is exactly the
+            # same canonical preset. Custom always gets an independent canonical
+            # comparison because its metric definition may differ.
+            if not (_depth_col == calc_col_name and active.get("depth") == _depth_name):
+                _depth_scored, _, _, _ = make_profile_score_vectorized(
+                    filtered_base,
+                    active_benchmark_df,
+                    _resolved,
+                    _weights,
+                    _depth_col,
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                filtered[_depth_col] = _depth_scored[_depth_col]
+                _depth_cov = f"{_depth_col} Coverage %"
+                if _depth_cov in _depth_scored.columns:
+                    filtered[_depth_cov] = _depth_scored[_depth_cov]
+
+        _core_col = f"Score: {active_role} [Core 5]"
+        _complete_col = f"Score: {active_role} [Complete 15]"
+        if _core_col in filtered.columns and _complete_col in filtered.columns:
+            specialist_delta_col = "Specialist Delta"
+            filtered[specialist_delta_col] = (
+                pd.to_numeric(filtered[_core_col], errors="coerce")
+                - pd.to_numeric(filtered[_complete_col], errors="coerce")
+            ).round(2)
 
     if skipped_sparse:
         st.caption("⚠️ Skipped sparse benchmark metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
@@ -3162,6 +3219,13 @@ if app_page == "Players":
         if league_adjustment_on and adjusted_score_col in filtered.columns:
             # Keep Opta rating internal; only show the adjusted result by default.
             default_cols.append(adjusted_score_col)
+
+        # Show the three canonical depth scores together so specialists and
+        # complete profiles can be compared without repeatedly switching tabs.
+        # dict.fromkeys below removes the active score duplicate automatically.
+        default_cols.extend([c for c in depth_score_cols if c in filtered.columns])
+        if specialist_delta_col and specialist_delta_col in filtered.columns:
+            default_cols.append(specialist_delta_col)
 
     if _gk_only_selection:
         # GK-specific raw indicators replace attacking output columns in the default view.
@@ -5001,6 +5065,8 @@ lower is better are direction-reversed. Default/custom weights must total exactl
 from the available weighted metrics and the available weights are renormalized for that player. The
 Coverage % column shows how much of the intended profile weight was actually observed. Scores below the
 selected coverage threshold are suppressed.
+
+**Profile depth comparison.** For an active built-in role, the app also calculates Core 5, Balanced 10 and Complete 15 simultaneously against the same benchmark. **Specialist Delta = Core 5 Score − Complete 15 Score**. A positive delta means the player scores better on the role-defining core than on the complete model; it is a diagnostic of specialization, not a quality ranking by itself.
 
 **KPI sub-scores.** Built-in profiles also expose weighted direction-aware z-score sub-scores for each
 KPI family. They use the same benchmark and the same metric weights as the overall Profile Score.
