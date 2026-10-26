@@ -3317,9 +3317,19 @@ if app_page == "Players":
             c_low = str(c).lower()
             display_label = compact_labels.get(c, c)
 
-            # Role score keeps its real dataframe name internally but uses a compact header.
+            # Depth comparison scores keep their real dataframe names internally,
+            # but use explicit headers so Core/Balanced/Complete are immediately readable.
             if c.startswith("Score:"):
-                display_label = "Profile Score"
+                if c.endswith("[Core 5]"):
+                    display_label = "Core 5"
+                elif c.endswith("[Balanced 10]"):
+                    display_label = "Balanced 10"
+                elif c.endswith("[Complete 15]"):
+                    display_label = "Complete 15"
+                else:
+                    display_label = "Profile Score"
+            elif c == "Specialist Delta":
+                display_label = "Specialist Δ"
 
             if c == "Season label":
                 table_column_config[c] = st.column_config.TextColumn(display_label, width=65)
@@ -3337,6 +3347,8 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=60, format="%d")
             elif c.startswith("Score:"):
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
+            elif c == "Specialist Delta":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%+.2f")
             elif c in {"League-Adjusted Score", "League Adjustment", "Opta League Rating"}:
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=92, format="%.2f")
             elif c == "Opta Global Rank":
