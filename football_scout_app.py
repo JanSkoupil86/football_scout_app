@@ -5244,7 +5244,8 @@ elif app_page == "Shadow Team":
             role = role_by_slot[slot]
             slot_candidates[slot] = role_results.get(role, pd.DataFrame()).head(int(shadow_top_n)).copy()
 
-    # Recruitment-board pitch. Plotly shapes keep the visual self-contained and responsive.
+    # Recruitment-board pitch. Keep the board deliberately constrained and centred:
+    # a full-width Plotly figure made the actual pitch/cards too small on wide monitors.
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, x1=1, y0=0, y1=1, line=dict(color="#5f8a73", width=2), fillcolor="#0b2f20", layer="below")
     fig.add_shape(type="line", x0=0, x1=1, y0=.5, y1=.5, line=dict(color="#5f8a73", width=1), layer="below")
@@ -5258,31 +5259,72 @@ elif app_page == "Shadow Team":
     for slot, _, x, y in slots:
         role = role_by_slot[slot]
         cand = slot_candidates.get(slot, pd.DataFrame())
-        lines = [f"<b>{slot}</b>", f"<span style='font-size:10px'>{role}</span>"]
+
+        # Compact recruitment card: slot + role + clearly readable candidate rows.
+        role_label = role
+        if len(role_label) > 24:
+            role_label = role_label[:23] + "…"
+        lines = [
+            f"<b><span style='font-size:15px'>{slot}</span></b>",
+            f"<span style='font-size:11px;color:#8fd3ad'>{role_label}</span>",
+        ]
         if cand.empty:
-            lines += ["", "No eligible players"]
+            lines += ["", "<span style='font-size:11px'>No eligible players</span>"]
         else:
             for j, (_, r) in enumerate(cand.head(int(shadow_top_n)).iterrows(), start=1):
-                score = r.get("Selection Score", np.nan)
+                score = pd.to_numeric(pd.Series([r.get("Selection Score", np.nan)]), errors="coerce").iloc[0]
                 player = str(r.get("Player", ""))
-                age = r.get("Age", "")
-                if len(player) > 18: player = player[:17] + "…"
+                team = str(r.get("Team", ""))
+                age = pd.to_numeric(pd.Series([r.get("Age", np.nan)]), errors="coerce").iloc[0]
+                if len(player) > 20:
+                    player = player[:19] + "…"
+                if len(team) > 18:
+                    team = team[:17] + "…"
                 prefix = "★" if j == 1 else f"{j}."
-                lines.append(f"{prefix} <b>{player}</b> · {score:.2f} · {age:g}" if pd.notna(age) else f"{prefix} <b>{player}</b> · {score:.2f}")
+                score_txt = f"{score:.2f}" if pd.notna(score) else "—"
+                age_txt = f" · {age:g}" if pd.notna(age) else ""
+                if j == 1:
+                    lines.append(
+                        f"<span style='font-size:12px;color:#ffffff'><b>{prefix} {player}</b> · {score_txt}</span>"
+                        f"<br><span style='font-size:10px;color:#a9c9b8'>{team}{age_txt}</span>"
+                    )
+                else:
+                    lines.append(
+                        f"<span style='font-size:11px'>{prefix} <b>{player}</b> · {score_txt}</span>"
+                        f"<br><span style='font-size:9px;color:#a9c9b8'>{team}{age_txt}</span>"
+                    )
+
         fig.add_annotation(
             x=x, y=y, text="<br>".join(lines), showarrow=False, align="left",
-            bgcolor="rgba(4,38,25,0.94)", bordercolor="#176a46", borderwidth=1, borderpad=6,
-            font=dict(color="#e7f5ec", size=10), xanchor="center", yanchor="middle",
+            bgcolor="rgba(3,35,23,0.97)", bordercolor="#168455", borderwidth=1.5, borderpad=10,
+            font=dict(color="#e7f5ec", size=12), xanchor="center", yanchor="middle",
         )
 
-    fig.update_xaxes(range=[0,1], visible=False, fixedrange=True)
-    fig.update_yaxes(range=[0,1], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(range=[0, 1], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[0, 1], visible=False, fixedrange=True)
     fig.update_layout(
-        height=920, paper_bgcolor="#071d14", plot_bgcolor="#071d14",
-        margin=dict(l=8, r=8, t=18, b=8), showlegend=False,
-        title=dict(text=f"{shadow_formation} · {shadow_depth}" + (f" · adjusted to {shadow_reference}" if shadow_adjust else ""), x=.5, font=dict(color="#e7f5ec")),
+        height=1080,
+        paper_bgcolor="#071d14",
+        plot_bgcolor="#071d14",
+        margin=dict(l=14, r=14, t=54, b=14),
+        showlegend=False,
+        title=dict(
+            text=f"{shadow_formation} · {shadow_depth}" + (f" · adjusted to {shadow_reference}" if shadow_adjust else ""),
+            x=.5,
+            y=.985,
+            font=dict(color="#e7f5ec", size=18),
+        ),
     )
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+    # Centre the tactical board in a controlled desktop width. This prevents the
+    # enormous empty green canvas seen when the chart stretches across an ultrawide page.
+    pitch_left, pitch_col, pitch_right = st.columns([0.45, 1.55, 0.45])
+    with pitch_col:
+        st.plotly_chart(
+            fig,
+            width="stretch",
+            config={"displayModeBar": False, "responsive": True},
+        )
 
     st.subheader("Shadow Team shortlists")
     shortlist_rows = []
