@@ -2565,7 +2565,90 @@ if df_league.empty:
     st.warning("No players found for selected seasons/leagues.")
     st.stop()
 
-# Team / Position — unchanged. After leagues are chosen, Team defaults to ALL.
+# Nationality / passport eligibility filters.
+# Passport is the primary recruitment eligibility signal available in the Wyscout export.
+# These presets describe passport/nationality only; they do NOT claim GBE/work-permit eligibility.
+def _nationality_tokens(value):
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    # Wyscout exports can contain one or several countries. Support common separators
+    # without splitting country names that contain spaces.
+    return [x.strip() for x in re.split(r"[,;/|]+", text) if x.strip()]
+
+def _country_mask(series, wanted):
+    wanted_cf = {str(x).strip().casefold() for x in wanted if str(x).strip()}
+    if not wanted_cf:
+        return pd.Series(True, index=series.index)
+    return series.apply(lambda v: bool({x.casefold() for x in _nationality_tokens(v)} & wanted_cf))
+
+def _available_country_tokens(series):
+    vals = set()
+    for v in series.dropna():
+        vals.update(_nationality_tokens(v))
+    return sorted(vals, key=lambda x: x.casefold())
+
+UK_PASSPORT_ALIASES = {
+    "England", "Scotland", "Wales", "Northern Ireland",
+    "United Kingdom", "Great Britain", "UK", "British",
+}
+EU_EEA_COUNTRIES = {
+    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic", "Czechia",
+    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland",
+    "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Poland",
+    "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden",
+    "Iceland", "Liechtenstein", "Norway",
+}
+
+with st.sidebar.expander("Nationality / Passport", expanded=False):
+    nationality_preset = st.selectbox(
+        "Nationality preset",
+        ["None", "UK Passport", "EU / EEA Passport", "Custom"],
+        index=0,
+        key="nationality_preset",
+        help=(
+            "Passport filters use Wyscout Passport country. UK Passport is not the same as UK GBE/work-permit eligibility."
+        ),
+    )
+
+    passport_options = _available_country_tokens(df_league["Passport country"]) if "Passport country" in df_league.columns else []
+    birth_options = _available_country_tokens(df_league["Birth country"]) if "Birth country" in df_league.columns else []
+
+    selected_passports = []
+    selected_birth_countries = []
+    if nationality_preset == "Custom":
+        selected_passports = st.multiselect(
+            "Passport country", passport_options, default=[], key="passport_country_filter",
+            help="Multiple selections use OR logic. Players with any selected passport are included.",
+        )
+        selected_birth_countries = st.multiselect(
+            "Birth country", birth_options, default=[], key="birth_country_filter",
+            help="Optional. Multiple selections use OR logic.",
+        )
+    elif nationality_preset == "UK Passport":
+        st.caption("Includes British/UK passport labels such as England, Scotland, Wales and Northern Ireland when present in Wyscout.")
+    elif nationality_preset == "EU / EEA Passport":
+        st.caption("Includes EU member states plus Iceland, Liechtenstein and Norway. Switzerland is not included.")
+
+_nat_mask = pd.Series(True, index=df_league.index)
+if nationality_preset == "UK Passport" and "Passport country" in df_league.columns:
+    _nat_mask &= _country_mask(df_league["Passport country"], UK_PASSPORT_ALIASES)
+elif nationality_preset == "EU / EEA Passport" and "Passport country" in df_league.columns:
+    _nat_mask &= _country_mask(df_league["Passport country"], EU_EEA_COUNTRIES)
+elif nationality_preset == "Custom":
+    if selected_passports and "Passport country" in df_league.columns:
+        _nat_mask &= _country_mask(df_league["Passport country"], selected_passports)
+    if selected_birth_countries and "Birth country" in df_league.columns:
+        _nat_mask &= _country_mask(df_league["Birth country"], selected_birth_countries)
+
+df_league = df_league.loc[_nat_mask].copy()
+if df_league.empty:
+    st.warning("No players match the selected nationality/passport filters.")
+    st.stop()
+
+# Team / Position — after nationality filtering, options reflect the eligible recruitment pool.
 teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
@@ -2682,6 +2765,8 @@ if "Minutes played" in df_league.columns:
 
 filtered_base = df_league.loc[mask]
 st.sidebar.markdown(f"**Players matching filters: {len(filtered_base)}**")
+if nationality_preset != "None":
+    st.sidebar.caption(f"Nationality filter: {nationality_preset}")
 if filtered_base.empty:
     st.warning("No players match the selected filters.")
     st.stop()
