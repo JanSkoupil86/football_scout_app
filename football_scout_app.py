@@ -3220,12 +3220,9 @@ if app_page == "Players":
             # Keep Opta rating internal; only show the adjusted result by default.
             default_cols.append(adjusted_score_col)
 
-        # Show the three canonical depth scores together so specialists and
-        # complete profiles can be compared without repeatedly switching tabs.
-        # dict.fromkeys below removes the active score duplicate automatically.
-        default_cols.extend([c for c in depth_score_cols if c in filtered.columns])
-        if specialist_delta_col and specialist_delta_col in filtered.columns:
-            default_cols.append(specialist_delta_col)
+        # Keep only the currently selected profile-depth score in the default table.
+        # Core 5, Balanced 10, Complete 15 and Specialist Delta are still calculated
+        # and remain available in the Columns to display selector for manual addition.
 
     if _gk_only_selection:
         # GK-specific raw indicators replace attacking output columns in the default view.
