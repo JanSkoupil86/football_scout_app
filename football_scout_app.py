@@ -5133,7 +5133,7 @@ elif app_page == "Shadow Team":
         "ST": ["Pressing Forward", "Target Man #9", "Poacher", "Creative Forward / False 9", "Wide Forward / Inside 9"],
     }
 
-    c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.0, 1.2])
+    c1, c2, c3, c4, c5 = st.columns([1.0, 1.0, 0.9, 1.1, 1.2])
     with c1:
         shadow_formation = st.selectbox("Formation", list(FORMATIONS), index=0, key="shadow_formation")
     with c2:
@@ -5146,6 +5146,11 @@ elif app_page == "Shadow Team":
         shadow_unique = st.toggle(
             "Unique starting XI", value=True, key="shadow_unique",
             help="The #1 player can occupy only one starting slot. Alternatives remain visible in other role shortlists."
+        )
+    with c5:
+        shadow_allow_opposite = st.toggle(
+            "Allow opposite-side players", value=False, key="shadow_allow_opposite",
+            help="Off by default. Left/right Main Position is the primary side signal; Foot is used as a secondary compatibility signal."
         )
 
     # Shadow Team uses the current season/league/team/age/minutes universe but must
@@ -5189,6 +5194,66 @@ elif app_page == "Shadow Team":
     coverage = float(coverage_threshold_pct) / 100.0
     rating_map = shadow_strength.set_index("League")["rating"] if not shadow_strength.empty else pd.Series(dtype=float)
 
+    # Side/orientation model for Shadow Team.
+    # Main Position is deliberately the primary signal. Foot only refines compatibility.
+    LEFT_POSITIONS = {"LB", "LWB", "LCB", "LCMF", "LDMF", "LAMF", "LW", "LWF"}
+    RIGHT_POSITIONS = {"RB", "RWB", "RCB", "RCMF", "RDMF", "RAMF", "RW", "RWF"}
+
+    def _slot_side(slot: str):
+        # LST/RST are tactical spacing labels, not strict left/right position requirements.
+        if slot in {"LST", "RST"}:
+            return None
+        if slot.startswith("L"):
+            return "L"
+        if slot.startswith("R"):
+            return "R"
+        return None
+
+    def _foot_side(value):
+        txt = str(value).strip().lower()
+        if txt in {"left", "left foot", "l"}:
+            return "L"
+        if txt in {"right", "right foot", "r"}:
+            return "R"
+        if txt in {"both", "both feet", "either", "two-footed", "two footed"}:
+            return "B"
+        return None
+
+    def _side_fit(main_position, foot, slot: str, role: str):
+        side = _slot_side(slot)
+        if side is None:
+            return "Central / neutral", 2
+
+        pos = str(main_position).strip().upper()
+        pos_side = "L" if pos in LEFT_POSITIONS else ("R" if pos in RIGHT_POSITIONS else None)
+        fside = _foot_side(foot)
+
+        # Exact positional side always wins. Foot can then strengthen the tactical fit.
+        if pos_side == side:
+            if role == "Inverted Winger":
+                preferred = "R" if side == "L" else "L"
+                return ("Natural · inverted foot", 3) if fside in {preferred, "B"} else ("Natural side", 3)
+            if role == "Classic Winger":
+                return ("Natural · same-side foot", 3) if fside in {side, "B"} else ("Natural side", 3)
+            return "Natural side", 3
+
+        # Explicit opposite-side Main Position remains out-of-side by default even if foot is favourable.
+        if pos_side is not None and pos_side != side:
+            return "Opposite side", 0
+
+        # Neutral/central Main Position: foot becomes the secondary compatibility signal.
+        if role == "Inverted Winger":
+            preferred = "R" if side == "L" else "L"
+            if fside in {preferred, "B"}:
+                return "Compatible · inverted foot", 2
+        elif role == "Classic Winger":
+            if fside in {side, "B"}:
+                return "Compatible · same-side foot", 2
+        elif fside in {side, "B"}:
+            return "Compatible · foot", 2
+
+        return "Compatible · neutral", 1
+
     with st.spinner("Building Shadow Team…"):
         for role in sorted(set(role_by_slot.values())):
             eligible = PROFILE_POSITION_ELIGIBILITY.get(role, [])
@@ -5214,22 +5279,49 @@ elif app_page == "Shadow Team":
             )
             role_results[role] = scored
 
-    # Pick a unique #1 for each slot greedily by the strongest available role score.
-    # Candidate lists themselves are not de-duplicated: they remain true role shortlists.
+    # Build a side-aware candidate list for each tactical slot. This must happen after role
+    # scoring because the same role can have different left/right candidate orders.
+    slot_rankings = {}
+    for slot, _, _, _ in slots:
+        role = role_by_slot[slot]
+        rdf = role_results.get(role, pd.DataFrame()).copy()
+        if rdf.empty:
+            slot_rankings[slot] = rdf
+            continue
+        fits = rdf.apply(
+            lambda r: _side_fit(r.get("Main Position"), r.get("Foot"), slot, role), axis=1
+        )
+        rdf["Side Fit"] = [x[0] for x in fits]
+        rdf["Side Fit Rank"] = [x[1] for x in fits]
+        if not shadow_allow_opposite:
+            rdf = rdf.loc[rdf["Side Fit Rank"] > 0].copy()
+        rdf = rdf.sort_values(
+            ["Side Fit Rank", "Selection Score", "Minutes played" if "Minutes played" in rdf.columns else "Age"],
+            ascending=[False, False, False], kind="mergesort"
+        )
+        slot_rankings[slot] = rdf
+
+    # Unique XI allocation is now slot-aware: role eligibility -> side compatibility -> quality.
+    # Alternatives remain true slot-specific shortlists, but no starter can occupy two slots.
     used_players = set()
     slot_candidates = {}
     pending = list(slots)
     if shadow_unique:
-        # Fill the most decisive slots first: whichever currently has the strongest best available candidate.
         while pending:
             choices = []
             for slot_info in pending:
-                slot = slot_info[0]; role = role_by_slot[slot]; rdf = role_results.get(role, pd.DataFrame())
+                slot = slot_info[0]
+                rdf = slot_rankings.get(slot, pd.DataFrame())
                 avail = rdf.loc[~rdf["Player"].astype(str).isin(used_players)] if not rdf.empty else rdf
-                best = float(avail["Selection Score"].iloc[0]) if not avail.empty else -np.inf
-                choices.append((best, slot_info, avail))
-            _, chosen_info, avail = max(choices, key=lambda x: x[0])
-            slot = chosen_info[0]; role = role_by_slot[slot]; full = role_results.get(role, pd.DataFrame())
+                if avail.empty:
+                    best_fit, best_score = -1, -np.inf
+                else:
+                    best_fit = float(avail["Side Fit Rank"].iloc[0])
+                    best_score = float(avail["Selection Score"].iloc[0])
+                choices.append((best_fit, best_score, slot_info, avail))
+            _, _, chosen_info, avail = max(choices, key=lambda x: (x[0], x[1]))
+            slot = chosen_info[0]
+            full = slot_rankings.get(slot, pd.DataFrame())
             if not avail.empty:
                 starter = avail.iloc[[0]]
                 pname = str(starter.iloc[0]["Player"])
@@ -5241,8 +5333,7 @@ elif app_page == "Shadow Team":
             pending.remove(chosen_info)
     else:
         for slot, _, _, _ in slots:
-            role = role_by_slot[slot]
-            slot_candidates[slot] = role_results.get(role, pd.DataFrame()).head(int(shadow_top_n)).copy()
+            slot_candidates[slot] = slot_rankings.get(slot, pd.DataFrame()).head(int(shadow_top_n)).copy()
 
     # Recruitment-board pitch. Keep the board deliberately constrained and centred:
     # a full-width Plotly figure made the actual pitch/cards too small on wide monitors.
@@ -5283,15 +5374,17 @@ elif app_page == "Shadow Team":
                 prefix = "★" if j == 1 else f"{j}."
                 score_txt = f"{score:.2f}" if pd.notna(score) else "—"
                 age_txt = f" · {age:g}" if pd.notna(age) else ""
+                foot_code = _foot_side(r.get("Foot"))
+                foot_txt = f" · {foot_code}" if foot_code else ""
                 if j == 1:
                     lines.append(
                         f"<span style='font-size:12px;color:#ffffff'><b>{prefix} {player}</b> · {score_txt}</span>"
-                        f"<br><span style='font-size:10px;color:#a9c9b8'>{team}{age_txt}</span>"
+                        f"<br><span style='font-size:10px;color:#a9c9b8'>{team}{age_txt}{foot_txt}</span>"
                     )
                 else:
                     lines.append(
                         f"<span style='font-size:11px'>{prefix} <b>{player}</b> · {score_txt}</span>"
-                        f"<br><span style='font-size:9px;color:#a9c9b8'>{team}{age_txt}</span>"
+                        f"<br><span style='font-size:9px;color:#a9c9b8'>{team}{age_txt}{foot_txt}</span>"
                     )
 
         fig.add_annotation(
@@ -5335,14 +5428,15 @@ elif app_page == "Shadow Team":
             if cand.empty:
                 st.info("No eligible players for this slot under the current filters.")
             else:
-                show_cols = [c for c in ["Player", "Team", "League", "Main Position", "Age", "Minutes played", "Profile Score", "League-Adjusted Score"] if c in cand.columns]
+                show_cols = [c for c in ["Player", "Team", "League", "Main Position", "Foot", "Side Fit", "Age", "Minutes played", "Profile Score", "League-Adjusted Score"] if c in cand.columns]
                 view = cand[show_cols].copy()
                 view = view.rename(columns={"Profile Score": shadow_depth})
                 st.dataframe(view, hide_index=True, width="stretch")
                 for rank, (_, r) in enumerate(cand.iterrows(), start=1):
                     shortlist_rows.append({
                         "Slot": slot, "Role": role, "Rank": rank, "Player": r.get("Player"), "Team": r.get("Team"),
-                        "League": r.get("League"), "Main Position": r.get("Main Position"), "Age": r.get("Age"),
+                        "League": r.get("League"), "Main Position": r.get("Main Position"), "Foot": r.get("Foot"),
+                        "Side Fit": r.get("Side Fit"), "Age": r.get("Age"),
                         "Minutes played": r.get("Minutes played"), shadow_depth: r.get("Profile Score"),
                         "League-Adjusted Score": r.get("League-Adjusted Score", np.nan),
                     })
@@ -5397,7 +5491,7 @@ not a deterministic forecast.
 metrics of the selected role. League strength does not alter Similarity %. Quality is displayed separately as
 Profile Score and League-Adjusted Score, preventing stylistic resemblance from being confused with competitive level.
 
-**Shadow Team.** Formation slots are assigned a canonical role and ranked with the selected Core 5, Balanced 10 or Complete 15 definition. The current season, league, team, age and minutes filters define the recruitment pool; the sidebar Main Position filter is ignored so a complete XI can be built. Optional league adjustment changes selection quality only, using the same β = 0.020 translation model.
+**Shadow Team.** Formation slots are assigned a canonical role and ranked with the selected Core 5, Balanced 10 or Complete 15 definition. The current season, league, team, age and minutes filters define the recruitment pool; the sidebar Main Position filter is ignored so a complete XI can be built. Left/right slot assignment uses Wyscout Main Position as the primary side signal and Foot as a secondary compatibility signal. Opposite-side Main Positions are excluded by default. Optional league adjustment changes selection quality only, using the same β = 0.020 translation model.
 
 **Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
 warns when the benchmark falls below the configured minimum sample size.
