@@ -1927,6 +1927,31 @@ def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame
 
 
 
+
+def role_score_for_population_depth(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, depth: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
+    """Score a built-in role at an explicit profile depth without changing global profile state."""
+    requested, depth_weights = profile_definition(role, depth)
+    resolved, _ = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return score_df.assign(_shadow_role_score=np.nan), pd.Series(dtype=float)
+    requested_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved_weight_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0.0) + requested_weight_map.get(req, 0.0)
+    weights_pct = np.array([resolved_weight_map.get(m, 0.0) for m in resolved], dtype=float)
+    weights = normalize_weights(weights_pct)
+    scored, _, _, _ = make_profile_score_vectorized(
+        score_df, benchmark_df, resolved, weights, "_shadow_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    benchmark_scored, _, _, _ = make_profile_score_vectorized(
+        benchmark_df, benchmark_df, resolved, weights, "_shadow_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    return scored, pd.to_numeric(benchmark_scored["_shadow_role_score"], errors="coerce").dropna()
+
 def build_projected_target_profile(
     player_row: pd.Series,
     target_benchmark: pd.DataFrame,
@@ -2431,7 +2456,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players", "Shadow Team"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -5056,6 +5081,238 @@ elif app_page == "Similar Players":
                             )
 
 
+elif app_page == "Shadow Team":
+    st.header("🧩 Shadow Team")
+    st.caption(
+        "Build a role-specific recruitment depth chart from the current season, league, team, age and minutes filters. "
+        "The sidebar Main Position filter is intentionally ignored here so the full XI can be populated."
+    )
+
+    FORMATIONS = {
+        "4-2-3-1": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LDM", "DM", 0.38, 0.45), ("RDM", "DM", 0.62, 0.45),
+            ("LAM", "W", 0.18, 0.66), ("CAM", "AM", 0.50, 0.62), ("RAM", "W", 0.82, 0.66), ("ST", "ST", 0.50, 0.86),
+        ],
+        "4-3-3": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LCM", "CM", 0.28, 0.50), ("DM", "DM", 0.50, 0.43), ("RCM", "CM", 0.72, 0.50),
+            ("LW", "W", 0.18, 0.76), ("ST", "ST", 0.50, 0.84), ("RW", "W", 0.82, 0.76),
+        ],
+        "4-4-2": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LM", "W", 0.14, 0.55), ("LCM", "CM", 0.39, 0.50), ("RCM", "CM", 0.61, 0.50), ("RM", "W", 0.86, 0.55),
+            ("LST", "ST", 0.40, 0.82), ("RST", "ST", 0.60, 0.82),
+        ],
+        "3-4-2-1": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.10, 0.49), ("LCM", "CM", 0.38, 0.47), ("RCM", "CM", 0.62, 0.47), ("RWB", "WB", 0.90, 0.49),
+            ("LAM", "AM", 0.33, 0.68), ("RAM", "AM", 0.67, 0.68), ("ST", "ST", 0.50, 0.86),
+        ],
+        "3-4-3": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.10, 0.49), ("LCM", "CM", 0.38, 0.47), ("RCM", "CM", 0.62, 0.47), ("RWB", "WB", 0.90, 0.49),
+            ("LW", "W", 0.20, 0.76), ("ST", "ST", 0.50, 0.84), ("RW", "W", 0.80, 0.76),
+        ],
+        "3-5-2": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.09, 0.50), ("LCM", "CM", 0.32, 0.49), ("DM", "DM", 0.50, 0.42), ("RCM", "CM", 0.68, 0.49), ("RWB", "WB", 0.91, 0.50),
+            ("LST", "ST", 0.40, 0.82), ("RST", "ST", 0.60, 0.82),
+        ],
+    }
+    ROLE_OPTIONS = {
+        "GK": ["Classic Goalkeeper", "Sweeper Keeper", "Build-Up Keeper"],
+        "CB": ["Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB", "Wide CB (in 3)"],
+        "WCB": ["Wide CB (in 3)", "Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB"],
+        "FB": ["Full-Back", "Inverted Full-Back", "Wing-Back"],
+        "WB": ["Wing-Back", "Full-Back", "Inverted Full-Back"],
+        "DM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder"],
+        "CM": ["Box-to-Box Midfielder", "Deep-Lying Playmaker", "Defensive Midfielder #6", "Playmaker #10"],
+        "AM": ["Playmaker #10", "Creative Forward / False 9", "Inverted Winger", "Classic Winger"],
+        "W": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+        "ST": ["Pressing Forward", "Target Man #9", "Poacher", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+    }
+
+    c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.0, 1.2])
+    with c1:
+        shadow_formation = st.selectbox("Formation", list(FORMATIONS), index=0, key="shadow_formation")
+    with c2:
+        shadow_depth = st.segmented_control(
+            "Profile Depth", ["Core 5", "Balanced 10", "Complete 15"], default="Balanced 10", key="shadow_depth"
+        ) or "Balanced 10"
+    with c3:
+        shadow_top_n = st.selectbox("Candidates per slot", [3, 5], index=0, key="shadow_top_n")
+    with c4:
+        shadow_unique = st.toggle(
+            "Unique starting XI", value=True, key="shadow_unique",
+            help="The #1 player can occupy only one starting slot. Alternatives remain visible in other role shortlists."
+        )
+
+    # Shadow Team uses the current season/league/team/age/minutes universe but must
+    # ignore the sidebar Main Position selection so every tactical line can populate.
+    shadow_pool = df_league.loc[
+        df_league["Team"].isin(selected_teams)
+        & df_league["Age"].between(age_range[0], age_range[1])
+    ].copy()
+    if "Minutes played" in shadow_pool.columns:
+        shadow_pool = shadow_pool.loc[shadow_pool["Minutes played"] >= min_minutes].copy()
+
+    shadow_adjust = st.toggle("Apply league adjustment", value=False, key="shadow_league_adjustment")
+    shadow_reference = None
+    shadow_ref_rating = None
+    shadow_strength = build_league_strength_lookup(
+        tuple(sorted(shadow_pool["League"].dropna().astype(str).unique().tolist())), str(OPTA_LEAGUE_META_PATH)
+    ) if "League" in shadow_pool.columns else pd.DataFrame()
+    if shadow_adjust:
+        if shadow_strength.empty:
+            st.warning("League adjustment is unavailable because the selected leagues could not be mapped to Opta strength.")
+            shadow_adjust = False
+        else:
+            opts = shadow_strength.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+            shadow_reference = st.selectbox("Reference league", opts, key="shadow_reference_league")
+            shadow_ref_rating = float(shadow_strength.loc[shadow_strength["League"].eq(shadow_reference), "rating"].iloc[0])
+
+    st.subheader("Role assignments")
+    slots = FORMATIONS[shadow_formation]
+    role_by_slot = {}
+    role_cols = st.columns(4)
+    for i, (slot, family, _, _) in enumerate(slots):
+        options = ROLE_OPTIONS[family]
+        with role_cols[i % 4]:
+            role_by_slot[slot] = st.selectbox(slot, options, index=0, key=f"shadow_role_{shadow_formation}_{slot}")
+
+    @st.cache_data(show_spinner=False, max_entries=64)
+    def _shadow_score_cached(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, depth: str, coverage: float):
+        return role_score_for_population_depth(score_df, benchmark_df, role, depth, coverage)[0]
+
+    role_results = {}
+    coverage = float(coverage_threshold_pct) / 100.0
+    rating_map = shadow_strength.set_index("League")["rating"] if not shadow_strength.empty else pd.Series(dtype=float)
+
+    with st.spinner("Building Shadow Team…"):
+        for role in sorted(set(role_by_slot.values())):
+            eligible = PROFILE_POSITION_ELIGIBILITY.get(role, [])
+            candidates = shadow_pool.loc[shadow_pool["Main Position"].astype(str).isin(eligible)].copy()
+            benchmark = benchmark_source_global.loc[
+                benchmark_source_global["Main Position"].astype(str).isin(eligible)
+            ].copy()
+            if candidates.empty or benchmark.empty:
+                role_results[role] = pd.DataFrame()
+                continue
+            scored = _shadow_score_cached(candidates, benchmark, role, shadow_depth, coverage).copy()
+            scored["Profile Score"] = pd.to_numeric(scored["_shadow_role_score"], errors="coerce")
+            scored["Selection Score"] = scored["Profile Score"]
+            if shadow_adjust and shadow_ref_rating is not None:
+                scored["Opta League Rating"] = scored["League"].map(rating_map)
+                scored["League-Adjusted Score"] = scored["Profile Score"] + LEAGUE_TRANSLATION_BETA * (
+                    pd.to_numeric(scored["Opta League Rating"], errors="coerce") - shadow_ref_rating
+                )
+                scored["Selection Score"] = scored["League-Adjusted Score"]
+            scored = scored.dropna(subset=["Selection Score"]).sort_values(
+                ["Selection Score", "Minutes played" if "Minutes played" in scored.columns else "Age"],
+                ascending=[False, False], kind="mergesort"
+            )
+            role_results[role] = scored
+
+    # Pick a unique #1 for each slot greedily by the strongest available role score.
+    # Candidate lists themselves are not de-duplicated: they remain true role shortlists.
+    used_players = set()
+    slot_candidates = {}
+    pending = list(slots)
+    if shadow_unique:
+        # Fill the most decisive slots first: whichever currently has the strongest best available candidate.
+        while pending:
+            choices = []
+            for slot_info in pending:
+                slot = slot_info[0]; role = role_by_slot[slot]; rdf = role_results.get(role, pd.DataFrame())
+                avail = rdf.loc[~rdf["Player"].astype(str).isin(used_players)] if not rdf.empty else rdf
+                best = float(avail["Selection Score"].iloc[0]) if not avail.empty else -np.inf
+                choices.append((best, slot_info, avail))
+            _, chosen_info, avail = max(choices, key=lambda x: x[0])
+            slot = chosen_info[0]; role = role_by_slot[slot]; full = role_results.get(role, pd.DataFrame())
+            if not avail.empty:
+                starter = avail.iloc[[0]]
+                pname = str(starter.iloc[0]["Player"])
+                used_players.add(pname)
+                alternatives = full.loc[full["Player"].astype(str).ne(pname)].head(max(0, int(shadow_top_n)-1))
+                slot_candidates[slot] = pd.concat([starter, alternatives], ignore_index=True).head(int(shadow_top_n))
+            else:
+                slot_candidates[slot] = pd.DataFrame()
+            pending.remove(chosen_info)
+    else:
+        for slot, _, _, _ in slots:
+            role = role_by_slot[slot]
+            slot_candidates[slot] = role_results.get(role, pd.DataFrame()).head(int(shadow_top_n)).copy()
+
+    # Recruitment-board pitch. Plotly shapes keep the visual self-contained and responsive.
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=0, x1=1, y0=0, y1=1, line=dict(color="#5f8a73", width=2), fillcolor="#0b2f20", layer="below")
+    fig.add_shape(type="line", x0=0, x1=1, y0=.5, y1=.5, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="circle", x0=.42, x1=.58, y0=.42, y1=.58, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.20, x1=.80, y0=.82, y1=1, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.36, x1=.64, y0=.92, y1=1, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.20, x1=.80, y0=0, y1=.18, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.36, x1=.64, y0=0, y1=.08, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="circle", x0=.494, x1=.506, y0=.494, y1=.506, line=dict(color="#9ab3a4"), fillcolor="#9ab3a4", layer="below")
+
+    for slot, _, x, y in slots:
+        role = role_by_slot[slot]
+        cand = slot_candidates.get(slot, pd.DataFrame())
+        lines = [f"<b>{slot}</b>", f"<span style='font-size:10px'>{role}</span>"]
+        if cand.empty:
+            lines += ["", "No eligible players"]
+        else:
+            for j, (_, r) in enumerate(cand.head(int(shadow_top_n)).iterrows(), start=1):
+                score = r.get("Selection Score", np.nan)
+                player = str(r.get("Player", ""))
+                age = r.get("Age", "")
+                if len(player) > 18: player = player[:17] + "…"
+                prefix = "★" if j == 1 else f"{j}."
+                lines.append(f"{prefix} <b>{player}</b> · {score:.2f} · {age:g}" if pd.notna(age) else f"{prefix} <b>{player}</b> · {score:.2f}")
+        fig.add_annotation(
+            x=x, y=y, text="<br>".join(lines), showarrow=False, align="left",
+            bgcolor="rgba(4,38,25,0.94)", bordercolor="#176a46", borderwidth=1, borderpad=6,
+            font=dict(color="#e7f5ec", size=10), xanchor="center", yanchor="middle",
+        )
+
+    fig.update_xaxes(range=[0,1], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[0,1], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
+    fig.update_layout(
+        height=920, paper_bgcolor="#071d14", plot_bgcolor="#071d14",
+        margin=dict(l=8, r=8, t=18, b=8), showlegend=False,
+        title=dict(text=f"{shadow_formation} · {shadow_depth}" + (f" · adjusted to {shadow_reference}" if shadow_adjust else ""), x=.5, font=dict(color="#e7f5ec")),
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+    st.subheader("Shadow Team shortlists")
+    shortlist_rows = []
+    for slot, _, _, _ in slots:
+        role = role_by_slot[slot]
+        cand = slot_candidates.get(slot, pd.DataFrame())
+        with st.expander(f"{slot} · {role}", expanded=False):
+            if cand.empty:
+                st.info("No eligible players for this slot under the current filters.")
+            else:
+                show_cols = [c for c in ["Player", "Team", "League", "Main Position", "Age", "Minutes played", "Profile Score", "League-Adjusted Score"] if c in cand.columns]
+                view = cand[show_cols].copy()
+                view = view.rename(columns={"Profile Score": shadow_depth})
+                st.dataframe(view, hide_index=True, width="stretch")
+                for rank, (_, r) in enumerate(cand.iterrows(), start=1):
+                    shortlist_rows.append({
+                        "Slot": slot, "Role": role, "Rank": rank, "Player": r.get("Player"), "Team": r.get("Team"),
+                        "League": r.get("League"), "Main Position": r.get("Main Position"), "Age": r.get("Age"),
+                        "Minutes played": r.get("Minutes played"), shadow_depth: r.get("Profile Score"),
+                        "League-Adjusted Score": r.get("League-Adjusted Score", np.nan),
+                    })
+    if shortlist_rows:
+        shadow_export = pd.DataFrame(shortlist_rows)
+        st.download_button(
+            "⬇️ Download Shadow Team shortlist (CSV)", shadow_export.to_csv(index=False),
+            file_name=f"shadow_team_{shadow_formation.replace('-', '')}_{shadow_depth.replace(' ', '_').lower()}.csv",
+            mime="text/csv",
+        )
+
+
 st.markdown("---")
 with st.expander("Methodology & score reliability", expanded=False):
     st.markdown(
@@ -5097,6 +5354,8 @@ not a deterministic forecast.
 **Similar Players.** V1 similarity is a weighted standardized-distance comparison across the canonical
 metrics of the selected role. League strength does not alter Similarity %. Quality is displayed separately as
 Profile Score and League-Adjusted Score, preventing stylistic resemblance from being confused with competitive level.
+
+**Shadow Team.** Formation slots are assigned a canonical role and ranked with the selected Core 5, Balanced 10 or Complete 15 definition. The current season, league, team, age and minutes filters define the recruitment pool; the sidebar Main Position filter is ignored so a complete XI can be built. Optional league adjustment changes selection quality only, using the same β = 0.020 translation model.
 
 **Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
 warns when the benchmark falls below the configured minimum sample size.
