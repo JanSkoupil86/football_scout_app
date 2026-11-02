@@ -948,6 +948,19 @@ def single_player_wheel(
         return go.Figure()
 
     p = profile_df.reset_index(drop=True).copy()
+
+    # Presentation-only ordering: keep KPI families contiguous around the wheel.
+    # The first appearance of a KPI family determines the block order; metrics
+    # retain their original order inside that family. Scoring is untouched.
+    _group_order = p["KPI Group"].drop_duplicates().tolist()
+    _group_rank = {g: i for i, g in enumerate(_group_order)}
+    p["_wheel_group_rank"] = p["KPI Group"].map(_group_rank)
+    p["_wheel_metric_rank"] = np.arange(len(p))
+    p = (
+        p.sort_values(["_wheel_group_rank", "_wheel_metric_rank"], kind="stable")
+         .drop(columns=["_wheel_group_rank", "_wheel_metric_rank"])
+         .reset_index(drop=True)
+    )
     groups = p["KPI Group"].drop_duplicates().tolist()
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
@@ -1032,7 +1045,8 @@ def single_player_wheel(
     n = len(p)
     # Keep each metric equal-width, but insert a small angular gap at KPI boundaries.
     group_seq = p["KPI Group"].tolist()
-    gap_units = 0.48
+    # Larger gaps between KPI blocks make the wheel read as grouped sections.
+    gap_units = 0.95
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -1188,7 +1202,25 @@ def single_player_wheel(
         )
     )
 
-    # KPI group names are intentionally shown only in the legend.
+    # One KPI-family label per contiguous block. This is presentation only and
+    # does not affect percentile/z-score calculations or profile scoring.
+    for group in groups:
+        idx = p.index[p["KPI Group"] == group].tolist()
+        if not idx:
+            continue
+        angles = np.deg2rad(theta[idx])
+        centre_angle = float(np.rad2deg(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))) % 360)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[91.5],
+                theta=[centre_angle],
+                mode="text",
+                text=[f"<b>{group}</b>"],
+                textfont=dict(size=11, color=group_colors[group]),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
 
     # Centre content.
     role_label = subtitle.split("|")[0].strip() if subtitle else ""
@@ -1246,7 +1278,7 @@ def single_player_wheel(
         polar=dict(
             bgcolor="white",
             radialaxis=dict(
-                range=[0, 96],
+                range=[0, 98],
                 visible=False,
             ),
             angularaxis=dict(
@@ -1281,12 +1313,27 @@ def multi_player_profile_wheel(
 
     It deliberately mirrors the single-player profile:
     - identical KPI band architecture;
-    - identical metric order and KPI gaps;
+    - identical KPI-grouped metric order and KPI gaps;
     - identical -2 to +2 z-score mapping;
     - multiple players shown as lines + markers rather than overlapping fills.
     """
     if not players or not metrics:
         return go.Figure()
+
+    # Presentation-only ordering: gather all metrics from the same KPI family
+    # into one contiguous block. Preserve the original KPI-family order and the
+    # original metric order inside each family. Statistical inputs are unchanged.
+    _group_order = []
+    for _m in metrics:
+        _g = kpi_lookup.get(_m, "Profile")
+        if _g not in _group_order:
+            _group_order.append(_g)
+    _group_rank = {g: i for i, g in enumerate(_group_order)}
+    _metric_rank = {m: i for i, m in enumerate(metrics)}
+    metrics = sorted(
+        list(metrics),
+        key=lambda m: (_group_rank.get(kpi_lookup.get(m, "Profile"), 999), _metric_rank[m]),
+    )
 
     display_aliases = {
         "Save rate, %": "Save Rate %",
@@ -1373,7 +1420,9 @@ def multi_player_profile_wheel(
 
     group_seq = [kpi_lookup.get(m, "Profile") for m in metrics]
     n = len(metrics)
-    gap_units = 0.48
+    # Deliberately larger than the old metric-to-metric gap so KPI families
+    # read as separate visual sections.
+    gap_units = 0.95
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -1502,6 +1551,26 @@ def multi_player_profile_wheel(
             )
         )
 
+    # One KPI-family label per contiguous block, positioned just outside the
+    # coloured KPI tiles.
+    for group in groups:
+        idx = [i for i, g in enumerate(group_seq) if g == group]
+        if not idx:
+            continue
+        angles = np.deg2rad(theta[idx])
+        centre_angle = float(np.rad2deg(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))) % 360)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[95.0],
+                theta=[centre_angle],
+                mode="text",
+                text=[f"<b>{group}</b>"],
+                textfont=dict(size=12, color=group_colors[group]),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
     # Centre context mirrors the single-player chart.
     if display_scale == "Percentile":
         centre_text = "<b>Percentile</b><br><span style='font-size:11px'>Higher = better · 50 = median</span>"
@@ -1547,7 +1616,7 @@ def multi_player_profile_wheel(
         polar=dict(
             domain=dict(x=[0.03, 0.97], y=[0.015, 0.915]),
             bgcolor="white",
-            radialaxis=dict(range=[0, 93], visible=False),
+            radialaxis=dict(range=[0, 99], visible=False),
             angularaxis=dict(
                 tickmode="array",
                 tickvals=theta,
