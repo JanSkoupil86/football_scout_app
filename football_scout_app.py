@@ -735,7 +735,7 @@ def build_single_player_profile(
             continue
         records.append(
             {
-                "KPI Group": group,
+                "KPI Group": wheel_kpi_group(metric, group),
                 "Metric": metric,
                 "Raw Value": float(value),
                 "Percentile": float(pct),
@@ -815,7 +815,7 @@ def build_single_player_profile_league_adjusted(
 
         pct = float((bench_adj_z <= player_adj_z).mean() * 100.0)
         records.append({
-            "KPI Group": group,
+            "KPI Group": wheel_kpi_group(metric, group),
             "Metric": metric,
             "Raw Value": float(value),
             "Percentile": pct,
@@ -948,19 +948,6 @@ def single_player_wheel(
         return go.Figure()
 
     p = profile_df.reset_index(drop=True).copy()
-
-    # Presentation-only ordering: keep KPI families contiguous around the wheel.
-    # The first appearance of a KPI family determines the block order; metrics
-    # retain their original order inside that family. Scoring is untouched.
-    _group_order = p["KPI Group"].drop_duplicates().tolist()
-    _group_rank = {g: i for i, g in enumerate(_group_order)}
-    p["_wheel_group_rank"] = p["KPI Group"].map(_group_rank)
-    p["_wheel_metric_rank"] = np.arange(len(p))
-    p = (
-        p.sort_values(["_wheel_group_rank", "_wheel_metric_rank"], kind="stable")
-         .drop(columns=["_wheel_group_rank", "_wheel_metric_rank"])
-         .reset_index(drop=True)
-    )
     groups = p["KPI Group"].drop_duplicates().tolist()
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
@@ -1045,8 +1032,7 @@ def single_player_wheel(
     n = len(p)
     # Keep each metric equal-width, but insert a small angular gap at KPI boundaries.
     group_seq = p["KPI Group"].tolist()
-    # Larger gaps between KPI blocks make the wheel read as grouped sections.
-    gap_units = 0.95
+    gap_units = 0.48
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -1202,25 +1188,7 @@ def single_player_wheel(
         )
     )
 
-    # One KPI-family label per contiguous block. This is presentation only and
-    # does not affect percentile/z-score calculations or profile scoring.
-    for group in groups:
-        idx = p.index[p["KPI Group"] == group].tolist()
-        if not idx:
-            continue
-        angles = np.deg2rad(theta[idx])
-        centre_angle = float(np.rad2deg(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))) % 360)
-        fig.add_trace(
-            go.Scatterpolar(
-                r=[91.5],
-                theta=[centre_angle],
-                mode="text",
-                text=[f"<b>{group}</b>"],
-                textfont=dict(size=11, color=group_colors[group]),
-                hoverinfo="skip",
-                showlegend=False,
-            )
-        )
+    # KPI group names are intentionally shown only in the legend.
 
     # Centre content.
     role_label = subtitle.split("|")[0].strip() if subtitle else ""
@@ -1278,7 +1246,7 @@ def single_player_wheel(
         polar=dict(
             bgcolor="white",
             radialaxis=dict(
-                range=[0, 98],
+                range=[0, 96],
                 visible=False,
             ),
             angularaxis=dict(
@@ -1298,6 +1266,48 @@ def single_player_wheel(
     return fig
 
 
+def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
+    """Return a real KPI family for wheel rendering; never expose generic 'Profile'."""
+    group = str(supplied_group or "").strip()
+    if group and group.lower() != "profile":
+        return group
+
+    # First use the canonical profile-config resolver when available.
+    try:
+        resolved = str(kpi_for_metric(metric) or "").strip()
+        if resolved and resolved.lower() != "profile":
+            return resolved
+    except Exception:
+        pass
+
+    # Defensive fallback for metrics that may sit outside an older KPI map.
+    explicit = {
+        "Save rate, %": "Shot Stopping",
+        "Prevented goals per 90": "Shot Stopping",
+        "Conceded goals per 90": "Shot Stopping",
+        "xG against per 90": "Shot Stopping",
+        "Shots against per 90": "Shot Stopping",
+        "Exits per 90": "Sweeping",
+        "Aerial duels per 90.1": "Sweeping",
+        "Aerial duels won, %": "Sweeping",
+        "Back passes received as GK per 90": "Build-Up",
+        "Passes per 90": "Build-Up",
+        "Accurate passes, %": "Build-Up",
+        "Forward passes per 90": "Build-Up",
+        "Accurate forward passes, %": "Build-Up",
+        "Progressive passes per 90": "Distribution",
+        "Accurate progressive passes, %": "Distribution",
+        "Long passes per 90": "Distribution",
+        "Accurate long passes, %": "Distribution",
+    }
+    if metric in explicit:
+        return explicit[metric]
+
+    # Generic label is intentionally not 'Profile' so the wheel legend/band
+    # remains KPI-oriented even for a future unmapped metric.
+    return "Other KPI"
+
+
 def multi_player_profile_wheel(
     raw_table: pd.DataFrame,
     z_table: pd.DataFrame,
@@ -1313,27 +1323,12 @@ def multi_player_profile_wheel(
 
     It deliberately mirrors the single-player profile:
     - identical KPI band architecture;
-    - identical KPI-grouped metric order and KPI gaps;
+    - identical metric order and KPI gaps;
     - identical -2 to +2 z-score mapping;
     - multiple players shown as lines + markers rather than overlapping fills.
     """
     if not players or not metrics:
         return go.Figure()
-
-    # Presentation-only ordering: gather all metrics from the same KPI family
-    # into one contiguous block. Preserve the original KPI-family order and the
-    # original metric order inside each family. Statistical inputs are unchanged.
-    _group_order = []
-    for _m in metrics:
-        _g = kpi_lookup.get(_m, "Profile")
-        if _g not in _group_order:
-            _group_order.append(_g)
-    _group_rank = {g: i for i, g in enumerate(_group_order)}
-    _metric_rank = {m: i for i, m in enumerate(metrics)}
-    metrics = sorted(
-        list(metrics),
-        key=lambda m: (_group_rank.get(kpi_lookup.get(m, "Profile"), 999), _metric_rank[m]),
-    )
 
     display_aliases = {
         "Save rate, %": "Save Rate %",
@@ -1397,7 +1392,7 @@ def multi_player_profile_wheel(
     labels = [display_aliases.get(m, m) for m in metrics]
     groups = []
     for m in metrics:
-        g = kpi_lookup.get(m, "Profile")
+        g = wheel_kpi_group(m, kpi_lookup.get(m))
         if g not in groups:
             groups.append(g)
 
@@ -1418,11 +1413,9 @@ def multi_player_profile_wheel(
     ]
     group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
 
-    group_seq = [kpi_lookup.get(m, "Profile") for m in metrics]
+    group_seq = [wheel_kpi_group(m, kpi_lookup.get(m)) for m in metrics]
     n = len(metrics)
-    # Deliberately larger than the old metric-to-metric gap so KPI families
-    # read as separate visual sections.
-    gap_units = 0.95
+    gap_units = 0.48
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -1527,7 +1520,7 @@ def multi_player_profile_wheel(
             raw.to_numpy(dtype=float),
             z.to_numpy(dtype=float),
             pct.to_numpy(dtype=float),
-            np.array([kpi_lookup.get(m, "Profile") for m in metrics], dtype=object),
+            np.array([wheel_kpi_group(m, kpi_lookup.get(m)) for m in metrics], dtype=object),
             np.array(labels, dtype=object),
         ])
 
@@ -1548,26 +1541,6 @@ def multi_player_profile_wheel(
                     "Percentile: %{customdata[2]:.0f}<br>"
                     "Z-score: %{customdata[1]:+.2f}<extra></extra>"
                 ),
-            )
-        )
-
-    # One KPI-family label per contiguous block, positioned just outside the
-    # coloured KPI tiles.
-    for group in groups:
-        idx = [i for i, g in enumerate(group_seq) if g == group]
-        if not idx:
-            continue
-        angles = np.deg2rad(theta[idx])
-        centre_angle = float(np.rad2deg(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))) % 360)
-        fig.add_trace(
-            go.Scatterpolar(
-                r=[95.0],
-                theta=[centre_angle],
-                mode="text",
-                text=[f"<b>{group}</b>"],
-                textfont=dict(size=12, color=group_colors[group]),
-                hoverinfo="skip",
-                showlegend=False,
             )
         )
 
@@ -1616,7 +1589,7 @@ def multi_player_profile_wheel(
         polar=dict(
             domain=dict(x=[0.03, 0.97], y=[0.015, 0.915]),
             bgcolor="white",
-            radialaxis=dict(range=[0, 99], visible=False),
+            radialaxis=dict(range=[0, 93], visible=False),
             angularaxis=dict(
                 tickmode="array",
                 tickvals=theta,
@@ -2477,7 +2450,7 @@ def role_fit_detail_wheel(
     for metric in metrics:
         if metric not in canonical_order:
             canonical_order.append(metric)
-            resolved_to_kpi.setdefault(metric, "Profile")
+            resolved_to_kpi.setdefault(metric, wheel_kpi_group(metric))
 
     rows = []
     for metric in canonical_order:
@@ -2497,7 +2470,7 @@ def role_fit_detail_wheel(
             )
 
         rows.append({
-            "KPI Group": resolved_to_kpi.get(metric, "Profile"),
+            "KPI Group": wheel_kpi_group(metric, resolved_to_kpi.get(metric)),
             "Metric": metric,
             "Raw Value": raw_value,
             "Percentile": pct_value,
@@ -2634,90 +2607,7 @@ if df_league.empty:
     st.warning("No players found for selected seasons/leagues.")
     st.stop()
 
-# Nationality / passport eligibility filters.
-# Passport is the primary recruitment eligibility signal available in the Wyscout export.
-# These presets describe passport/nationality only; they do NOT claim GBE/work-permit eligibility.
-def _nationality_tokens(value):
-    if pd.isna(value):
-        return []
-    text = str(value).strip()
-    if not text:
-        return []
-    # Wyscout exports can contain one or several countries. Support common separators
-    # without splitting country names that contain spaces.
-    return [x.strip() for x in re.split(r"[,;/|]+", text) if x.strip()]
-
-def _country_mask(series, wanted):
-    wanted_cf = {str(x).strip().casefold() for x in wanted if str(x).strip()}
-    if not wanted_cf:
-        return pd.Series(True, index=series.index)
-    return series.apply(lambda v: bool({x.casefold() for x in _nationality_tokens(v)} & wanted_cf))
-
-def _available_country_tokens(series):
-    vals = set()
-    for v in series.dropna():
-        vals.update(_nationality_tokens(v))
-    return sorted(vals, key=lambda x: x.casefold())
-
-UK_PASSPORT_ALIASES = {
-    "England", "Scotland", "Wales", "Northern Ireland",
-    "United Kingdom", "Great Britain", "UK", "British",
-}
-EU_EEA_COUNTRIES = {
-    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic", "Czechia",
-    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland",
-    "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Poland",
-    "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden",
-    "Iceland", "Liechtenstein", "Norway",
-}
-
-with st.sidebar.expander("Nationality / Passport", expanded=False):
-    nationality_preset = st.selectbox(
-        "Nationality preset",
-        ["None", "UK Passport", "EU / EEA Passport", "Custom"],
-        index=0,
-        key="nationality_preset",
-        help=(
-            "Passport filters use Wyscout Passport country. UK Passport is not the same as UK GBE/work-permit eligibility."
-        ),
-    )
-
-    passport_options = _available_country_tokens(df_league["Passport country"]) if "Passport country" in df_league.columns else []
-    birth_options = _available_country_tokens(df_league["Birth country"]) if "Birth country" in df_league.columns else []
-
-    selected_passports = []
-    selected_birth_countries = []
-    if nationality_preset == "Custom":
-        selected_passports = st.multiselect(
-            "Passport country", passport_options, default=[], key="passport_country_filter",
-            help="Multiple selections use OR logic. Players with any selected passport are included.",
-        )
-        selected_birth_countries = st.multiselect(
-            "Birth country", birth_options, default=[], key="birth_country_filter",
-            help="Optional. Multiple selections use OR logic.",
-        )
-    elif nationality_preset == "UK Passport":
-        st.caption("Includes British/UK passport labels such as England, Scotland, Wales and Northern Ireland when present in Wyscout.")
-    elif nationality_preset == "EU / EEA Passport":
-        st.caption("Includes EU member states plus Iceland, Liechtenstein and Norway. Switzerland is not included.")
-
-_nat_mask = pd.Series(True, index=df_league.index)
-if nationality_preset == "UK Passport" and "Passport country" in df_league.columns:
-    _nat_mask &= _country_mask(df_league["Passport country"], UK_PASSPORT_ALIASES)
-elif nationality_preset == "EU / EEA Passport" and "Passport country" in df_league.columns:
-    _nat_mask &= _country_mask(df_league["Passport country"], EU_EEA_COUNTRIES)
-elif nationality_preset == "Custom":
-    if selected_passports and "Passport country" in df_league.columns:
-        _nat_mask &= _country_mask(df_league["Passport country"], selected_passports)
-    if selected_birth_countries and "Birth country" in df_league.columns:
-        _nat_mask &= _country_mask(df_league["Birth country"], selected_birth_countries)
-
-df_league = df_league.loc[_nat_mask].copy()
-if df_league.empty:
-    st.warning("No players match the selected nationality/passport filters.")
-    st.stop()
-
-# Team / Position — after nationality filtering, options reflect the eligible recruitment pool.
+# Team / Position — unchanged. After leagues are chosen, Team defaults to ALL.
 teams = sorted(df_league["Team"].dropna().unique().tolist())
 positions = sorted(df_league["Main Position"].dropna().unique().tolist())
 selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
@@ -2834,8 +2724,6 @@ if "Minutes played" in df_league.columns:
 
 filtered_base = df_league.loc[mask]
 st.sidebar.markdown(f"**Players matching filters: {len(filtered_base)}**")
-if nationality_preset != "None":
-    st.sidebar.caption(f"Nationality filter: {nationality_preset}")
 if filtered_base.empty:
     st.warning("No players match the selected filters.")
     st.stop()
@@ -3925,7 +3813,8 @@ elif app_page in ("Single Player", "Multi Player"):
                 filtered.columns.tolist(),
             )
             radar_kpi_lookup = {
-                metric: kpi for kpi, metric in single_player_profile_for_depth(selected_radar_profile)
+                metric: wheel_kpi_group(metric, kpi)
+                for kpi, metric in single_player_profile_for_depth(selected_radar_profile)
             }
 
             st.caption(
