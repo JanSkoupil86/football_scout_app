@@ -948,7 +948,14 @@ def single_player_wheel(
         return go.Figure()
 
     p = profile_df.reset_index(drop=True).copy()
-    groups = p["KPI Group"].drop_duplicates().tolist()
+    # Canonical KPI assignment + stable block ordering. The first KPI family
+    # encountered keeps its place, while every metric in that family is moved
+    # next to it. Metrics inside each family retain their original order.
+    p["KPI Group"] = [wheel_kpi_group(m, g) for m, g in zip(p["Metric"], p["KPI Group"])]
+    group_order = list(dict.fromkeys(p["KPI Group"].tolist()))
+    p["_kpi_order"] = pd.Categorical(p["KPI Group"], categories=group_order, ordered=True)
+    p = p.sort_values("_kpi_order", kind="stable").drop(columns="_kpi_order").reset_index(drop=True)
+    groups = group_order
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
     # Avoid traffic-light red/green/orange semantics.
@@ -1267,20 +1274,9 @@ def single_player_wheel(
 
 
 def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
-    """Return a real KPI family for wheel rendering; never expose generic 'Profile'."""
-    group = str(supplied_group or "").strip()
-    if group and group.lower() != "profile":
-        return group
-
-    # First use the canonical profile-config resolver when available.
-    try:
-        resolved = str(kpi_for_metric(metric) or "").strip()
-        if resolved and resolved.lower() != "profile":
-            return resolved
-    except Exception:
-        pass
-
-    # Defensive fallback for metrics that may sit outside an older KPI map.
+    """Return the canonical KPI family used to build contiguous wheel blocks."""
+    # Known metrics are mapped canonically FIRST. This prevents an older profile
+    # definition from putting (for example) GK Back Passes into Sweeping.
     explicit = {
         "Save rate, %": "Shot Stopping",
         "Prevented goals per 90": "Shot Stopping",
@@ -1303,8 +1299,18 @@ def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
     if metric in explicit:
         return explicit[metric]
 
-    # Generic label is intentionally not 'Profile' so the wheel legend/band
-    # remains KPI-oriented even for a future unmapped metric.
+    # For non-GK / future metrics, keep the profile's real KPI assignment.
+    group = str(supplied_group or "").strip()
+    if group and group.lower() != "profile":
+        return group
+
+    try:
+        resolved = str(kpi_for_metric(metric) or "").strip()
+        if resolved and resolved.lower() != "profile":
+            return resolved
+    except Exception:
+        pass
+
     return "Other KPI"
 
 
@@ -1389,12 +1395,21 @@ def multi_player_profile_wheel(
         "Fouls suffered per 90": "Fouls Won /90",
     }
 
-    labels = [display_aliases.get(m, m) for m in metrics]
-    groups = []
-    for m in metrics:
+    # Build TRUE contiguous KPI blocks. First-seen KPI family order is preserved;
+    # metrics retain their original order inside each family. Because all data
+    # tables are accessed by metric column name, reordering this list also keeps
+    # every player's values aligned correctly.
+    original_metrics = list(metrics)
+    first_seen_groups = []
+    metric_group = {}
+    for m in original_metrics:
         g = wheel_kpi_group(m, kpi_lookup.get(m))
-        if g not in groups:
-            groups.append(g)
+        metric_group[m] = g
+        if g not in first_seen_groups:
+            first_seen_groups.append(g)
+    metrics = [m for g in first_seen_groups for m in original_metrics if metric_group[m] == g]
+    labels = [display_aliases.get(m, m) for m in metrics]
+    groups = first_seen_groups
 
     # Neutral categorical palette: colour = KPI family, NOT performance quality.
     # Avoid traffic-light red/green/orange semantics.
