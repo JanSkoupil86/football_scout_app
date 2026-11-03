@@ -4107,15 +4107,15 @@ elif app_page in ("Single Player", "Multi Player"):
         radar_kpi_lookup: Dict[str, str] = {}
 
         if radar_metric_mode == "Profile metrics":
-            profile_names = list(PROFILES.keys())
-            default_profile_index = profile_names.index(active_builtin_profile) if active_builtin_profile in profile_names else 0
-            selected_radar_profile = st.selectbox(
-                "Comparison profile",
-                options=profile_names,
-                index=default_profile_index,
-                key="multi_radar_profile",
-                help="Uses the active Profile Depth definition for the selected built-in role.",
-            )
+            # Multi Player uses the same live built-in role selected in the sidebar.
+            # There is deliberately no independent comparison-profile widget: one
+            # sidebar role/depth state drives Players, Single Player and Multi Player.
+            selected_radar_profile = st.session_state.get("sidebar_selected_profile") or active_builtin_profile
+            if selected_radar_profile not in PROFILES:
+                selected_radar_profile = next(iter(PROFILES))
+
+            st.markdown("**Comparison profile**")
+            st.info(selected_radar_profile)
 
             requested_compare_metrics = requested_profile_metrics(selected_radar_profile)
             comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
