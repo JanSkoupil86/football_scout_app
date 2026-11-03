@@ -731,15 +731,16 @@ def build_single_player_profile(
             value,
             lower_is_better=lower_better,
         )
-        if pd.isna(value) or pd.isna(pct) or pd.isna(z):
-            continue
+        # Keep the complete selected depth on the wheel. Missing player values are
+        # retained as N/A rather than silently removing the metric and shrinking a
+        # Complete 15 profile to (for example) 10 displayed metrics.
         records.append(
             {
                 "KPI Group": wheel_kpi_group(metric, group),
                 "Metric": metric,
-                "Raw Value": float(value),
-                "Percentile": float(pct),
-                "Z-score": float(z),
+                "Raw Value": float(value) if pd.notna(value) else np.nan,
+                "Percentile": float(pct) if pd.notna(pct) else np.nan,
+                "Z-score": float(z) if pd.notna(z) else np.nan,
             }
         )
 
@@ -1085,16 +1086,18 @@ def single_player_wheel(
 
     if scale_mode == "Percentile":
         values = np.clip(p["Percentile"].to_numpy(dtype=float), 0, 100)
-        marker_r = perf_inner + (values / 100.0) * perf_span
-        value_text = [f"{int(round(v))}" for v in values]
+        valid_values = np.isfinite(values)
+        marker_r = np.where(valid_values, perf_inner + (values / 100.0) * perf_span, perf_inner)
+        value_text = [f"{int(round(v))}" if np.isfinite(v) else "N/A" for v in values]
         scale_ticks = [0, 25, 50, 75, 100]
         scale_r = [perf_inner + (v / 100.0) * perf_span for v in scale_ticks]
         scale_text = [str(v) for v in scale_ticks]
     else:
         raw_z = p["Z-score"].to_numpy(dtype=float)
+        valid_values = np.isfinite(raw_z)
         clipped = np.clip(raw_z, -2.0, 2.0)
-        marker_r = perf_inner + ((clipped + 2.0) / 4.0) * perf_span
-        value_text = [f"{v:+.2f}" for v in raw_z]
+        marker_r = np.where(valid_values, perf_inner + ((clipped + 2.0) / 4.0) * perf_span, perf_inner)
+        value_text = [f"{v:+.2f}" if np.isfinite(v) else "N/A" for v in raw_z]
         scale_ticks = [-2, -1, 0, 1, 2]
         scale_r = [perf_inner + ((v + 2.0) / 4.0) * perf_span for v in scale_ticks]
         scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
@@ -2890,6 +2893,10 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
 
     if mode == "Built-in":
         profile_name = st.selectbox("Choose profile", list(PROFILES.keys()))
+        # One source of truth for profile-dependent workspaces. Selecting a built-in
+        # role in the sidebar immediately becomes the preferred workspace role; the
+        # Apply button still controls the weighted Players-table score/filter setup.
+        st.session_state["sidebar_selected_profile"] = profile_name
 
         depth = st.segmented_control(
             "Profile Depth",
@@ -4165,9 +4172,10 @@ elif app_page in ("Single Player", "Multi Player"):
                 "Single-player profile metric policy issue: "
                 + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
             )
+        _single_depth_label = st.session_state.get("profile_depth_global", "Complete 15")
         st.caption(
-            "15 role-specific normalized metrics grouped by KPI family. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
-            "Built-in Profile Scores use these same 15 role metrics with reviewed weights; the wheel itself remains unweighted. Percentiles and z-scores are direction-aware."
+            f"{_single_depth_label} role metrics grouped into contiguous KPI families. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
+            "The wheel follows the same active profile depth as the sidebar and remains unweighted; percentiles and z-scores are direction-aware."
         )
 
         single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
@@ -4183,11 +4191,15 @@ elif app_page in ("Single Player", "Multi Player"):
                     key="single_profile_player",
                 )
             with c2:
-                single_role = st.selectbox(
-                    "Role / profile",
-                    options=list(SINGLE_PLAYER_PROFILES.keys()),
-                    key="single_profile_role",
-                )
+                # Single Player inherits the role selected in the sidebar. No second
+                # manual role selection is required. Prefer the live sidebar choice,
+                # then the applied profile, then the first canonical role.
+                _active_for_single = st.session_state.get("active_profile") or {}
+                single_role = st.session_state.get("sidebar_selected_profile") or _active_for_single.get("profile_name")
+                if single_role not in SINGLE_PLAYER_PROFILES:
+                    single_role = next(iter(SINGLE_PLAYER_PROFILES))
+                st.markdown("**Role / profile**")
+                st.info(single_role)
 
             player_rows = filtered.loc[filtered["Player"] == single_player].copy()
             if "Minutes played" in player_rows.columns:
