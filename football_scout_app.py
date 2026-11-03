@@ -275,23 +275,180 @@ def requested_profile_weights(role_name: str) -> List[int]:
         return [int(x) for x in active.get("weights_pct", [])]
     return profile_definition(role_name, depth)[1]
 
+# Role-specific KPI architecture for the profile wheels.
+# Design rules: 3-5 football-readable groups per Complete 15 profile,
+# no generic catch-all group, and at least two Complete-15 metrics per group.
+ROLE_KPI_GROUPS = {
+    "Classic Goalkeeper": {
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90", "Clean sheets"],
+        "Area Control": ["Exits per 90", "Aerial duels won, %", "Aerial duels per 90.1"],
+        "Distribution": ["Accurate long passes, %", "Long passes per 90", "Progressive passes per 90"],
+        "Build-Up": ["Back passes received as GK per 90", "Accurate passes, %", "Accurate forward passes, %"],
+    },
+    "Sweeper Keeper": {
+        "Sweeping": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %"],
+        "Distribution": ["Progressive passes per 90", "Accurate long passes, %", "Long passes per 90"],
+        "Build-Up": ["Back passes received as GK per 90", "Accurate forward passes, %", "Accurate passes, %", "Passes per 90"],
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    },
+    "Build-Up Keeper": {
+        "Build-Up": ["Accurate passes, %", "Accurate forward passes, %", "Back passes received as GK per 90", "Passes per 90"],
+        "Distribution": ["Accurate long passes, %", "Progressive passes per 90", "Long passes per 90"],
+        "Area Control": ["Exits per 90", "Aerial duels won, %", "Aerial duels per 90.1"],
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    },
+    "Ball-Playing CB": {
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Distribution": ["Accurate long passes, %", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "Successful defensive actions per 90", "PAdj Sliding tackles"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Ball Carrying": ["Progressive runs per 90", "Accurate passes, %"],
+    },
+    "Combative CB / Stopper": {
+        "Defending": ["Defensive duels per 90", "Defensive duels won, %", "PAdj Interceptions", "PAdj Sliding tackles", "Successful defensive actions per 90"],
+        "Aerial": ["Aerial duels per 90", "Aerial duels won, %"],
+        "Build-Up": ["Accurate passes, %", "Progressive passes per 90", "Accurate progressive passes, %"],
+        "Progression": ["Forward passes per 90", "Long passes per 90", "Progressive runs per 90"],
+        "Box Defence & Discipline": ["Shots blocked per 90", "Fouls per 90"],
+    },
+    "Libero / Middle Pin CB": {
+        "Build-Up": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %"],
+        "Distribution": ["Long passes per 90", "Passes to final third per 90", "Accurate forward passes, %", "Forward passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "Successful defensive actions per 90", "PAdj Sliding tackles"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Ball Carrying": ["Progressive runs per 90", "Received passes per 90"],
+    },
+    "Wide CB (in 3)": {
+        "Ball Carrying": ["Progressive runs per 90", "Accelerations per 90", "Dribbles per 90", "Successful dribbles, %"],
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Defending": ["Defensive duels won, %", "PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels per 90"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Distribution": ["Accurate long passes, %", "Accurate forward passes, %"],
+    },
+    "Defensive Midfielder #6": {
+        "Ball Winning": ["PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels won, %", "PAdj Sliding tackles", "Fouls per 90"],
+        "Possession Security": ["Accurate passes, %", "Received passes per 90"],
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate forward passes, %"],
+        "Distribution": ["Forward passes per 90", "Long passes per 90"],
+        "Mobility & Aerial": ["Progressive runs per 90", "Aerial duels won, %"],
+    },
+    "Deep-Lying Playmaker": {
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Distribution": ["Accurate long passes, %", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Possession Security": ["Accurate passes, %", "Received passes per 90"],
+        "Chance Creation": ["Key passes per 90", "xA per 90", "Smart passes per 90"],
+        "Defensive Support": ["PAdj Interceptions", "Defensive duels won, %", "Progressive runs per 90"],
+    },
+    "Box-to-Box Midfielder": {
+        "Mobility": ["Progressive runs per 90", "Accelerations per 90", "Progressive passes per 90", "Accurate progressive passes, %"],
+        "Defensive Work": ["Successful defensive actions per 90", "Defensive duels won, %", "PAdj Interceptions"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Passes to final third per 90"],
+        "Duels": ["Offensive duels won, %", "Aerial duels won, %"],
+    },
+    "Playmaker #10": {
+        "Chance Creation": ["xA per 90", "Key passes per 90", "Shot assists per 90", "Deep completions per 90"],
+        "Creative Passing": ["Smart passes per 90", "Accurate smart passes, %", "Through passes per 90", "Passes to penalty area per 90"],
+        "Progression": ["Progressive passes per 90", "Progressive runs per 90", "Successful dribbles, %"],
+        "Box Threat": ["Touches in box per 90", "xG per 90"],
+        "Link Play": ["Received passes per 90", "Offensive duels won, %"],
+    },
+    "Full-Back": {
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "Defending": ["Defensive duels won, %", "PAdj Interceptions", "Successful defensive actions per 90", "Aerial duels won, %"],
+        "Progression": ["Progressive passes per 90", "Accurate progressive passes, %", "Progressive runs per 90", "Accurate forward passes, %"],
+        "1v1 & Mobility": ["Accelerations per 90", "Dribbles per 90", "Successful dribbles, %"],
+    },
+    "Wing-Back": {
+        "Progression": ["Progressive runs per 90", "Accelerations per 90", "Progressive passes per 90"],
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Box & Creation": ["Touches in box per 90", "xA per 90", "Shot assists per 90"],
+        "Defensive Work": ["Defensive duels won, %", "Successful defensive actions per 90"],
+    },
+    "Inverted Full-Back": {
+        "Build-Up": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %", "Received passes per 90"],
+        "Progressive Passing": ["Passes to final third per 90", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "PAdj Sliding tackles", "Successful defensive actions per 90"],
+        "Progression & Creation": ["Progressive runs per 90", "Key passes per 90", "xA per 90"],
+    },
+    "Classic Winger": {
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Dribbles per 90", "Successful dribbles, %", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+    },
+    "Inverted Winger": {
+        "Finishing": ["xG per 90", "Non-penalty goals per 90", "Shots per 90", "Shots on target, %", "Goal conversion, %"],
+        "Box Threat": ["Touches in box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90"],
+    },
+    "Target Man #9": {
+        "Aerial & Duels": ["Aerial duels won, %", "Aerial duels per 90", "Offensive duels won, %", "Fouls suffered per 90"],
+        "Target Play": ["Received long passes per 90", "Received passes per 90", "Accurate passes, %"],
+        "Box Threat & Finishing": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90", "Shots per 90", "Head goals per 90"],
+        "Link Play": ["Shot assists per 90", "Key passes per 90", "Passes to penalty area per 90"],
+    },
+    "Poacher": {
+        "Finishing": ["Non-penalty goals per 90", "xG per 90", "Shots per 90", "Goal conversion, %", "Shots on target, %", "Head goals per 90"],
+        "Box Threat": ["Touches in box per 90", "Received passes per 90"],
+        "Movement": ["Progressive runs per 90", "Accelerations per 90"],
+        "Duels & 1v1": ["Offensive duels won, %", "Fouls suffered per 90", "Successful dribbles, %"],
+        "Creation": ["xA per 90", "Shot assists per 90"],
+    },
+    "Pressing Forward": {
+        "Defensive Work": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Fouls per 90"],
+        "Duels": ["Offensive duels per 90", "Offensive duels won, %", "Fouls suffered per 90"],
+        "Movement": ["Progressive runs per 90", "Received passes per 90"],
+        "Box Threat": ["xG per 90", "Touches in box per 90", "Shots per 90"],
+        "End Product & Link": ["Non-penalty goals per 90", "Shot assists per 90", "Passes to penalty area per 90"],
+    },
+    "Creative Forward / False 9": {
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90", "Deep completions per 90"],
+        "Link Play": ["Received passes per 90", "Accurate passes, %", "Smart passes per 90", "Progressive passes per 90"],
+        "1v1 & Progression": ["Successful dribbles, %", "Progressive runs per 90", "Offensive duels won, %"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90", "Passes to penalty area per 90"],
+    },
+    "Wide Forward / Inside 9": {
+        "Finishing": ["xG per 90", "Non-penalty goals per 90", "Shots per 90", "Shots on target, %", "Goal conversion, %"],
+        "Box Threat": ["Touches in box per 90", "Passes to penalty area per 90", "Received passes per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Creation": ["xA per 90", "Shot assists per 90"],
+    },
+}
+
+# Flattened exact metric -> KPI lookup for each role. If a metric is accidentally
+# listed in two groups, the FIRST group above wins; validation below flags duplicates.
+ROLE_KPI_LOOKUP = {
+    role: {metric: group for group, metrics in groups.items() for metric in metrics}
+    for role, groups in ROLE_KPI_GROUPS.items()
+}
+
+
 def role_kpi_for_metric(role_name: str, metric: str) -> str:
-    """Return the KPI family for a metric inside THIS role only.
+    """Return the reviewed football-readable KPI family for this role."""
+    group = ROLE_KPI_LOOKUP.get(role_name, {}).get(metric)
+    if group:
+        return group
 
-    KPI assignment must be role-specific. A metric such as Aerial duels won, %
-    can belong to Sweeping for a goalkeeper but Aerial for a centre-back.
-    """
-    for kpi, metric_weights in PROFILE_CONFIG.get(role_name, {}).items():
-        if metric in metric_weights:
-            return str(kpi)
-
-    # Legacy radar definitions are only a role-specific fallback.
-    for kpi, legacy_metric in SINGLE_PLAYER_PROFILES.get(role_name, []):
-        if legacy_metric == metric:
-            return str(kpi)
-
-    return "Other KPI"
-
+    # Custom profiles may introduce a metric outside the reviewed built-in 15.
+    # Keep a readable football label rather than exposing a generic "Other KPI".
+    metric_l = metric.lower()
+    if any(x in metric_l for x in ["xg", "goal", "shot", "touches in box"]):
+        return "End Product"
+    if any(x in metric_l for x in ["xa", "key pass", "shot assist", "through pass", "smart pass", "penalty area", "deep completion"]):
+        return "Chance Creation"
+    if any(x in metric_l for x in ["defensive", "interception", "sliding tackle", "shots blocked"]):
+        return "Defending"
+    if "aerial" in metric_l:
+        return "Aerial"
+    if any(x in metric_l for x in ["dribble", "progressive run", "acceleration"]):
+        return "Progression"
+    return "Passing & Possession"
 
 def single_player_profile_for_depth(role_name: str) -> List[Tuple[str, str]]:
     """Canonical wheel definition for the active profile depth.
@@ -324,9 +481,21 @@ def validate_depth_wheel_framework() -> List[str]:
         if complete[:len(balanced)] != balanced:
             issues.append(f"{role}: Balanced is not nested at the start of Complete.")
 
-        for metric in complete:
-            if role_kpi_for_metric(role, metric) == "Other KPI":
-                issues.append(f"{role}: no role-specific KPI family for {metric}.")
+        groups = ROLE_KPI_GROUPS.get(role, {})
+        assigned = [m for ms in groups.values() for m in ms]
+        missing = [m for m in complete if m not in assigned]
+        duplicates = sorted({m for m in assigned if assigned.count(m) > 1 and m in complete})
+        used_groups = {role_kpi_for_metric(role, m) for m in complete}
+        group_counts = {g: sum(role_kpi_for_metric(role, m) == g for m in complete) for g in used_groups}
+        if missing:
+            issues.append(f"{role}: KPI mapping missing {missing}.")
+        if duplicates:
+            issues.append(f"{role}: metrics assigned to multiple KPI groups {duplicates}.")
+        if not (3 <= len(used_groups) <= 5):
+            issues.append(f"{role}: uses {len(used_groups)} KPI groups; expected 3-5.")
+        singleton = [g for g, n in group_counts.items() if n < 2]
+        if singleton:
+            issues.append(f"{role}: Complete 15 has singleton KPI groups {singleton}.")
     return issues
 
 
@@ -1348,7 +1517,7 @@ def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
     except Exception:
         pass
 
-    return "Other KPI"
+    return "Passing & Possession"
 
 
 def multi_player_profile_wheel(
