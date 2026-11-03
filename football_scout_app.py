@@ -275,9 +275,62 @@ def requested_profile_weights(role_name: str) -> List[int]:
         return [int(x) for x in active.get("weights_pct", [])]
     return profile_definition(role_name, depth)[1]
 
+def role_kpi_for_metric(role_name: str, metric: str) -> str:
+    """Return the KPI family for a metric inside THIS role only.
+
+    KPI assignment must be role-specific. A metric such as Aerial duels won, %
+    can belong to Sweeping for a goalkeeper but Aerial for a centre-back.
+    """
+    for kpi, metric_weights in PROFILE_CONFIG.get(role_name, {}).items():
+        if metric in metric_weights:
+            return str(kpi)
+
+    # Legacy radar definitions are only a role-specific fallback.
+    for kpi, legacy_metric in SINGLE_PLAYER_PROFILES.get(role_name, []):
+        if legacy_metric == metric:
+            return str(kpi)
+
+    return "Other KPI"
+
+
 def single_player_profile_for_depth(role_name: str) -> List[Tuple[str, str]]:
-    wanted = set(requested_profile_metrics(role_name))
-    return [(kpi, metric) for kpi, metric in SINGLE_PLAYER_PROFILES[role_name] if metric in wanted]
+    """Canonical wheel definition for the active profile depth.
+
+    IMPORTANT: the active depth metric list is the source of truth. KPI mappings
+    only classify those metrics; they never decide which metrics survive. This
+    guarantees Core=5, Balanced=10 and Complete=15 whenever the built-in depth
+    itself contains that many metrics.
+    """
+    metrics = requested_profile_metrics(role_name)
+    return [(role_kpi_for_metric(role_name, metric), metric) for metric in metrics]
+
+
+def validate_depth_wheel_framework() -> List[str]:
+    """Audit every built-in role for depth count, nesting and KPI coverage."""
+    issues: List[str] = []
+    for role in CORE_5_METRICS:
+        core = list(CORE_5_METRICS.get(role, []))
+        balanced = list(BALANCED_10_METRICS.get(role, []))
+        complete = list(COMPLETE_15_METRICS.get(role, []))
+
+        if len(core) != 5:
+            issues.append(f"{role}: Core has {len(core)} metrics, expected 5.")
+        if len(balanced) != 10:
+            issues.append(f"{role}: Balanced has {len(balanced)} metrics, expected 10.")
+        if len(complete) != 15:
+            issues.append(f"{role}: Complete has {len(complete)} metrics, expected 15.")
+        if balanced[:len(core)] != core:
+            issues.append(f"{role}: Core is not nested at the start of Balanced.")
+        if complete[:len(balanced)] != balanced:
+            issues.append(f"{role}: Balanced is not nested at the start of Complete.")
+
+        for metric in complete:
+            if role_kpi_for_metric(role, metric) == "Other KPI":
+                issues.append(f"{role}: no role-specific KPI family for {metric}.")
+    return issues
+
+
+DEPTH_WHEEL_FRAMEWORK_ISSUES = validate_depth_wheel_framework()
 
 
 
@@ -1277,36 +1330,17 @@ def single_player_wheel(
 
 
 def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
-    """Return the canonical KPI family used to build contiguous wheel blocks."""
-    # Known metrics are mapped canonically FIRST. This prevents an older profile
-    # definition from putting (for example) GK Back Passes into Sweeping.
-    explicit = {
-        "Save rate, %": "Shot Stopping",
-        "Prevented goals per 90": "Shot Stopping",
-        "Conceded goals per 90": "Shot Stopping",
-        "xG against per 90": "Shot Stopping",
-        "Shots against per 90": "Shot Stopping",
-        "Exits per 90": "Sweeping",
-        "Aerial duels per 90.1": "Sweeping",
-        "Aerial duels won, %": "Sweeping",
-        "Back passes received as GK per 90": "Build-Up",
-        "Passes per 90": "Build-Up",
-        "Accurate passes, %": "Build-Up",
-        "Forward passes per 90": "Build-Up",
-        "Accurate forward passes, %": "Build-Up",
-        "Progressive passes per 90": "Distribution",
-        "Accurate progressive passes, %": "Distribution",
-        "Long passes per 90": "Distribution",
-        "Accurate long passes, %": "Distribution",
-    }
-    if metric in explicit:
-        return explicit[metric]
+    """Return the KPI family supplied by the active role definition.
 
-    # For non-GK / future metrics, keep the profile's real KPI assignment.
+    Never apply a global metric->KPI override here: the same metric can have a
+    different tactical meaning in different roles (for example aerial ability
+    for a goalkeeper versus a centre-back).
+    """
     group = str(supplied_group or "").strip()
-    if group and group.lower() != "profile":
+    if group and group.lower() not in {"profile", "other kpi"}:
         return group
 
+    # Generic fallback is used only when no role-specific group was supplied.
     try:
         resolved = str(kpi_for_metric(metric) or "").strip()
         if resolved and resolved.lower() != "profile":
