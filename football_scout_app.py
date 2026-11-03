@@ -1260,9 +1260,9 @@ def single_player_wheel(
     p["Display Metric"] = labels
 
     n = len(p)
-    # Keep each metric equal-width, but insert a small angular gap at KPI boundaries.
+    # Keep each metric equal-width, with a clearly larger angular gap at KPI boundaries than between metrics inside a KPI block.
     group_seq = p["KPI Group"].tolist()
-    gap_units = 0.48
+    gap_units = 0.90
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -1636,7 +1636,7 @@ def multi_player_profile_wheel(
 
     group_seq = [wheel_kpi_group(m, kpi_lookup.get(m)) for m in metrics]
     n = len(metrics)
-    gap_units = 0.48
+    gap_units = 0.90
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
 
@@ -2314,7 +2314,7 @@ def league_projection_radar(
 
     n = len(p)
     group_seq = p["KPI Group"].tolist()
-    gap_units = 0.48
+    gap_units = 0.90
     boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
     unit = 360.0 / (n + boundaries * gap_units)
     theta, cursor = [], 0.0
