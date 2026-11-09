@@ -2719,7 +2719,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players", "Shadow Team"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players", "Shadow Team", "Player Report"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -5438,6 +5438,12 @@ elif app_page == "Similar Players":
                                 "Similarity %; it is used only for League-Adjusted Score."
                             )
 
+
+elif app_page == "Player Report":
+    from player_report_step45 import render_workspace
+    _report_role = (active or {}).get("profile_name") or st.session_state.get("sidebar_selected_profile")
+    _report_benchmark = benchmark_population_for_role(benchmark_source_global, _report_role, benchmark_mode, selected_positions)
+    render_workspace(filtered, _report_benchmark, active, calc_col_name, LOWER_IS_BETTER, PROFILES, profile_definition)
 
 elif app_page == "Shadow Team":
     st.header("🧩 Shadow Team")
