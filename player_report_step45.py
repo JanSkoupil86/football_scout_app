@@ -1,4 +1,4 @@
-"""Step 45: editable two-page landscape recruitment report workspace.
+"""Step 46: editable single-page landscape recruitment poster workspace.
 Requires Streamlit, pandas, numpy, plotly, reportlab, requests, beautifulsoup4.
 No database: report drafts are portable JSON files.
 """
@@ -19,6 +19,7 @@ import streamlit as st
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import HexColor
 from reportlab.lib.utils import ImageReader
+from poster_step46 import poster_pdf, poster_png
 
 CATEGORIES = ["Physical", "Pace & Speed", "Technical", "Tactical", "Work Rate", "Attitude"]
 VERDICTS = ["Sign Now", "Strong Follow-up", "Monitor", "Decline", "Not Assessed"]
@@ -147,123 +148,9 @@ def _wrap(text, font, size, width, max_lines=None):
         lines[-1]=last+"…"
     return lines
 
-def make_pdf(d, metric_rows, scatter_points):
-    """Two exact 16:9 landscape vector pages; PDF content is user-edited report state."""
-    W,H=960,540
-    buff=io.BytesIO(); c=canvas.Canvas(buff,pagesize=(W,H),pageCompression=1)
-    dark=d.get("theme","Dark")=="Dark"
-    bg=HexColor("#0c1423" if dark else "#f5f7fa")
-    panel=HexColor("#17243a" if dark else "#ffffff")
-    ink=HexColor("#f3f7ff" if dark else "#15243b")
-    muted=HexColor("#a8b8cd" if dark else "#5c6b7e")
-    accent=HexColor("#4dd6b0" if dark else "#087b67")
-    border=HexColor("#30425d" if dark else "#d9e1e9")
-    def text(x,y,s,size=10,bold=False,color=None):
-        c.setFillColor(color or ink); c.setFont("Helvetica-Bold" if bold else "Helvetica",size)
-        # Helvetica is Latin-1: replace unsupported chars, rather than crash on export.
-        c.drawString(x,y,str(s or "").encode("latin-1","replace").decode("latin-1"))
-    def rect(x,y,w,h,color=panel,r=10):
-        c.setFillColor(color);c.roundRect(x,y,w,h,r,stroke=0,fill=1)
-    def block(x,y,w,h,title,body,lines=5,fontsize=9):
-        rect(x,y,w,h);text(x+13,y+h-20,title.upper(),9,True,accent)
-        ty=y+h-38
-        for paragraph in str(body or "Not assessed").splitlines():
-            for line in _wrap(paragraph,"Helvetica",fontsize,w-26):
-                if ty<y+12: return
-                text(x+13,ty,line,fontsize);ty-=fontsize+4
-            ty-=3
-    def page_head(n,title):
-        c.setFillColor(bg);c.rect(0,0,W,H,fill=1,stroke=0)
-        text(28,505,title,21,True)
-        text(28,485,f"{d.get('name','')}  |  {d.get('club','')}  |  {d.get('role','')}",9,color=muted)
-        c.setStrokeColor(border);c.line(28,474,932,474)
-        text(28,14,f"{d.get('organization','')}  |  Scout: {d.get('scout','')}  |  {d.get('report_date','')}  |  CONFIDENTIAL",8,color=muted)
-        text(900,14,f"{n} / 2",8,color=muted)
-    def image_from_b64(key,x,y,w,h):
-        if not d.get(key):return
-        try:
-            raw=base64.b64decode(d[key]); img=ImageReader(io.BytesIO(raw));c.drawImage(img,x,y,w,h,preserveAspectRatio=True,anchor="c",mask="auto")
-        except Exception:pass
-    page_head(1,"PLAYER RECRUITMENT PROFILE")
-    rect(28,382,904,81)
-    image_from_b64("photo_b64",38,392,60,61)
-    text(109,438,d.get("name",""),19,True)
-    text(109,416,f"{d.get('position','')}  |  {d.get('age','')} years  |  {d.get('nationality','')}  |  {d.get('foot','')} foot",10,color=muted)
-    text(109,398,f"{d.get('club','')}  |  Contract: {d.get('contract','Not listed')}  |  Value: {d.get('market_value','Not listed')}",9,color=muted)
-    image_from_b64("badge_b64",857,392,56,60)
-    rect(28,304,440,69)
-    text(42,352,"RECRUITMENT DECISION",9,True,accent)
-    text(42,324,d.get("verdict","Not Assessed"),19,True)
-    text(255,346,f"Current: {d.get('current_ability') or '-'} / 20",10)
-    text(255,328,f"Potential: {d.get('potential') or '-'} / 20",10)
-    text(255,310,f"Projected: {d.get('projected_level') or '-'}",9)
-    rect(478,304,454,69)
-    text(492,351,"ROLE PERFORMANCE",9,True,accent)
-    text(492,330,f"{d.get('role','')}  |  {d.get('depth','')}",11,True)
-    text(492,311,f"Profile score: {d.get('display_score') or 'N/A'}{'*' if d.get('score_is_manual') else ''}   |   Percentile: {d.get('display_percentile') or 'N/A'}{'*' if d.get('percentile_is_manual') else ''}   |   n={d.get('benchmark_n',0)}",9)
-    block(28,172,440,123,"Scouting summary",d.get("summary"),fontsize=9)
-    block(28,83,214,80,"Strengths",d.get("strengths"),fontsize=8)
-    block(252,83,216,80,"Areas to develop",d.get("weaknesses"),fontsize=8)
-    rect(478,83,454,212)
-    text(491,274,"STATISTICAL PROFILE  |  DIRECTION-AWARE PERCENTILES",9,True,accent)
-    if d.get("show_chart",True) and metric_rows:
-        n=min(len(metric_rows),15)
-        cx,cy=700,174; radius=76
-        for i,(name,pct,raw) in enumerate(metric_rows[:n]):
-            angle=2*math.pi*i/n+math.pi/2
-            x2=cx+radius*math.cos(angle);y2=cy+radius*math.sin(angle)
-            c.setStrokeColor(border);c.setLineWidth(2);c.line(cx,cy,x2,y2)
-            px=cx+(radius*pct/100)*math.cos(angle);py=cy+(radius*pct/100)*math.sin(angle)
-            c.setFillColor(accent);c.circle(px,py,3,stroke=0,fill=1)
-        c.setStrokeColor(accent);c.setLineWidth(1.2)
-        for i in range(n):
-            a=2*math.pi*i/n+math.pi/2;b=2*math.pi*((i+1)%n)/n+math.pi/2
-            p=metric_rows[i][1]/100;q=metric_rows[(i+1)%n][1]/100
-            c.line(cx+radius*p*math.cos(a),cy+radius*p*math.sin(a),cx+radius*q*math.cos(b),cy+radius*q*math.sin(b))
-        for i,(name,pct,raw) in enumerate(metric_rows[:n]):
-            col=i//8;row=i%8
-            text(491+col*225,248-row*15,f"{pct:3.0f}  {name[:27]}",7,color=ink)
-    else:text(495,228,"No benchmark metrics available",10,color=muted)
-    c.showPage()
-    page_head(2,"SCOUTING EVIDENCE & ASSESSMENT")
-    if d.get("show_ratings",True):
-        rect(28,319,438,143);text(41,441,"VIDEO SCOUTING RATINGS  |  1-7",9,True,accent)
-        for i,cat in enumerate(CATEGORIES):
-            x=42+(i//3)*208;y=412-(i%3)*35
-            val=int(d.get(f"rating_{cat}",0) or 0)
-            text(x,y,cat,10,True);text(x+142,y,str(val) if val else "-",12,True,accent)
-            c.setStrokeColor(border);c.line(x,y-7,x+165,y-7)
-    else:block(28,319,438,143,"Video ratings","Hidden by report settings")
-    block(476,319,456,143,"Attacking assessment",d.get("attacking"),fontsize=9)
-    block(28,171,438,138,"Defensive assessment",d.get("defensive"),fontsize=9)
-    block(476,171,456,138,"Projection / recruitment fit",f"Projection: {d.get('projection','')}\nFit: {d.get('fit','')}\nAdaptation: {d.get('adaptation','')}\nNext: {d.get('next_action','')}",fontsize=9)
-    if d.get("show_history",True):
-        history="\n".join(f"{m.get('date','')}  {m.get('opponent','')}  {m.get('mode','')}  {m.get('minutes','')} min" for m in d.get("matches",[])[:4])
-        block(28,43,285,119,"Observation log",history or "No matches logged",fontsize=8)
-    else:block(28,43,285,119,"Observation log","Hidden by report settings")
-    if d.get("show_scatters",True) and scatter_points:
-        rect(323,43,290,119);text(336,143,"ROLE SCATTER  |  COHORT",9,True,accent)
-        pts=scatter_points[:2500]
-        xs=np.array([p[0] for p in pts]);ys=np.array([p[1] for p in pts]);
-        xmin,xmax=float(np.nanmin(xs)),float(np.nanmax(xs));ymin,ymax=float(np.nanmin(ys)),float(np.nanmax(ys))
-        if xmax<=xmin:xmax=xmin+1
-        if ymax<=ymin:ymax=ymin+1
-        c.setFillColor(muted)
-        for x,y,target in pts:
-            xx=337+255*(x-xmin)/(xmax-xmin);yy=57+66*(y-ymin)/(ymax-ymin)
-            c.setFillColor(accent if target else muted);c.circle(xx,yy,3.2 if target else 1.1,fill=1,stroke=0)
-        text(337,47,str(d.get("scatter_x",""))[:22],7,color=muted)
-    else:block(323,43,290,119,"Scatter","Not available")
-    notes=("Risks: "+d.get("risks","")) if d.get("show_risks",True) else "Risks hidden"
-    notes+="\nData: "+d.get("data_interpretation","")+"\n"+d.get("custom_notes","")
-    block(623,43,309,119,"Risks / evidence notes",notes,fontsize=8)
-    if d.get("score_is_manual") or d.get("percentile_is_manual"):
-        text(680,14,"* Manually overridden analytical value",7,color=muted)
-    c.showPage();c.save();return buff.getvalue()
-
-def render_workspace(filtered, benchmark, active, score_col, lower_is_better, profiles, profile_definition):
-    st.subheader("Player Report · Two-page landscape")
-    st.caption("Every field is editable. Imported information never changes the original Wyscout CSV. Save drafts as JSON; export two 16:9 PDF pages.")
+def render_workspace(filtered, benchmark, active, score_col, lower_is_better, profiles, profile_definition, role_kpi_groups=None):
+    st.subheader("Player Report · One-page Scouting Poster")
+    st.caption("Dark 16:9 recruitment poster · editable Wyscout/Transfermarkt fields · video scouting notes · PDF and PNG export.")
     if filtered.empty or "Player" not in filtered:
         st.warning("No players in the current filters.");return
     choices=filtered.reset_index(drop=True)
@@ -335,10 +222,11 @@ def render_workspace(filtered, benchmark, active, score_col, lower_is_better, pr
         st.caption(f"Active role: {role} · Depth: {depth} (synchronized with sidebar)")
         d["score_override"]=st.text_input("Display Profile Score override (optional; clearly labeled)",str(d.get("score_override","")))
         d["percentile_override"]=st.text_input("Display percentile override (optional; clearly labeled)",str(d.get("percentile_override","")))
-        d["theme"]=st.radio("Report theme",["Dark","Light"],index=0 if d.get("theme")=="Dark" else 1,horizontal=True)
+        d["theme"]="Dark"
+        st.caption("Poster theme: Dark (fixed for Step 46).")
         a,b,c,dcol=st.columns(4)
         d["show_chart"]=a.checkbox("KPI wheel",value=bool(d.get("show_chart",True)))
-        d["show_scatters"]=b.checkbox("Scatter",value=bool(d.get("show_scatters",True)))
+        d["show_scatters"]=b.checkbox("Retain scatter settings in draft (not on poster)",value=bool(d.get("show_scatters",True)))
         d["show_ratings"]=c.checkbox("Video ratings",value=bool(d.get("show_ratings",True)))
         d["show_history"]=dcol.checkbox("Observation log",value=bool(d.get("show_history",True)))
         d["show_risks"]=st.checkbox("Recruitment risks",value=bool(d.get("show_risks",True)))
@@ -396,7 +284,7 @@ def render_workspace(filtered, benchmark, active, score_col, lower_is_better, pr
             yv=pd.to_numeric(pd.Series([row[m2]]),errors="coerce").iloc[0]
             if np.isfinite(xv) and np.isfinite(yv):scatter_points.append((float(xv),float(yv),True))
     st.markdown("### Report preview & exports")
-    st.caption("Page 1: recruitment overview · Page 2: scouting evidence. PDF pages are 960×540 pt (16:9).")
+    st.caption("Single-page 16:9 dark poster. The editor retains full notes; the poster shows the concise recruitment summary.")
     a,b,c=st.columns(3)
     a.metric("Recommendation",d.get("verdict","Not Assessed"))
     b.metric("Profile percentile",d.get("display_percentile") or "N/A")
@@ -406,7 +294,13 @@ def render_workspace(filtered, benchmark, active, score_col, lower_is_better, pr
     draft=json.dumps({"schema":"wyscout_player_report_v1","report":d},ensure_ascii=False,indent=2,default=str).encode("utf-8")
     st.download_button("⬇ Save editable draft (JSON)",draft,file_name="player_report_draft.json",mime="application/json")
     try:
-        pdf=make_pdf(d,metric_rows,scatter_points)
-        st.download_button("⬇ Download two-page landscape PDF",pdf,file_name="player_report.pdf",mime="application/pdf",type="primary")
-        st.caption("PDF is generated from the current editable fields. Missing video observations remain unassessed.")
+        pdf=poster_pdf(d,metric_rows,(role_kpi_groups or {}).get(role,{}))
+        try:
+            png=poster_png(pdf,scale=2)
+            st.image(png,caption="Live poster preview · 1920 × 1080",use_container_width=True)
+            st.download_button("⬇ Download poster PNG (1920 × 1080)",png,file_name="player_scouting_poster.png",mime="image/png")
+        except ImportError:
+            st.info("Install pymupdf to enable the PNG preview and PNG export. PDF export is available below.")
+        st.download_button("⬇ Download one-page poster PDF",pdf,file_name="player_scouting_poster.pdf",mime="application/pdf",type="primary")
+        st.caption("The PDF uses editable scouting text and direction-aware Wyscout percentiles. Video conclusions are never generated from data alone.")
     except Exception as e:st.error(f"PDF generation failed: {e}")
