@@ -5440,10 +5440,10 @@ elif app_page == "Similar Players":
 
 
 elif app_page == "Player Report":
-    from player_report_step45 import render_workspace
+    from player_report_step46 import render_workspace
     _report_role = (active or {}).get("profile_name") or st.session_state.get("sidebar_selected_profile")
     _report_benchmark = benchmark_population_for_role(benchmark_source_global, _report_role, benchmark_mode, selected_positions)
-    render_workspace(filtered, _report_benchmark, active, calc_col_name, LOWER_IS_BETTER, PROFILES, profile_definition)
+    render_workspace(filtered, _report_benchmark, active, calc_col_name, LOWER_IS_BETTER, PROFILES, profile_definition, ROLE_KPI_GROUPS)
 
 elif app_page == "Shadow Team":
     st.header("🧩 Shadow Team")
