@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import json
 import math
-from difflib import SequenceMatcher
+import unicodedata
 from pathlib import Path
 from io import BytesIO, StringIO
 from typing import Dict, List, Tuple
@@ -76,7 +76,7 @@ LOWER_IS_BETTER = {
     "Red cards per 90",
 }
 
-SEASON_RX = re.compile(r"(\d{4})(?:\s*-\s*(\d{2,4}))?$")
+SEASON_RX = re.compile(r"(?<!\S)(\d{4})(?:\s*[-/\u2010-\u2015\u2212]\s*(\d{2}|\d{4}))?$")
 
 
 # =========================
@@ -617,11 +617,10 @@ def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
     def extract_season_label(league_value: object) -> str | None:
         if not isinstance(league_value, str):
             return None
-        parts = league_value.strip().split()
-        if not parts:
-            return None
-        tail = parts[-1]
-        return tail if SEASON_RX.fullmatch(tail) else None
+        match = SEASON_RX.search(league_value.strip())
+        if match:
+            return "-".join(part for part in match.groups() if part is not None)
+        return None
 
     def season_start_end(season_label: str) -> Tuple[int | None, int | None]:
         m = SEASON_RX.fullmatch(season_label)
@@ -2050,119 +2049,233 @@ def build_benchmark_scoring_package(
 LEAGUE_TRANSLATION_BETA = 0.020
 OPTA_LEAGUE_META_PATH = Path(__file__).with_name("league-meta.json")
 
-# Wyscout -> Opta naming exceptions. The matcher still validates these against
-# the bundled Opta league metadata and falls back to conservative fuzzy matching.
-OPTA_LEAGUE_ALIASES = {
-    "england premier league": "English Premier League",
-    "england championship": "English Championship",
-    "england league one": "English League One",
-    "england league two": "English League Two",
-    "england national league": "English National League",
-    "germany bundesliga": "German Bundesliga",
-    "germany 2 bundesliga": "German 2. Bundesliga",
-    "germany 3 liga": "German 3. Liga",
-    "france ligue 1": "French Ligue 1",
-    "france ligue 2": "French Ligue 2",
-    "france championnat national": "French National",
-    "italy serie a": "Italian Serie A",
-    "italy serie b": "Italian Serie B",
-    "spain la liga": "Spanish La Liga",
-    "spain segunda": "Spanish Segunda División",
-    "spain primera division rfef": "Spanish Primera Division RFEF",
-    "netherlands eredivisie": "Dutch Eredivisie",
-    "netherlands eerste divisie": "Dutch Eerste Divisie",
-    "portugal primeira liga": "Portuguese Primeira Liga",
-    "portugal segunda liga": "Portuguese Segunda Liga",
-    "belgium first division a": "Belgian First Division A",
-    "belgium first division b": "Belgian First Division B",
-    "czech fortuna liga": "Czech First League",
-    "czech chance national liga": "FNL",
-    "denmark superliga": "Danish Superligaen",
-    "denmark 1st division": "Danish 1st Division",
-    "norway eliteserien": "Norwegian Eliteserien",
-    "norway first division": "Norwegian 1. divisjon",
-    "sweden allsvenskan": "Swedish Allsvenskan",
-    "sweden superettan": "Swedish Superettan",
-    "finland veikkausliiga": "Finnish Veikkausliiga",
-    "latvia virsliga": "Latvian Virsliga",
-    "usa mls": "US Major League Soccer",
-    "usa mls next pro": "MLS Next Pro",
-    "usa usl championship": "USL Championship",
-    "usa usl league 1": "USL League One",
-    "canada premier league": "Canadian Premier League",
+# Country prefixes used by older and newer Wyscout exports and Opta snapshots.
+OPTA_COUNTRY_ALIASES = {
+    "bosnia": "bosnia and herzegovina",
+    "china": "china pr",
+    "czech": "czechia",
+    "czech republic": "czechia",
+    "ireland": "republic of ireland",
+    "korea": "korea republic",
+    "south korea": "korea republic",
+    "turkey": "turkiye",
+    "united states": "usa",
+    "united states of america": "usa",
+    "us": "usa",
+    "u s a": "usa",
 }
 
+# Exact Wyscout competition keys (after country normalization) to Opta names.
+# Within each tuple, older Opta names serve as fallbacks when the first is absent.
+OPTA_LEAGUE_ALIASES = {
+    "albania abissnet superiore": ("Albanian Kategoria Superiore",),
+    "albania superiore league": ("Albanian Kategoria Superiore",),
+    "argentina liga profesional de futbol": ("Liga Profesional Argentina",),
+    "argentina primera division": ("Liga Profesional Argentina",),
+    "australia a league": ("Australian A-League Men",),
+    "austria bundesliga": ("Austrian Bundesliga",),
+    "belgium challenger pro league": ("Belgian Challenger Pro League", "Belgian First Division B"),
+    "belgium first division a": ("Belgian Jupiler Pro League", "Belgian First Division A"),
+    "belgium first division b": ("Belgian Challenger Pro League", "Belgian First Division B"),
+    "belgium pro league": ("Belgian Jupiler Pro League", "Belgian First Division A"),
+    "bolivia lfpb": ("Bolivia Primera División",),
+    "brazil serie a": ("Brazilian Serie A",),
+    "brazil serie b": ("Brazilian Serie B",),
+    "canada premier league": ("Canadian Premier League",),
+    "chile primera division": ("Chile Primera",),
+    "china pr csl": ("Chinese Super League",),
+    "china pr super league": ("Chinese Super League",),
+    "colombia liga betplay": ("Colombia Primera A",),
+    "croatia 1 hnl": ("Croatia Prva HNL",),
+    "croatia superleague": ("Croatia Prva HNL",),
+    "cyprus 1 division": ("Cypriot Division 1",),
+    "cyprus first division": ("Cypriot Division 1",),
+    "czechia chance liga": ("Czech First League",),
+    "czechia chance national liga": ("FNL",),
+    "czechia fortuna liga": ("Czech First League",),
+    "denmark 1st division": ("Danish 1. Division", "Danish 1st Division"),
+    "denmark superliga": ("Danish Superligaen",),
+    "ecuador serie a": ("Ecuador Liga Pro",),
+    "egypt premier league": ("Egyptian Premier League",),
+    "england championship": ("English Football League - Championship", "English Championship"),
+    "england league one": ("English Football League - League One", "English League One"),
+    "england league two": ("English Football League - League Two", "English League Two"),
+    "england national league": ("English National League",),
+    "england national league north south": ("National League N / S",),
+    "england premier league": ("English Premier League",),
+    "estonia a lecoq premium liiga": ("Estonian Premium liiga",),
+    "estonia meistriliiga": ("Estonian Premium liiga",),
+    "finland veikkausliiga": ("Finnish Veikkausliiga",),
+    "france championnat national": ("French Ligue 3", "French National"),
+    "france ligue 1": ("French Ligue 1",),
+    "france ligue 2": ("French Ligue 2",),
+    "france ligue 3": ("French Ligue 3", "French National"),
+    "georgia erovnuli liga": ("Georgian Premier League",),
+    "germany 2 bundesliga": ("German Bundesliga Zwei", "German 2. Bundesliga"),
+    "germany 3 liga": ("German 3rd Liga", "German 3. Liga"),
+    "germany bundesliga": ("German Bundesliga",),
+    "greece stoiximan super league": ("Greek Super League",),
+    "greece super league": ("Greek Super League",),
+    "hungary nb i": ("Hungarian Liga NB I",),
+    "hungary nb1": ("Hungarian Liga NB I",),
+    "indonesia liga 1": ("Indonesia Super League",),
+    "israel ligat ha al": ("Israeli Ligat Ha'al",),
+    "italy serie a": ("Italian Serie A",),
+    "italy serie b": ("Italian Serie B",),
+    "japan j1 league": ("Japanese J1 League",),
+    "japan j2 league": ("Japanese J2 League",),
+    "japan j3 league": ("Japanese J3 League",),
+    "korea republic k league 1": ("Korean K-League 1",),
+    "korea republic k league 2": ("Korean K-League 2",),
+    "latvia virsliga": ("Latvian Virsliga",),
+    "malaysia super league": ("Malaysian Super League",),
+    "mexico liga de expansion": ("Liga de Expansión MX",),
+    "mexico liga mx": ("Mexican Primera",),
+    "netherlands eerste divisie": ("Dutch Eerste Divisie",),
+    "netherlands eredivisie": ("Dutch Eredivisie",),
+    "norway eliteserien": ("Norwegian Eliteserien",),
+    "norway first division": ("Norwegian 1. divisjon",),
+    "norway obos ligaen": ("Norwegian 1. divisjon",),
+    "paraguay division profesional": ("Paraguay Primera División",),
+    "peru primera division": ("Peru Liga 1",),
+    "poland 1 liga": ("I Liga",),
+    "poland ekstraklasa": ("Polish Ekstraklasa",),
+    "portugal primeira liga": ("Portuguese Primeira Liga",),
+    "portugal segunda liga": ("Portuguese Segunda Liga",),
+    "republic of ireland first division": ("Irish First Division",),
+    "republic of ireland premier division": ("Irish Premier League",),
+    "romania superliga": ("Romania Liga I",),
+    "russia premier league": ("Russian Premier League",),
+    "scotland championship": ("Scottish Championship",),
+    "scotland league one": ("Scottish League One",),
+    "scotland league two": ("Scottish League Two",),
+    "scotland premiership": ("Scottish Premiership",),
+    "serbia super liga": ("Serbian Super Liga",),
+    "slovakia nike liga": ("Slovakia 1. liga",),
+    "slovakia super liga": ("Slovakia 1. liga",),
+    "slovenia 1 snl": ("Slovenia PrvaLiga",),
+    "slovenia prva liga": ("Slovenia PrvaLiga",),
+    "spain la liga": ("Spanish La Liga",),
+    "spain primera division rfef": ("Spanish Primera Division RFEF",),
+    "spain segunda": ("Spanish Segunda Division",),
+    "spain segunda division": ("Spanish Segunda Division",),
+    "sweden allsvenskan": ("Swedish Allsvenskan",),
+    "sweden superettan": ("Swedish Superettan",),
+    "switzerland challenge league": ("dieci Challenge League", "Swiss Challenge League"),
+    "switzerland super league": ("Brack Super League", "Swiss Super League"),
+    "turkiye super lig": ("Turkish Super Lig",),
+    "ukraine ukrainian premier league": ("Ukraine Premier League",),
+    "uruguay primera division": ("Uruguay Liga AUF",),
+    "usa major league soccer": ("US Major League Soccer",),
+    "usa mls": ("US Major League Soccer",),
+    "usa mls next pro": ("MLS Next Pro",),
+    "usa usl league 1": ("USL League One",),
+}
+
+# Opta files the binational A-League Men under New Zealand in this snapshot.
+OPTA_LEAGUE_ADDITIONAL_COUNTRIES = {"australia a league": ("new zealand",)}
+
+
 def _league_identity(label: object) -> str:
-    s = str(label or "").strip()
-    s = re.sub(r"\s+(?:20\d{2}-\d{2}|20\d{2})$", "", s)
-    return s.strip()
+    return SEASON_RX.sub("", label.strip()).strip() if isinstance(label, str) else ""
+
 
 def _league_key(label: object) -> str:
-    s = _league_identity(label).lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    text = unicodedata.normalize("NFKD", _league_identity(label).casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def load_opta_league_meta(path_str: str) -> pd.DataFrame:
     path = Path(path_str)
-    if not path.exists():
-        return pd.DataFrame()
     try:
-        records = json.loads(path.read_text(encoding="utf-8"))
+        records = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(records, list) or not all(isinstance(record, dict) for record in records):
+            raise ValueError("Expected a list of Opta league records")
         out = pd.DataFrame(records)
-        keep = [c for c in ["leagueId", "leagueName", "countryName", "globalRank", "seasonAverageRating", "lastWeekSeasonAverageRating"] if c in out.columns]
-        out = out[keep].copy()
-        out["seasonAverageRating"] = pd.to_numeric(out.get("seasonAverageRating"), errors="coerce")
+        required = {"leagueName", "countryName", "seasonAverageRating"}
+        if not required.issubset(out.columns):
+            raise ValueError("Missing Opta league fields")
+        out["seasonAverageRating"] = pd.to_numeric(out["seasonAverageRating"], errors="coerce")
         out["globalRank"] = pd.to_numeric(out.get("globalRank"), errors="coerce")
-        out = out.dropna(subset=["leagueName", "seasonAverageRating"]).drop_duplicates("leagueId")
+        out = out.loc[np.isfinite(out["seasonAverageRating"])].copy()
         out["_name_key"] = out["leagueName"].map(_league_key)
-        out["_country_key"] = out.get("countryName", pd.Series(index=out.index, dtype=object)).map(_league_key)
-        return out
-    except Exception:
-        return pd.DataFrame()
+        out["_country_key"] = out["countryName"].map(_league_key).replace(OPTA_COUNTRY_ALIASES)
+        out = out.loc[out["_name_key"].ne("") & out["_country_key"].ne("")]
+        if "leagueId" in out.columns:
+            repeated = out["leagueId"].notna() & out["leagueId"].duplicated()
+            out = out.loc[~repeated]
+        if not out.empty:
+            return out
+    except FileNotFoundError:
+        return _opta_load_error(
+            "Place league-meta.json beside the main app file to enable Opta league ratings."
+        )
+    except (OSError, ValueError, TypeError):
+        pass
+    return _opta_load_error("league-meta.json could not be loaded with usable Opta league ratings.")
+
+
+def _opta_load_error(message: str) -> pd.DataFrame:
+    out = pd.DataFrame()
+    out.attrs["load_error"] = message
+    return out
+
 
 def match_wyscout_league_to_opta(wyscout_league: object, opta: pd.DataFrame) -> dict | None:
     if opta.empty:
         return None
-    comp = _league_identity(wyscout_league)
-    key = _league_key(comp)
-    alias_name = OPTA_LEAGUE_ALIASES.get(key)
-    if alias_name:
-        exact = opta.loc[opta["leagueName"].str.casefold().eq(alias_name.casefold())]
-        if not exact.empty:
-            r = exact.iloc[0]
-            return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": 1.0}
 
-    # Conservative fuzzy fallback. Country tokens are rewarded and a low score
-    # is left unmatched rather than forcing a potentially wrong competition.
-    first = key.split(" ")[0] if key else ""
-    best = None
-    for _, r in opta.iterrows():
-        name_key = str(r.get("_name_key", ""))
-        country_key = str(r.get("_country_key", ""))
-        score = SequenceMatcher(None, key, name_key).ratio()
-        if first and (first in name_key.split() or first in country_key.split()):
-            score += 0.08
-        # Also compare after removing the leading Wyscout country token.
-        rest = " ".join(key.split(" ")[1:])
-        if rest:
-            score = max(score, SequenceMatcher(None, rest, name_key).ratio() + (0.05 if first in country_key.split() else 0.0))
-        if best is None or score > best[0]:
-            best = (score, r)
-    if best is None or best[0] < 0.78:
+    key = _league_key(wyscout_league)
+    prefixes = set(opta["_country_key"]) | OPTA_COUNTRY_ALIASES.keys()
+    prefix = max((p for p in prefixes if key.startswith(p + " ")), key=len, default="")
+    if not prefix:
         return None
-    r = best[1]
-    return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": float(min(best[0], 0.99))}
+
+    country = OPTA_COUNTRY_ALIASES.get(prefix, prefix)
+    competition = key[len(prefix) + 1:]
+    canonical_key = f"{country} {competition}"
+    countries = (country, *OPTA_LEAGUE_ADDITIONAL_COUNTRIES.get(canonical_key, ()))
+    candidates = opta.loc[opta["_country_key"].isin(countries)]
+
+    aliases = OPTA_LEAGUE_ALIASES.get(canonical_key)
+    name_keys = [_league_key(name) for name in aliases] if aliases else [canonical_key, competition]
+    for name_key in name_keys:
+        matches = candidates.loc[candidates["_name_key"].eq(name_key)]
+        if len(matches) > 1:
+            return None
+        if len(matches) == 1:
+            match = matches.iloc[0]
+            return {
+                "opta_name": match["leagueName"],
+                "rating": float(match["seasonAverageRating"]),
+                "rank": match["globalRank"],
+                "confidence": 1.0,
+            }
+    return None
+
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) -> pd.DataFrame:
     opta = load_opta_league_meta(path_str)
     rows = []
+    matches_by_key = {}
     for league in league_labels:
-        m = match_wyscout_league_to_opta(league, opta)
-        if m:
-            rows.append({"League": league, **m})
-    return pd.DataFrame(rows)
+        key = _league_key(league)
+        if key not in matches_by_key:
+            matches_by_key[key] = match_wyscout_league_to_opta(league, opta)
+        match = matches_by_key[key]
+        if match is not None:
+            rows.append({"League": league, **match})
+    lookup = pd.DataFrame(rows)
+    lookup.attrs.update(opta.attrs)
+    return lookup
+
+
+def league_strength_unavailable(lookup: pd.DataFrame, unmatched_message: str) -> str:
+    return lookup.attrs.get("load_error", unmatched_message)
+
 
 def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
     requested = requested_profile_metrics(role)
@@ -3518,10 +3631,8 @@ if app_page == "Players":
     league_strength_players = pd.DataFrame()
 
     if calc_col_name and calc_col_name in filtered.columns and "League" in filtered.columns:
-        league_strength_players = build_league_strength_lookup(
-            tuple(sorted(filtered["League"].dropna().astype(str).unique().tolist())),
-            str(OPTA_LEAGUE_META_PATH),
-        )
+        player_leagues = tuple(sorted(filtered["League"].dropna().astype(str).unique().tolist()))
+        league_strength_players = build_league_strength_lookup(player_leagues, str(OPTA_LEAGUE_META_PATH))
         if not league_strength_players.empty:
             league_adjustment_on = st.toggle(
                 "Apply league adjustment",
@@ -3562,8 +3673,14 @@ if app_page == "Players":
                     f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
                     f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
                 )
+                unmapped_leagues = sorted(set(player_leagues) - set(mapped_leagues))
+                if unmapped_leagues:
+                    st.caption("Adjusted scores are unavailable for: " + ", ".join(unmapped_leagues))
         else:
-            st.caption("League adjustment unavailable: none of the currently filtered leagues are mapped to Opta league strength.")
+            st.caption(league_strength_unavailable(
+                league_strength_players,
+                "The currently filtered leagues have no matching competition in the Opta ratings file.",
+            ))
 
     # Position-aware default table columns. All source columns remain available
     # in the selector; this only controls what is shown initially.
@@ -4870,10 +4987,10 @@ elif app_page == "League Projection":
         str(OPTA_LEAGUE_META_PATH),
     )
     if league_strength.empty:
-        st.error(
-            "League Projection requires league-meta.json beside football_scout_app.py. "
-            "Add the supplied Opta league metadata file to the repository."
-        )
+        st.error(league_strength_unavailable(
+            league_strength,
+            "The uploaded leagues have no matching competition in the Opta ratings file.",
+        ))
     else:
         # Player pool follows the scouting filters, while projection benchmarks
         # deliberately ignore team and age filters.
@@ -5534,7 +5651,10 @@ elif app_page == "Shadow Team":
     ) if "League" in shadow_pool.columns else pd.DataFrame()
     if shadow_adjust:
         if shadow_strength.empty:
-            st.warning("League adjustment is unavailable because the selected leagues could not be mapped to Opta strength.")
+            st.warning(league_strength_unavailable(
+                shadow_strength,
+                "The selected leagues have no matching competition in the Opta ratings file.",
+            ))
             shadow_adjust = False
         else:
             opts = shadow_strength.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
