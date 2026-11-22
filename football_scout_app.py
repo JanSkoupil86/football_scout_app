@@ -2839,7 +2839,7 @@ def league_projection_radar(
     current_label: str,
     target_label: str,
     *,
-    club_comparison: bool = False,
+    club_comparison: str | None = None,
 ) -> go.Figure:
     """Single-Player-style scouting wheel overlaying current and projected percentiles."""
     if current_profile.empty or projected_profile.empty:
@@ -2946,7 +2946,7 @@ def league_projection_radar(
 
     has_comparison = np.isfinite(cur_pct).any()
     if has_comparison:
-        comparison_hover = "Club median" if club_comparison else "Current"
+        comparison_hover = club_comparison.capitalize() if club_comparison else "Current"
         fig.add_trace(go.Scatterpolar(
             r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
             line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
@@ -2960,7 +2960,7 @@ def league_projection_radar(
         hovertemplate="<b>%{customdata[3]}</b><br>Projected: %{customdata[1]:.0f}th percentile<br>Current raw value: %{customdata[0]:.2f}<extra></extra>",
     ))
 
-    # Outer tiles show current → projected percentile, making the translation readable without hover.
+    # Outer tiles show the comparison and projected percentiles.
     tile_text = []
     for comparison_pct, projected_pct in zip(cur_pct, pro_pct):
         projected_text = f"{projected_pct:.0f}"
@@ -2980,9 +2980,7 @@ def league_projection_radar(
                        text=f"<span style='color:{projected_color}'>┈┈●</span> {target_label} (Projected)",
                        showarrow=False, xanchor="left", font=dict(size=11, color="#303A44"))
 
-    tile_caption = "current → projected"
-    if club_comparison:
-        tile_caption = "club median → projected" if has_comparison else "projected"
+    tile_caption = f"{club_comparison or 'current'} → projected" if has_comparison else "projected"
     fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
                        text=f"<b>{player_name}</b><br><span style='font-size:11px'>{tile_caption.capitalize()}</span>",
                        showarrow=False,align="center",font=dict(size=16,color="#17202A"),
@@ -3104,28 +3102,35 @@ def club_strength_row(
     return row
 
 
-# A valid role sample gates the club median. Each displayed median also needs
-# three recorded observations for that particular metric.
-def target_club_median_profile(
+def target_club_comparison_profile(
     projected_profile: pd.DataFrame,
     club_players: pd.DataFrame,
     target_benchmark: pd.DataFrame,
 ) -> pd.DataFrame:
-    median_profile = projected_profile[["KPI Group", "Metric"]].copy()
-    median_profile["Raw Value"] = np.nan
-    median_profile["Percentile"] = np.nan
-    median_profile["Z-score"] = np.nan
-    for index, metric in median_profile["Metric"].items():
-        values = pd.to_numeric(club_players[metric], errors="coerce").dropna()
-        if len(values) < MIN_CLUB_MEDIAN_PLAYERS:
+    """Summarize eligible club players in raw units, then apply the league scale."""
+    profile = projected_profile[["KPI Group", "Metric"]].copy()
+    profile["Raw Value"] = np.nan
+    profile["Percentile"] = np.nan
+    profile["Z-score"] = np.nan
+    sample_size = len(club_players)
+    if sample_size == 0:
+        return profile
+
+    min_observations = min(sample_size, MIN_CLUB_MEDIAN_PLAYERS)
+    for index, metric in profile["Metric"].items():
+        values = pd.to_numeric(club_players[metric], errors="coerce")
+        values = values.loc[np.isfinite(values)]
+        if len(values) < min_observations:
             continue
-        median = float(values.median())
+        # For one or two players the median is exactly their individual value
+        # or the arithmetic mean of the pair, respectively.
+        reference_value = float(values.median())
         z = directional_z_against_population(
-            target_benchmark[metric], median, lower_is_better=metric in LOWER_IS_BETTER,
+            target_benchmark[metric], reference_value, lower_is_better=metric in LOWER_IS_BETTER,
         )
         percentile = 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
-        median_profile.loc[index, ["Raw Value", "Percentile", "Z-score"]] = [median, percentile, z]
-    return median_profile
+        profile.loc[index, ["Raw Value", "Percentile", "Z-score"]] = [reference_value, percentile, z]
+    return profile
 
 
 def render_team_projection(
@@ -3252,14 +3257,32 @@ def render_team_projection(
     if pd.notna(projected_score) and not target_distribution.empty:
         projected_profile, _ = build_projected_target_profile(player, target_benchmark, role, rating_delta)
         if not projected_profile.empty:
-            median_profile = target_club_median_profile(projected_profile, scored_squad, target_benchmark)
+            comparison_profile = target_club_comparison_profile(projected_profile, scored_squad, target_benchmark)
+            if len(scored_squad) >= MIN_CLUB_MEDIAN_PLAYERS:
+                comparison_kind = "club median"
+                comparison_label = f"{club_name} median"
+                radar_caption = "The club median uses at least three recorded values per metric."
+            elif len(scored_squad) == 2:
+                comparison_kind = "club average"
+                comparison_label = f"{club_name} average (2 players)"
+                radar_caption = "Small sample · Each average uses both club players' recorded values."
+            elif len(scored_squad) == 1:
+                comparison_kind = "target club player"
+                comparison_label = str(scored_squad["Player"].iloc[0])
+                radar_caption = f"One eligible club player · {comparison_label}'s observed profile."
+            else:
+                comparison_kind = "club reference"
+                comparison_label = club_name
+                radar_caption = "No eligible club players with a role score. Showing the projected player profile."
+            if not scored_squad.empty and comparison_profile["Percentile"].isna().all():
+                radar_caption = "The club sample lacks sufficient data on the plotted metrics. Showing the projected player profile."
             fig = league_projection_radar(
-                median_profile, projected_profile, str(player["Player"]), f"{club_name} median",
-                target_league, club_comparison=True,
+                comparison_profile, projected_profile, str(player["Player"]), comparison_label,
+                target_league, club_comparison=comparison_kind,
             )
             st.subheader("Projected player vs. target club")
             st.plotly_chart(fig, width="stretch")
-            st.caption("Both radar profiles use target-league metric percentiles. A club median is shown for metrics with at least three scored squad players with data.")
+            st.caption(f"{radar_caption} The radar uses target-league metric percentiles.")
 
     st.subheader(f"{club_name} · players in compatible positions")
     if not has_audited_target_team:
@@ -3285,6 +3308,14 @@ def render_team_projection(
         club_strength_row("Source", source_name, source_audit, averages, source_has_team),
         club_strength_row("Target", club_name, target_audit, averages, has_audited_target_team),
     ])
+    relative_ratings = club_context["vs. competition mean"]
+    snapshot_dates = club_context["Snapshot date"]
+    if np.isfinite(relative_ratings).all() and snapshot_dates.nunique() == 1:
+        club_gap = relative_ratings.iloc[1] - relative_ratings.iloc[0]
+        st.metric(
+            "Relative club-strength gap", f"{club_gap:+.2f} Opta pts",
+            help="Target club's rating above or below its competition average minus the same measure for the source club. The gap is calculated before rounding.",
+        )
     st.dataframe(
         club_context, width="stretch", hide_index=True,
         column_config={
