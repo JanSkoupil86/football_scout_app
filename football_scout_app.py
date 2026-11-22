@@ -4425,68 +4425,73 @@ if app_page == "Players":
         missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
         st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
-    # Optional competition-strength normalization for cross-league player ranking.
-    # The original Profile Score is never overwritten. The adjusted score expresses
-    # every player on the selected reference league's competition-strength scale.
+    # Share one Opta lookup between the rating column and score adjustment.
     league_adjustment_on = False
     adjusted_score_col = None
     reference_league = None
     reference_rating = None
-    league_strength_players = pd.DataFrame()
+    league_rating_col = "Opta League Rating"
+    player_leagues = tuple(sorted(filtered["League"].dropna().astype(str).unique()))
+    league_strength_players = build_league_strength_lookup(player_leagues, str(OPTA_LEAGUE_META_PATH))
+    has_league_ratings = not league_strength_players.empty
+    if has_league_ratings and league_strength_players.attrs.get("bundled_ratings"):
+        st.caption("Using the Opta league ratings bundled with this app.")
 
-    if calc_col_name and calc_col_name in filtered.columns and "League" in filtered.columns:
-        player_leagues = tuple(sorted(filtered["League"].dropna().astype(str).unique().tolist()))
-        league_strength_players = build_league_strength_lookup(player_leagues, str(OPTA_LEAGUE_META_PATH))
-        if not league_strength_players.empty:
-            if league_strength_players.attrs.get("bundled_ratings"):
-                st.caption("Using the Opta league ratings bundled with this app.")
-            league_adjustment_on = st.toggle(
-                "Apply league adjustment",
-                value=False,
-                key="players_apply_league_adjustment",
-                help=(
-                    "Keeps the original Profile Score and adds a competition-adjusted score using "
-                    "β = 0.020 per Opta league-rating point. Choose the league whose strength should "
-                    "be the common comparison reference."
-                ),
-            )
-            if league_adjustment_on:
-                mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
-                reference_league = st.selectbox(
-                    "Reference league for adjusted scores",
-                    options=mapped_leagues,
-                    index=0,
-                    key="players_league_adjustment_reference",
-                    help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
-                )
-                ref_row = league_strength_players.loc[league_strength_players["League"].eq(reference_league)].iloc[0]
-                reference_rating = float(ref_row["rating"])
-                rating_map = league_strength_players.set_index("League")["rating"]
-                rank_map = league_strength_players.set_index("League")["rank"]
-                filtered["Opta League Rating"] = filtered["League"].map(rating_map)
-                filtered["Opta Global Rank"] = filtered["League"].map(rank_map)
-                adjusted_score_col = "League-Adjusted Score"
-                filtered[adjusted_score_col] = (
-                    pd.to_numeric(filtered[calc_col_name], errors="coerce")
-                    + LEAGUE_TRANSLATION_BETA
-                    * (pd.to_numeric(filtered["Opta League Rating"], errors="coerce") - reference_rating)
-                )
-                filtered["League Adjustment"] = filtered[adjusted_score_col] - pd.to_numeric(filtered[calc_col_name], errors="coerce")
-                for _c in ["Opta League Rating", "Opta Global Rank", adjusted_score_col, "League Adjustment"]:
-                    if _c not in numeric_cols:
-                        numeric_cols.append(_c)
-                st.caption(
-                    f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
-                    f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
-                )
-                unmapped_leagues = sorted(set(player_leagues) - set(mapped_leagues))
-                if unmapped_leagues:
-                    st.caption("Adjusted scores are unavailable for: " + ", ".join(unmapped_leagues))
-        else:
-            st.caption("Opta league ratings are unavailable for the currently filtered leagues.")
+    rating_control, adjustment_control = st.columns(2)
+    show_league_rating = rating_control.toggle(
+        "Show Opta league rating",
+        value=False,
+        key="players_show_opta_league_rating",
+        disabled=not has_league_ratings,
+        help="Adds the Opta league rating beside League in the table and includes it in the CSV download.",
+    ) and has_league_ratings
+    if has_league_ratings and calc_col_name in filtered.columns:
+        league_adjustment_on = adjustment_control.toggle(
+            "Apply league adjustment",
+            value=False,
+            key="players_apply_league_adjustment",
+            help=(
+                "Keeps the original Profile Score and adds a competition-adjusted score using "
+                "β = 0.020 per Opta league-rating point. Choose the league whose strength should "
+                "be the common comparison reference."
+            ),
+        )
+    if not has_league_ratings:
+        st.caption("Opta league ratings are unavailable for the currently filtered leagues.")
 
-    # Position-aware default table columns. All source columns remain available
-    # in the selector; this only controls what is shown initially.
+    if show_league_rating or league_adjustment_on:
+        strength_by_league = league_strength_players.set_index("League")
+        league_labels = filtered["League"].astype("string")
+        filtered[league_rating_col] = league_labels.map(strength_by_league["rating"])
+        unmapped_leagues = sorted(set(player_leagues) - set(strength_by_league.index))
+        if unmapped_leagues:
+            st.caption("Opta league ratings are unavailable for " + ", ".join(unmapped_leagues) + ".")
+
+    if league_adjustment_on:
+        mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+        reference_league = st.selectbox(
+            "Reference league for adjusted scores",
+            options=mapped_leagues,
+            index=0,
+            key="players_league_adjustment_reference",
+            help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
+        )
+        reference_rating = float(strength_by_league.loc[reference_league, "rating"])
+        filtered["Opta Global Rank"] = league_labels.map(strength_by_league["rank"])
+        adjusted_score_col = "League-Adjusted Score"
+        profile_score = pd.to_numeric(filtered[calc_col_name], errors="coerce")
+        strength_delta = LEAGUE_TRANSLATION_BETA * (filtered[league_rating_col] - reference_rating)
+        filtered[adjusted_score_col] = profile_score + strength_delta
+        filtered["League Adjustment"] = filtered[adjusted_score_col] - profile_score
+        for _c in [league_rating_col, "Opta Global Rank", adjusted_score_col, "League Adjustment"]:
+            if _c not in numeric_cols:
+                numeric_cols.append(_c)
+        st.caption(
+            f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
+            f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
+        )
+
+    # Position-aware default table columns.
     _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
 
     # Default order: identity/context -> Age -> Minutes -> active role Score ->
@@ -4502,9 +4507,8 @@ if app_page == "Players":
     ]
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
-    # Opta league strength remains available internally for adjustment/hover logic,
-    # but is intentionally hidden from the Players table selector.
-    exclude_cols.update({"Opta League Rating", "Opta Global Rank", "League Adjustment"})
+    # The rating toggle controls this column separately from the multiselect.
+    exclude_cols.update({league_rating_col, "Opta Global Rank", "League Adjustment"})
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
@@ -4514,7 +4518,6 @@ if app_page == "Players":
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.append(calc_col_name)
         if league_adjustment_on and adjusted_score_col in filtered.columns:
-            # Keep Opta rating internal; only show the adjusted result by default.
             default_cols.append(adjusted_score_col)
 
         # Keep only the currently selected profile-depth score in the default table.
@@ -4545,6 +4548,10 @@ if app_page == "Players":
     default_cols = list(dict.fromkeys(default_cols))
 
     selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
+    if show_league_rating:
+        league_position = selected_display_cols.index("League") + 1 if "League" in selected_display_cols else len(selected_display_cols)
+        selected_display_cols = list(selected_display_cols)
+        selected_display_cols.insert(league_position, league_rating_col)
 
     # The active profile score is the primary scouting ranking. Calculated
     # indicators remain available but no longer override the role score default.
@@ -4601,7 +4608,6 @@ if app_page == "Players":
             "Calc: Box Threat": "Box Threat",
             "Calc: Finishing": "Finishing",
             "Calc: Link Play": "Link Play",
-            "Opta League Rating": "League Rating",
             "Opta Global Rank": "Opta Rank",
             "League-Adjusted Score": "League-Adjusted Score",
             "League Adjustment": "Adjustment",
@@ -4643,7 +4649,9 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
             elif c == "Specialist Delta":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%+.2f")
-            elif c in {"League-Adjusted Score", "League Adjustment", "Opta League Rating"}:
+            elif c == league_rating_col:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=112, format="%.2f")
+            elif c in {"League-Adjusted Score", "League Adjustment"}:
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=92, format="%.2f")
             elif c == "Opta Global Rank":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%d")
