@@ -1,59 +1,24 @@
-# Wyscout Scouting App — improved architecture
+Wyscout Scouting app — Team Projection
 
-Files:
-- `app.py` — full Streamlit application.
-- `profiles_config.py` — single canonical source of truth for all 21 role profiles.
-- `tests_profile_framework.py` — lightweight profile/config validation.
-- `requirements.txt` — deployment dependencies.
+Put the files from this ZIP in the app directory together. The Streamlit
+entry point is football_scout_app.py. If your existing deployment uses app.py,
+copy the updated football_scout_app.py over app.py and keep that entry point.
+For a local run, install requirements.txt and run:
 
-## Main methodological upgrades
-- 21 profiles × 15 metrics from one canonical config.
-- Exact 100% built-in/custom weighting before Apply.
-- KPI-grouped weight editor.
-- Search/player-pool filters separated from benchmark population.
-- Role-position / selected-position / all-position benchmark controls.
-- Minimum benchmark sample warning.
-- Missing values no longer treated as average.
-- Per-player score coverage and configurable coverage suppression.
-- KPI sub-scores.
-- Single-player and multi-player wheels use the same benchmark logic.
-- Z-score / percentile switch retained.
-- Contextual GK workload metrics can remain descriptive at 0% score weight.
-- Cached benchmark summary statistics.
-- Methodology panel in the app.
+    streamlit run football_scout_app.py
 
-## Role Fit v1
-- Player selector using the currently filtered player pool.
-- Automatic Main Position → compatible canonical roles.
-- Each compatible role uses its own role-position benchmark.
-- Weighted Role Score, within-role Role Percentile, Coverage %, Benchmark N.
-- Horizontal Role Percentile comparison.
-- Selectable role detail.
-- KPI sub-score decomposition.
-- Percentile / Z-score detail wheel.
-- Raw role-metric table with KPI, raw value, z-score, percentile and weight.
-- No qualitative fit labels or separate scoring model.
+Upload your usual Wyscout CSV, choose Team Projection in the workspace menu,
+and select a player, role, target league and club. The sidebar filters define
+the player search. The target club list uses the selected season, and the
+comparison uses the selected role's compatible Main Positions and minutes.
 
-## Fixed workspace navigation
-Only one main workspace renders at a time. Players no longer renders Player Comparison below the scatter.
-Role Fit is directly selectable in the sidebar. The long profile-weight editor is collapsed under
-Advanced profile settings.
+The projected role score uses the existing league coefficient. The radar
+compares the projected player with the target club median for metrics that
+have at least three scored club players with data. The squad table shows
+individual options when the club sample is small.
 
-## Radar feedback update
-- Percentile is now the default presentation scale across Single Player, Multi Player and Role Fit.
-- Z-score remains available as an advanced view; Profile Score methodology is unchanged.
-- KPI colours use a neutral categorical palette rather than traffic-light red/green/orange semantics.
-- Performance spokes/lines and endpoint markers are substantially thicker/larger.
-- Metric labels are larger.
-- Exact outer-tile scores are larger and easier to scan.
-- Percentile reference rings emphasize 25 / 50 / 75, with 50 as the benchmark median.
-- Role Fit detail wheel now follows the same visual language.
-
-## Radar polish v3
-- Percentile remains the default; Z-score remains optional.
-- Thicker performance geometry and larger endpoint markers.
-- Larger metric labels and outer percentile values.
-- Quieter secondary reference rings.
-- Explicit `Higher = better` percentile interpretation.
-- Lower-is-better raw metrics use a ↓ display cue where the alias map is available.
-- KPI colours remain categorical rather than performance traffic lights.
+The bundled audit and club ratings are dated 20 November 2026. The strength
+table uses the club's competition at the snapshot date to calculate its
+relative strength. Those figures are context for recruitment and do not enter
+the projected score. Club ratings remain blank when a season-team identity
+cannot be verified.
