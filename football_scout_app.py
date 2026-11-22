@@ -24,6 +24,17 @@ from profiles_config import (
     kpi_for_metric,
     validate_profile_config,
 )
+from team_projection_data import (
+    AUDIT_PATH,
+    SNAPSHOT_PATH,
+    MIN_CLUB_MEDIAN_PLAYERS,
+    SEASON_TEAM,
+    club_audit_record,
+    club_options,
+    club_strength_row,
+    read_club_audit,
+    read_competition_means,
+)
 
 
 # =========================
@@ -2375,6 +2386,8 @@ def league_projection_radar(
     player_name: str,
     current_label: str,
     target_label: str,
+    *,
+    club_comparison: bool = False,
 ) -> go.Figure:
     """Single-Player-style scouting wheel overlaying current and projected percentiles."""
     if current_profile.empty or projected_profile.empty:
@@ -2384,6 +2397,7 @@ def league_projection_radar(
     pro = projected_profile[["Metric", "Percentile", "Z-score"]].rename(
         columns={"Percentile": "Projected Percentile", "Z-score": "Projected Z-score"}
     )
+    pro["Player Raw Value"] = projected_profile["Raw Value"]
     p = cur.merge(pro, on="Metric", how="inner").reset_index(drop=True)
     if p.empty:
         return go.Figure()
@@ -2474,16 +2488,19 @@ def league_projection_radar(
     current_color = "#303A44"
     projected_color = "#E56B3F"
     cur_custom = np.column_stack([p["Raw Value"], p["Percentile"], p["Z-score"], p["Display Metric"], p["KPI Group"]])
-    pro_custom = np.column_stack([p["Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
+    pro_custom = np.column_stack([p["Player Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
     cur_custom_closed = np.vstack([cur_custom, cur_custom[0]])
     pro_custom_closed = np.vstack([pro_custom, pro_custom[0]])
 
-    fig.add_trace(go.Scatterpolar(
-        r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
-        line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
-        name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
-        hovertemplate="<b>%{customdata[3]}</b><br>Current: %{customdata[1]:.0f}th percentile<br>Raw value: %{customdata[0]:.2f}<extra></extra>",
-    ))
+    has_comparison = np.isfinite(cur_pct).any()
+    if has_comparison:
+        comparison_hover = "Club median" if club_comparison else "Current"
+        fig.add_trace(go.Scatterpolar(
+            r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
+            line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
+            name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
+            hovertemplate=f"<b>%{{customdata[3]}}</b><br>{comparison_hover}: %{{customdata[1]:.0f}}th percentile<br>Raw value: %{{customdata[0]:.2f}}<extra></extra>",
+        ))
     fig.add_trace(go.Scatterpolar(
         r=list(pro_r)+[pro_r[0]], theta=closed_theta, mode="lines+markers",
         line=dict(color=projected_color,width=3.8,dash="dot"), marker=dict(size=10,color=projected_color,line=dict(color="white",width=1.7)),
@@ -2492,27 +2509,38 @@ def league_projection_radar(
     ))
 
     # Outer tiles show current → projected percentile, making the translation readable without hover.
-    tile_text = [f"<b>{int(round(c))}→{int(round(q))}</b>" for c,q in zip(cur_pct,pro_pct)]
+    tile_text = []
+    for comparison_pct, projected_pct in zip(cur_pct, pro_pct):
+        projected_text = f"{projected_pct:.0f}"
+        if has_comparison:
+            comparison_text = f"{comparison_pct:.0f}" if np.isfinite(comparison_pct) else "–"
+            projected_text = f"{comparison_text}→{projected_text}"
+        tile_text.append(f"<b>{projected_text}</b>")
     fig.add_trace(go.Scatterpolar(r=[84.0]*n, theta=theta, mode="text", text=tile_text,
                                   textfont=dict(size=11,color="white"), hoverinfo="skip", showlegend=False))
 
     # Compact profile legend below the subtitle, separate from the KPI-category legend.
-    fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
-                       text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
-                       showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
+    if has_comparison:
+        fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
+                           text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
+                           showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
     fig.add_annotation(x=0.61, y=1.045, xref="paper", yref="paper",
                        text=f"<span style='color:{projected_color}'>┈┈●</span> {target_label} (Projected)",
                        showarrow=False, xanchor="left", font=dict(size=11, color="#303A44"))
 
+    tile_caption = "current → projected"
+    if club_comparison:
+        tile_caption = "club median → projected" if has_comparison else "projected"
     fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
-                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>Current → Projected</span>",
+                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>{tile_caption.capitalize()}</span>",
                        showarrow=False,align="center",font=dict(size=16,color="#17202A"),
                        bgcolor="rgba(255,255,255,0.94)",bordercolor="rgba(120,130,140,0.22)",borderwidth=1,borderpad=11)
-    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text="Percentile: 0–100 · outer tiles = current → projected",
+    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text=f"Percentile: 0–100 · outer tiles = {tile_caption}",
                        showarrow=False,xanchor="left",yanchor="bottom",font=dict(size=10,color="#6B7785"))
 
+    subtitle = target_label if club_comparison else f"{current_label} → {target_label}"
     fig.update_layout(
-        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{current_label} → {target_label}</sup>",
+        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{subtitle}</sup>",
                    x=0.5,xanchor="center",y=0.985,font=dict(size=20,color="#17202A")),
         template="plotly_white",height=920,margin=dict(l=180,r=180,t=150,b=125),paper_bgcolor="white",plot_bgcolor="white",
         legend=dict(orientation="v", yanchor="top", y=1.015, xanchor="left", x=0.08, title_text="KPI groups", font=dict(size=10), bgcolor="rgba(255,255,255,0.72)"),
@@ -2522,6 +2550,198 @@ def league_projection_radar(
         barmode="overlay",
     )
     return fig
+
+# A valid role sample gates the club median. Each displayed median also needs
+# three recorded observations for that particular metric.
+def target_club_median_profile(
+    projected_profile: pd.DataFrame,
+    club_players: pd.DataFrame,
+    target_benchmark: pd.DataFrame,
+) -> pd.DataFrame:
+    median_profile = projected_profile[["KPI Group", "Metric"]].copy()
+    median_profile["Raw Value"] = np.nan
+    median_profile["Percentile"] = np.nan
+    median_profile["Z-score"] = np.nan
+    for index, metric in median_profile["Metric"].items():
+        values = pd.to_numeric(club_players[metric], errors="coerce").dropna()
+        if len(values) < MIN_CLUB_MEDIAN_PLAYERS:
+            continue
+        median = float(values.median())
+        z = directional_z_against_population(
+            target_benchmark[metric], median, lower_is_better=metric in LOWER_IS_BETTER,
+        )
+        percentile = 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        median_profile.loc[index, ["Raw Value", "Percentile", "Z-score"]] = [median, percentile, z]
+    return median_profile
+
+
+def render_team_projection(
+    candidates: pd.DataFrame,
+    season_pool: pd.DataFrame,
+    minutes: int,
+    coverage_threshold: float,
+    min_benchmark_n: int,
+) -> None:
+    st.header("Team Projection")
+    st.caption("Compare a player's projected role performance with the target club's players in compatible positions.")
+
+    try:
+        audit = read_club_audit(AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns)
+    except (OSError, ValueError) as error:
+        audit = pd.DataFrame()
+        st.warning(f"Verified club ratings could not be loaded ({type(error).__name__}). Squad comparison is available.")
+    try:
+        averages = read_competition_means(SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns)
+    except (OSError, ValueError):
+        averages = pd.Series(dtype=float)
+        st.warning("Opta competition averages could not be loaded.")
+
+    player_labels = candidates["Player"].astype(str).str.cat(
+        candidates.get(SEASON_TEAM, candidates["Team"]).fillna(candidates["Team"]).astype(str),
+        sep=" — ",
+    ).str.cat(candidates["League"].astype(str), sep=" | ")
+    player_labels = player_labels.mask(
+        player_labels.duplicated(keep=False), player_labels + " [" + player_labels.index.astype(str) + "]",
+    )
+    player_options = {label: index for index, label in player_labels.items()}
+    left, right = st.columns([1.4, 1])
+    with left:
+        player_label = st.selectbox("Player", list(player_options), key="team_proj_player")
+    player_index = player_options[player_label]
+    player = candidates.loc[player_index]
+    source_league = str(player["League"])
+    source_team = player.get(SEASON_TEAM)
+    source_has_team = isinstance(source_team, str) and bool(source_team.strip())
+    source_name = source_team if source_has_team else str(player["Team"])
+    position = str(player["Main Position"])
+    roles = [role for role, positions in PROFILE_POSITION_ELIGIBILITY.items() if position in positions]
+    if not roles:
+        st.info(f"No projection role is available for Main Position {position}.")
+        return
+    preferred_role = st.session_state.get("sidebar_selected_profile")
+    preferred_index = roles.index(preferred_role) if preferred_role in roles else 0
+    with right:
+        role = st.selectbox(
+            "Role", roles, index=preferred_index,
+            key=safe_widget_key("team_proj_role", position, preferred_role or ""),
+        )
+    st.caption(f"{role} · {active_depth_for_role(role)}")
+
+    target_leagues = sorted(season_pool["League"].dropna().unique())
+    league_col, club_col = st.columns(2)
+    with league_col:
+        target_league = st.selectbox(
+            "Target league", target_leagues, index=target_leagues.index(source_league), key="team_proj_league",
+        )
+    target_pool = season_pool.loc[season_pool["League"].eq(target_league)]
+    team_column, clubs = club_options(target_pool, target_league, audit)
+    if not clubs:
+        st.info("The selected competition has no club names in the upload.")
+        return
+    club_options_by_label = {" / ".join(names): names for names in clubs.values()}
+    with club_col:
+        club_name = st.selectbox(
+            "Target club", list(club_options_by_label), key=f"team_proj_club::{target_league}",
+        )
+    club_names = club_options_by_label[club_name]
+    has_audited_target_team = team_column == SEASON_TEAM
+    source_audit = club_audit_record(audit, source_league, source_name) if source_has_team else None
+    target_audit = club_audit_record(audit, target_league, club_names[0]) if has_audited_target_team else None
+
+    positions = PROFILE_POSITION_ELIGIBILITY[role]
+    benchmark = season_pool.loc[season_pool["Main Position"].isin(positions)]
+    if "Minutes played" in benchmark:
+        benchmark = benchmark.loc[benchmark["Minutes played"] >= minutes]
+    target_benchmark = benchmark.loc[benchmark["League"].eq(target_league)]
+    source_benchmark = target_benchmark if source_league == target_league else benchmark.loc[benchmark["League"].eq(source_league)]
+
+    scored_player, _ = role_score_for_population(
+        player.to_frame().T, source_benchmark, role, coverage_threshold,
+    )
+    scored_target, target_distribution = role_score_for_population(
+        target_benchmark, target_benchmark, role, coverage_threshold,
+    )
+    score_col = "_projection_role_score"
+    source_score = scored_player[score_col].iloc[0]
+    squad = scored_target.loc[scored_target[team_column].isin(club_names) & (scored_target.index != player_index)]
+    scored_squad = squad.loc[squad[score_col].notna()]
+
+    rating_delta = np.nan
+    if source_league == target_league:
+        rating_delta = 0.0
+    else:
+        strength = build_league_strength_lookup(
+            tuple(sorted((source_league, target_league))), str(OPTA_LEAGUE_META_PATH),
+        )
+        if not strength.empty:
+            ratings = strength.set_index("League")["rating"]
+            rating_delta = ratings.get(target_league, np.nan) - ratings.get(source_league, np.nan)
+        if pd.isna(rating_delta):
+            st.info("A league rating is unavailable. The target squad's observed scores are shown below.")
+
+    projected_score = source_score - LEAGUE_TRANSLATION_BETA * rating_delta
+    projected_pct = percentile_rank_against_population(target_distribution, projected_score)
+    source_metric, projection_metric, percentile_metric, sample_metric = st.columns(4)
+    source_metric.metric("Current role score", f"{source_score:+.2f}" if pd.notna(source_score) else "—")
+    projection_metric.metric(
+        "Projected role score", f"{projected_score:+.2f}" if pd.notna(projected_score) else "—",
+        delta=f"{projected_score - source_score:+.2f}" if pd.notna(projected_score) else None,
+        help="The change uses the same league translation as League Projection.",
+    )
+    percentile_metric.metric("Projected league percentile", f"{projected_pct:.0f}" if pd.notna(projected_pct) else "—")
+    sample_metric.metric("Target club players scored", f"{len(scored_squad):,}")
+    st.caption(f"Target league benchmark: {len(target_distribution):,} scored players in compatible positions with at least {minutes:,} minutes.")
+    if len(target_distribution) < min_benchmark_n:
+        st.warning("The target league benchmark is below the sidebar's minimum sample.")
+    if pd.isna(source_score):
+        st.info("A current role score is unavailable. Check the source league benchmark and profile coverage.")
+
+    if pd.notna(projected_score) and not target_distribution.empty:
+        projected_profile, _ = build_projected_target_profile(player, target_benchmark, role, rating_delta)
+        if not projected_profile.empty:
+            median_profile = target_club_median_profile(projected_profile, scored_squad, target_benchmark)
+            fig = league_projection_radar(
+                median_profile, projected_profile, str(player["Player"]), f"{club_name} median",
+                target_league, club_comparison=True,
+            )
+            st.subheader("Projected player vs. target club")
+            st.plotly_chart(fig, width="stretch")
+            st.caption("Both radar profiles use target-league metric percentiles. A club median is shown for metrics with at least three scored squad players with data.")
+
+    st.subheader(f"{club_name} · players in compatible positions")
+    if not has_audited_target_team:
+        st.caption("This upload uses the Team field for the squad because season-team labels are unavailable.")
+    if squad.empty:
+        st.info("No target-club players meet the position and minutes filters.")
+    else:
+        table = squad.rename(columns={score_col: "Role score", f"{score_col} Coverage %": "Coverage (%)"})
+        table["League percentile"] = percentile_ranks_against_population_vectorized(target_distribution, table["Role score"])
+        display_columns = ["Player", "Main Position", "Minutes played", "Role score", "League percentile", "Coverage (%)"]
+        table = table.sort_values("Role score", ascending=False)
+        st.dataframe(
+            table[[column for column in display_columns if column in table]], width="stretch", hide_index=True,
+            column_config={
+                "Role score": st.column_config.NumberColumn(format="%+.2f"),
+                "League percentile": st.column_config.NumberColumn(format="%.0f"),
+                "Coverage (%)": st.column_config.NumberColumn(format="%.0f"),
+            },
+        )
+
+    st.subheader("Opta club strength")
+    club_context = pd.DataFrame([
+        club_strength_row("Source", source_name, source_audit, averages, source_has_team),
+        club_strength_row("Target", club_name, target_audit, averages, has_audited_target_team),
+    ])
+    st.dataframe(
+        club_context, width="stretch", hide_index=True,
+        column_config={
+            "Opta club rating": st.column_config.NumberColumn(format="%.1f"),
+            "Competition mean": st.column_config.NumberColumn(format="%.2f"),
+            "vs. competition mean": st.column_config.NumberColumn(format="%+.2f"),
+        },
+    )
+    st.caption("Opta ratings and averages describe the listed snapshot date. The projected score uses league strength only.")
+
 
 # =========================
 # Role Fit v1
@@ -2832,7 +3052,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players", "Shadow Team", "Player Report"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Team Projection", "Similar Players", "Shadow Team", "Player Report"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -5138,6 +5358,9 @@ elif app_page == "League Projection":
                         "Projected percentile compares the translated score with the target league's actual role-score distribution."
                     )
 
+
+elif app_page == "Team Projection":
+    render_team_projection(filtered_base, df_season, min_minutes, coverage_threshold_pct / 100.0, min_benchmark_n)
 
 elif app_page == "Similar Players":
     st.header("🔎 Similar Players")
