@@ -3008,6 +3008,8 @@ SEASON_TEAM = "Team within selected timeframe"
 AUDIT_PATH = Path(__file__).with_name("wyscout_opta_club_audit.csv")
 SNAPSHOT_PATH = Path(__file__).with_name("opta_mens_club_rankings_2026-11-20.csv")
 MIN_CLUB_MEDIAN_PLAYERS = 3
+# Initial club adjustment uses the same per-point weight as league adjustment.
+CLUB_TRANSLATION_BETA = 0.020
 
 AUDIT_COLUMNS = [
     "wyscout_league", "wyscout_team", "match_status", "opta_team_id",
@@ -3031,6 +3033,27 @@ def read_competition_means(path: Path, modified_ns: int) -> pd.Series:
     snapshot = snapshot.drop_duplicates(["snapshot_date", "opta_team_id"])
     snapshot["opta_rating"] = pd.to_numeric(snapshot["opta_rating"], errors="coerce")
     return snapshot.groupby(["snapshot_date", "competition_country", "competition"])["opta_rating"].mean()
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_club_league_deltas(
+    audit_path: Path, audit_version: int, snapshot_path: Path, snapshot_version: int,
+) -> pd.Series:
+    audit = read_club_audit(audit_path, audit_version)
+    averages = read_competition_means(snapshot_path, snapshot_version)
+    season_start = audit.index.get_level_values("wyscout_league").str.extract(SEASON_RX, expand=True)[0]
+    snapshot_year = audit["opta_snapshot_date"].astype("string").str[:4]
+    # Use the snapshot for the matching season group and competition only.
+    qualified = audit.loc[
+        audit["match_status"].eq("matched")
+        & audit["competition_relationship"].eq("same_competition")
+        & snapshot_year.eq(season_start.to_numpy())
+    ]
+    mean_keys = pd.MultiIndex.from_frame(qualified[[
+        "opta_snapshot_date", "opta_competition_country", "opta_competition_at_snapshot",
+    ]])
+    club_ratings = pd.to_numeric(qualified["opta_rating_at_snapshot"], errors="coerce")
+    return club_ratings - averages.reindex(mean_keys).to_numpy()
 
 
 def club_audit_record(audit: pd.DataFrame, league: str, team: str) -> pd.Series | None:
@@ -4425,8 +4448,7 @@ if app_page == "Players":
         missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
         st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
-    # Share one Opta lookup between the rating column and score adjustment.
-    league_adjustment_on = False
+    # Scores use independent league and within-league club terms.
     adjusted_score_col = None
     reference_league = None
     reference_rating = None
@@ -4437,7 +4459,42 @@ if app_page == "Players":
     if has_league_ratings and league_strength_players.attrs.get("bundled_ratings"):
         st.caption("Using the Opta league ratings bundled with this app.")
 
-    rating_control, adjustment_control = st.columns(2)
+    has_profile_score = calc_col_name in filtered.columns
+    club_deltas = pd.Series(np.nan, index=filtered.index, dtype=float)
+    if has_profile_score and SEASON_TEAM in filtered.columns:
+        try:
+            club_lookup = read_club_league_deltas(
+                AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns, SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns,
+            )
+            club_keys = pd.MultiIndex.from_frame(filtered[["League", SEASON_TEAM]])
+            club_deltas = pd.Series(club_lookup.reindex(club_keys).to_numpy(), index=filtered.index)
+        except (OSError, ValueError):
+            pass
+    has_club_ratings = club_deltas.notna().any()
+
+    can_adjust_leagues = has_league_ratings and has_profile_score
+    league_control, club_control, rating_control = st.columns(3)
+    league_adjustment_on = league_control.toggle(
+        "Apply league adjustment",
+        value=False,
+        key="players_apply_league_adjustment",
+        disabled=not can_adjust_leagues,
+        help=(
+            "Adds a League-Adjusted Score based on each player's league rating and the reference league you choose. "
+            "The table sorts by this score by default."
+        ),
+    ) and can_adjust_leagues
+    club_adjustment_on = club_control.toggle(
+        "Apply club adjustment",
+        value=False,
+        key="players_apply_club_adjustment",
+        disabled=not has_club_ratings,
+        help="Adjusts for the club's Opta rating relative to its own league average, using a provisional weight of 0.020 per point.",
+    ) and has_club_ratings
+    if not has_profile_score:
+        league_control.caption("Apply a role profile in the sidebar to enable score adjustment.")
+    elif not has_club_ratings:
+        club_control.caption("No verified club ratings for these players and seasons.")
     show_league_rating = rating_control.toggle(
         "Show Opta league rating",
         value=False,
@@ -4445,17 +4502,6 @@ if app_page == "Players":
         disabled=not has_league_ratings,
         help="Adds the Opta league rating beside League in the table and includes it in the CSV download.",
     ) and has_league_ratings
-    if has_league_ratings and calc_col_name in filtered.columns:
-        league_adjustment_on = adjustment_control.toggle(
-            "Apply league adjustment",
-            value=False,
-            key="players_apply_league_adjustment",
-            help=(
-                "Keeps the original Profile Score and adds a competition-adjusted score using "
-                "β = 0.020 per Opta league-rating point. Choose the league whose strength should "
-                "be the common comparison reference."
-            ),
-        )
     if not has_league_ratings:
         st.caption("Opta league ratings are unavailable for the currently filtered leagues.")
 
@@ -4467,6 +4513,7 @@ if app_page == "Players":
         if unmapped_leagues:
             st.caption("Opta league ratings are unavailable for " + ", ".join(unmapped_leagues) + ".")
 
+    score_terms = {}
     if league_adjustment_on:
         mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
         reference_league = st.selectbox(
@@ -4478,18 +4525,36 @@ if app_page == "Players":
         )
         reference_rating = float(strength_by_league.loc[reference_league, "rating"])
         filtered["Opta Global Rank"] = league_labels.map(strength_by_league["rank"])
-        adjusted_score_col = "League-Adjusted Score"
-        profile_score = pd.to_numeric(filtered[calc_col_name], errors="coerce")
-        strength_delta = LEAGUE_TRANSLATION_BETA * (filtered[league_rating_col] - reference_rating)
-        filtered[adjusted_score_col] = profile_score + strength_delta
-        filtered["League Adjustment"] = filtered[adjusted_score_col] - profile_score
-        for _c in [league_rating_col, "Opta Global Rank", adjusted_score_col, "League Adjustment"]:
+        score_terms["League Adjustment"] = LEAGUE_TRANSLATION_BETA * (filtered[league_rating_col] - reference_rating)
+        for _c in [league_rating_col, "Opta Global Rank"]:
             if _c not in numeric_cols:
                 numeric_cols.append(_c)
         st.caption(
             f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
             f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
         )
+
+    if club_adjustment_on:
+        score_terms["Club Adjustment"] = CLUB_TRANSLATION_BETA * club_deltas
+        st.caption(
+            "Club adjustment uses the November 20, 2026 Opta snapshot and a provisional "
+            "weight of 0.020 score points per Opta point above or below the club's league average."
+        )
+    if score_terms:
+        active_adjustments = [name.removesuffix(" Adjustment") for name in score_terms]
+        adjusted_score_col = f"{' + '.join(active_adjustments)}-Adjusted Score"
+        profile_score = pd.to_numeric(filtered[calc_col_name], errors="coerce")
+        adjustments = pd.DataFrame(score_terms, index=filtered.index)
+        filtered[adjusted_score_col] = profile_score + adjustments.sum(axis=1, min_count=len(score_terms))
+        for name, values in score_terms.items():
+            filtered[name] = values.where(profile_score.notna())
+        for name in [adjusted_score_col, *score_terms]:
+            if name not in numeric_cols:
+                numeric_cols.append(name)
+        if len(score_terms) == 2:
+            st.caption("Combined score = Profile Score + League Adjustment + Club Adjustment.")
+        if adjustments.isna().any(axis=1).any():
+            st.caption("Adjusted scores are blank where a rating required by the active adjustments is unavailable.")
 
     # Position-aware default table columns.
     _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
@@ -4507,8 +4572,10 @@ if app_page == "Players":
     ]
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
-    # The rating toggle controls this column separately from the multiselect.
-    exclude_cols.update({league_rating_col, "Opta Global Rank", "League Adjustment"})
+    # Toggle-controlled columns stay visible without changing the column selection.
+    exclude_cols.update({league_rating_col, "Opta Global Rank", "League Adjustment", "Club Adjustment"})
+    if adjusted_score_col:
+        exclude_cols.add(adjusted_score_col)
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
@@ -4517,8 +4584,6 @@ if app_page == "Players":
     # Coverage remains available in the selector but is not shown by default.
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.append(calc_col_name)
-        if league_adjustment_on and adjusted_score_col in filtered.columns:
-            default_cols.append(adjusted_score_col)
 
         # Keep only the currently selected profile-depth score in the default table.
         # Core 5, Balanced 10, Complete 15 and Specialist Delta are still calculated
@@ -4547,19 +4612,19 @@ if app_page == "Players":
     # Defensive dedupe while preserving the deliberate display order above.
     default_cols = list(dict.fromkeys(default_cols))
 
-    selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
+    selected_display_cols = list(st.multiselect("Columns to display", options=display_options, default=default_cols))
     if show_league_rating:
         league_position = selected_display_cols.index("League") + 1 if "League" in selected_display_cols else len(selected_display_cols)
-        selected_display_cols = list(selected_display_cols)
         selected_display_cols.insert(league_position, league_rating_col)
+    if adjusted_score_col:
+        score_position = selected_display_cols.index(calc_col_name) + 1 if calc_col_name in selected_display_cols else len(selected_display_cols)
+        selected_display_cols.insert(score_position, adjusted_score_col)
 
     # The active profile score is the primary scouting ranking. Calculated
     # indicators remain available but no longer override the role score default.
-    # When league adjustment is active, rank by the adjusted score automatically.
+    # When score adjustment is active, rank by the adjusted score automatically.
     # Otherwise preserve the existing raw profile-score default.
-    _primary_rank_col = adjusted_score_col if (
-        league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns
-    ) else calc_col_name
+    _primary_rank_col = adjusted_score_col or calc_col_name
     rank_candidates = [_primary_rank_col] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
     rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
     default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
@@ -4651,8 +4716,8 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%+.2f")
             elif c == league_rating_col:
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=112, format="%.2f")
-            elif c in {"League-Adjusted Score", "League Adjustment"}:
-                table_column_config[c] = st.column_config.NumberColumn(display_label, width=92, format="%.2f")
+            elif c == adjusted_score_col:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=165, format="%.2f")
             elif c == "Opta Global Rank":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%d")
             elif c == "Save rate, %":
@@ -4831,19 +4896,18 @@ if app_page == "Players":
         _size_options = [o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns]
         size_by = st.selectbox("Size by", options=_size_options, index=_size_options.index("None"))
 
-        # Recruitment-oriented Top-N ranking. Y remains the default behavior,
-        # with league-adjusted quality available whenever adjustment is active.
+        # Keep Y as the scatter default and offer the active adjusted ranking.
         rank_options = ["Overall role fit", "X-axis characteristic"]
         if role_pct_col and role_pct_col in filtered.columns:
             rank_options.append("Role Percentile")
-        if league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns:
-            rank_options.append("League-Adjusted Score")
+        if adjusted_score_col:
+            rank_options.append(adjusted_score_col)
         rank_choice = st.radio("Rank Top-N players by", rank_options, index=0, horizontal=True)
         if rank_choice == "X-axis characteristic":
             sort_metric = x_axis
         elif rank_choice == "Role Percentile":
             sort_metric = role_pct_col
-        elif rank_choice == "League-Adjusted Score":
+        elif rank_choice == adjusted_score_col:
             sort_metric = adjusted_score_col
         else:
             sort_metric = y_axis
@@ -4872,7 +4936,7 @@ if app_page == "Players":
             hover_data[calc_col_name] = ":.2f"
         if role_pct_col and role_pct_col in plot_df.columns and role_pct_col != y_axis:
             hover_data[role_pct_col] = ":.1f"
-        if league_adjustment_on and adjusted_score_col and adjusted_score_col in plot_df.columns:
+        if adjusted_score_col:
             hover_data[adjusted_score_col] = ":.2f"
 
         fig = px.scatter(
@@ -4927,11 +4991,10 @@ if app_page == "Players":
                 fig.add_annotation(x=0.985, y=0.015, xref="paper", yref="paper", text="Specialist / Incomplete Profile", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12))
                 fig.add_annotation(x=0.015, y=0.015, xref="paper", yref="paper", text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom", font=dict(size=12))
 
-        # League adjustment remains contextual quality only. Never alter X.
+        # Apply score adjustments to Y only.
         # Overlay is intentionally available only when raw Profile Score is Y.
         if (
-            league_adjustment_on
-            and adjusted_score_col in plot_df.columns
+            adjusted_score_col
             and y_axis == calc_col_name
             and plot_df[adjusted_score_col].notna().any()
         ):
@@ -4959,34 +5022,36 @@ if app_page == "Players":
                     continue
                 category_key = str(category) if original_color_by else ""
                 base_color = color_lookup.get(category_key, fallback_color)
-                custom = np.column_stack([
+                custom_fields = [
                     g["Player"].astype(str) if "Player" in g.columns else pd.Series([""] * len(g), index=g.index),
                     pd.to_numeric(g[y_axis], errors="coerce"),
                     pd.to_numeric(g[adjusted_score_col], errors="coerce"),
-                    pd.to_numeric(g.get("Opta League Rating", np.nan), errors="coerce"),
-                    g["League"].astype(str) if "League" in g.columns else pd.Series([""] * len(g), index=g.index),
-                    pd.to_numeric(g.get("League Adjustment", np.nan), errors="coerce"),
-                ])
+                    g["League"].astype(str),
+                ]
+                hover_template = (
+                    "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
+                    "Original Profile Score: %{customdata[1]:.2f}<br>"
+                    f"{adjusted_score_col}: %{{customdata[2]:.2f}}<br>"
+                    "League: %{customdata[3]}<br>"
+                )
+                if league_adjustment_on:
+                    custom_fields.append(g[league_rating_col])
+                    hover_template += f"Opta League Rating: %{{customdata[{len(custom_fields) - 1}]:.2f}}<br>"
+                    hover_template += f"Reference: {reference_league} ({reference_rating:.2f})<br>"
+                for name in score_terms:
+                    custom_fields.append(g[name])
+                    hover_template += f"{name}: %{{customdata[{len(custom_fields) - 1}]:+.2f}}<br>"
                 fig.add_trace(go.Scatter(
                     x=g[x_axis], y=g[adjusted_score_col], mode="markers",
                     name="Adjusted" if not original_color_by else f"{category} · adjusted",
                     legendgroup=f"adjusted_{category_key}", showlegend=False,
                     marker=dict(size=16, color=base_color, opacity=0.35, line=dict(width=1.5, color=base_color)),
-                    customdata=custom,
-                    hovertemplate=(
-                        "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
-                        + "Original Profile Score: %{customdata[1]:.2f}<br>"
-                        + "Adjusted Score: %{customdata[2]:.2f}<br>"
-                        + "League: %{customdata[4]}<br>"
-                        + "Opta League Rating: %{customdata[3]:.2f}<br>"
-                        + "League Adjustment: %{customdata[5]:+.2f}<br>"
-                        + f"Reference: {reference_league} ({reference_rating:.2f})"
-                        + "<extra>League-adjusted</extra>"
-                    ),
+                    customdata=np.column_stack(custom_fields),
+                    hovertemplate=hover_template + "<extra></extra>",
                 ))
-            fig.update_layout(title=f"{active_role or 'Profile'} · original + league-adjusted role fit vs. {x_axis}")
-        elif league_adjustment_on and y_axis != calc_col_name:
-            st.caption("League-adjusted overlay appears when Profile Score is selected as the Y-axis. Raw performance / percentile axes are never league-adjusted.")
+            fig.update_layout(title=f"{active_role or 'Profile'} · original and adjusted role fit vs. {x_axis}")
+        elif adjusted_score_col and y_axis != calc_col_name:
+            st.caption("Select Profile Score on the Y-axis to see the score adjustment overlay.")
 
         st.caption("Scatter logic: → stronger defining characteristic · ↑ stronger overall role fit. Benchmark lines: calculated composite = 50th percentile; Profile Score = 0; Role Percentile = 50.")
         st.plotly_chart(fig, width="stretch")
