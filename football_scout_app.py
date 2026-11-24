@@ -1,156 +1,6876 @@
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import re
+import json
+import math
+import unicodedata
 from pathlib import Path
-import pandas as pd
+from io import BytesIO, StringIO
+from typing import Dict, List, Tuple
+
 import numpy as np
-import streamlit as st
+import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-@st.cache_data(show_spinner=False)
-def load_reference(path):
-    return pd.read_csv(path).drop_duplicates('Wyscout league (exact)').set_index('Wyscout league (exact)')
+from profiles_config import (
+    PROFILE_CONFIG,
+    PROFILES,
+    SINGLE_PLAYER_PROFILES,
+    DEFAULT_WEIGHTS,
+    ROLE_POSITION_HINTS,
+    kpi_for_metric,
+    validate_profile_config,
+)
 
-def render_recruitment_market(players, profiles, eligibility, score_fn, benchmark_fn, strength_fn, strength_path, club_fn, audit_path, snapshot_path, season_team, league_beta, club_beta):
-    st.header('🎯 Recruitment Market Finder')
-    st.caption('Club → Profile → Source tiers → Adjusted shortlist | Fixed Jenks v8.0 tiers')
+
+# =========================
+# Page config
+# =========================
+st.set_page_config(layout="wide", page_title="Advanced Football Scouting App", page_icon="⚽")
+st.title("⚽ Advanced Football Player Scouting App — Season-aware Edition")
+st.caption("Build: Calculated Metrics v1.1 · Main Position benchmark families")
+st.markdown(
+    "Upload your football data CSV to analyze player metrics. "
+    "Includes season normalization, robust metric aliasing, built-in & custom profiles with weights, "
+    "direction-aware z-scores, sparse-metric skipping, Top-N tables, scatter & radar, and CSV downloads."
+)
+
+# =========================
+# Constants
+# =========================
+PCT_SUFFIX = ", %"
+ALL_TOKEN = "ALL"
+
+REQUIRED_COLS = ["Player", "Team", "Main Position", "Age", "League"]
+
+NON_FEATURE_COLUMNS = {
+    "Column1",
+    "Player",
+    "Team",
+    "Team within selected timeframe",
+    "Position",
+    "Birth country",
+    "Passport country",
+    "Foot",
+    "On loan",
+    "Contract expires",
+    "League",
+    "Main Position",
+    "Age",
+    "Season label",
+    "Season start",
+    "Season end",
+    "Season group",
+}
+
+LOWER_IS_BETTER = {
+    "Conceded goals per 90",
+    "xG against per 90",
+    "Fouls per 90",
+    "Turnovers per 90",
+    "Miscontrols per 90",
+    "Yellow cards per 90",
+    "Red cards per 90",
+}
+
+SEASON_RX = re.compile(r"(?<!\S)(\d{4})(?:\s*[-/\u2010-\u2015\u2212]\s*(\d{2}|\d{4}))?$")
+
+
+# =========================
+# Session state (persist score across reruns)
+# =========================
+if "active_profile" not in st.session_state:
+    st.session_state["active_profile"] = None
+# active_profile structure:
+# {
+#   "calc_col": str,
+#   "metrics": list[str],
+#   "weights_pct": list[int]
+# }
+
+
+# =========================
+# Profiles
+# =========================
+
+
+# =========================
+# Single-player percentile profiles
+# =========================
+# These are deliberately separate from the weighted recruitment-score profiles.
+# Each tuple is: (KPI group, requested Wyscout metric).
+
+
+def validate_single_player_metric_design() -> List[str]:
+    """
+    Single-player performance wheel policy:
+    use per-90, percentage, xG/xA per-90, or possession-adjusted metrics.
+    Returns any profile metrics that violate the policy.
+    """
+    invalid = []
+    for role, items in SINGLE_PLAYER_PROFILES.items():
+        for _, metric in items:
+            allowed = (
+                "per 90" in metric
+                or "%" in metric
+                or metric.startswith("PAdj ")
+            )
+            if not allowed:
+                invalid.append(f"{role}: {metric}")
+    return invalid
+
+
+SINGLE_PLAYER_METRIC_POLICY_ISSUES = validate_single_player_metric_design()
+
+
+
+
+
+
+def validate_builtin_profile_framework() -> List[str]:
+    """Full startup validation for the canonical built-in role framework."""
+    issues = validate_profile_config()
+    for role, metrics in PROFILES.items():
+        if metrics != [m for _, m in SINGLE_PLAYER_PROFILES[role]]:
+            issues.append(f"{role}: derived radar and scoring metric order differs.")
+        if set(DEFAULT_WEIGHTS[role]) != set(metrics):
+            issues.append(f"{role}: weight-map metrics differ from role metrics.")
+    return issues
+
+
+BUILTIN_PROFILE_FRAMEWORK_ISSUES = validate_builtin_profile_framework()
+
+# =========================
+# Profile depth system
+# =========================
+# Core 5 = specialist identification; Balanced 10 = recruitment screening;
+# Complete 15 = full role assessment. Custom lets the user override a built-in
+# profile for the current analysis without creating a new role taxonomy.
+PROFILE_DEPTH_OPTIONS = ["Core 5", "Balanced 10", "Complete 15", "Custom"]
+
+CORE_5_METRICS = {
+    "Classic Goalkeeper": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Exits per 90"],
+    "Sweeper Keeper": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %", "Progressive passes per 90", "Back passes received as GK per 90"],
+    "Build-Up Keeper": ["Accurate passes, %", "Accurate forward passes, %", "Accurate long passes, %", "Progressive passes per 90", "Back passes received as GK per 90"],
+    "Ball-Playing CB": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate long passes, %", "PAdj Interceptions"],
+    "Combative CB / Stopper": ["Defensive duels per 90", "Defensive duels won, %", "Aerial duels per 90", "Aerial duels won, %", "PAdj Interceptions"],
+    "Libero / Middle Pin CB": ["Progressive passes per 90", "Accurate progressive passes, %", "Long passes per 90", "PAdj Interceptions", "Accurate passes, %"],
+    "Wide CB (in 3)": ["Progressive runs per 90", "Progressive passes per 90", "Defensive duels won, %", "Accelerations per 90", "Accurate progressive passes, %"],
+    "Defensive Midfielder #6": ["PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels won, %", "Accurate passes, %", "Progressive passes per 90"],
+    "Deep-Lying Playmaker": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate long passes, %", "Accurate passes, %"],
+    "Box-to-Box Midfielder": ["Progressive runs per 90", "Successful defensive actions per 90", "Progressive passes per 90", "Touches in box per 90", "Defensive duels won, %"],
+    "Playmaker #10": ["xA per 90", "Key passes per 90", "Shot assists per 90", "Passes to penalty area per 90", "Deep completions per 90"],
+    "Full-Back": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Defensive duels won, %", "Progressive passes per 90"],
+    "Wing-Back": ["Progressive runs per 90", "Accelerations per 90", "Crosses per 90", "Touches in box per 90", "Successful dribbles, %"],
+    "Inverted Full-Back": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %", "PAdj Interceptions", "Passes to final third per 90"],
+    "Classic Winger": ["Crosses per 90", "Accurate crosses, %", "Dribbles per 90", "Successful dribbles, %", "Passes to penalty area per 90"],
+    "Inverted Winger": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Successful dribbles, %", "Progressive runs per 90"],
+    "Target Man #9": ["Aerial duels won, %", "Aerial duels per 90", "Received long passes per 90", "Touches in box per 90", "xG per 90"],
+    "Poacher": ["Non-penalty goals per 90", "xG per 90", "Touches in box per 90", "Shots per 90", "Goal conversion, %"],
+    "Pressing Forward": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Offensive duels per 90", "Progressive runs per 90"],
+    "Creative Forward / False 9": ["xA per 90", "Shot assists per 90", "Key passes per 90", "Received passes per 90", "Accurate passes, %"],
+    "Wide Forward / Inside 9": ["xG per 90", "Non-penalty goals per 90", "Touches in box per 90", "Progressive runs per 90", "Successful dribbles, %"],
+}
+
+BALANCED_10_METRICS = {
+    "Classic Goalkeeper": CORE_5_METRICS["Classic Goalkeeper"] + ["Aerial duels won, %", "Aerial duels per 90.1", "Shots against per 90", "Accurate long passes, %", "Back passes received as GK per 90"],
+    "Sweeper Keeper": CORE_5_METRICS["Sweeper Keeper"] + ["Accurate forward passes, %", "Accurate long passes, %", "Accurate passes, %", "Save rate, %", "Prevented goals per 90"],
+    "Build-Up Keeper": CORE_5_METRICS["Build-Up Keeper"] + ["Long passes per 90", "Passes per 90", "Exits per 90", "Save rate, %", "Prevented goals per 90"],
+    "Ball-Playing CB": CORE_5_METRICS["Ball-Playing CB"] + ["Forward passes per 90", "Accurate forward passes, %", "Long passes per 90", "Defensive duels won, %", "Aerial duels won, %"],
+    "Combative CB / Stopper": CORE_5_METRICS["Combative CB / Stopper"] + ["PAdj Sliding tackles", "Successful defensive actions per 90", "Shots blocked per 90", "Fouls per 90", "Accurate passes, %"],
+    "Libero / Middle Pin CB": CORE_5_METRICS["Libero / Middle Pin CB"] + ["Passes to final third per 90", "Accurate forward passes, %", "Defensive duels won, %", "Aerial duels won, %", "Received passes per 90"],
+    "Wide CB (in 3)": CORE_5_METRICS["Wide CB (in 3)"] + ["Dribbles per 90", "Successful dribbles, %", "PAdj Interceptions", "Aerial duels won, %", "Accurate forward passes, %"],
+    "Defensive Midfielder #6": CORE_5_METRICS["Defensive Midfielder #6"] + ["PAdj Sliding tackles", "Aerial duels won, %", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate forward passes, %"],
+    "Deep-Lying Playmaker": CORE_5_METRICS["Deep-Lying Playmaker"] + ["Forward passes per 90", "Accurate forward passes, %", "Long passes per 90", "PAdj Interceptions", "Received passes per 90"],
+    "Box-to-Box Midfielder": CORE_5_METRICS["Box-to-Box Midfielder"] + ["Accelerations per 90", "PAdj Interceptions", "xA per 90", "xG per 90", "Accurate progressive passes, %"],
+    "Playmaker #10": CORE_5_METRICS["Playmaker #10"] + ["Smart passes per 90", "Accurate smart passes, %", "Through passes per 90", "Progressive passes per 90", "Successful dribbles, %"],
+    "Full-Back": CORE_5_METRICS["Full-Back"] + ["Passes to penalty area per 90", "Progressive runs per 90", "PAdj Interceptions", "Successful defensive actions per 90", "Accurate progressive passes, %"],
+    "Wing-Back": CORE_5_METRICS["Wing-Back"] + ["Accurate crosses, %", "Crosses to goalie box per 90", "Dribbles per 90", "Passes to penalty area per 90", "Defensive duels won, %"],
+    "Inverted Full-Back": CORE_5_METRICS["Inverted Full-Back"] + ["Received passes per 90", "Forward passes per 90", "Accurate forward passes, %", "Defensive duels won, %", "Progressive runs per 90"],
+    "Classic Winger": CORE_5_METRICS["Classic Winger"] + ["Crosses to goalie box per 90", "Progressive runs per 90", "Accelerations per 90", "xA per 90", "Shot assists per 90"],
+    "Inverted Winger": CORE_5_METRICS["Inverted Winger"] + ["Shots per 90", "Shots on target, %", "xA per 90", "Passes to penalty area per 90", "Offensive duels won, %"],
+    "Target Man #9": CORE_5_METRICS["Target Man #9"] + ["Non-penalty goals per 90", "Received passes per 90", "Offensive duels won, %", "Shot assists per 90", "Fouls suffered per 90"],
+    "Poacher": CORE_5_METRICS["Poacher"] + ["Shots on target, %", "Head goals per 90", "Received passes per 90", "Offensive duels won, %", "Progressive runs per 90"],
+    "Pressing Forward": CORE_5_METRICS["Pressing Forward"] + ["Offensive duels won, %", "Fouls per 90", "xG per 90", "Non-penalty goals per 90", "Touches in box per 90"],
+    "Creative Forward / False 9": CORE_5_METRICS["Creative Forward / False 9"] + ["Deep completions per 90", "Smart passes per 90", "Progressive passes per 90", "Successful dribbles, %", "Touches in box per 90"],
+    "Wide Forward / Inside 9": CORE_5_METRICS["Wide Forward / Inside 9"] + ["Shots per 90", "Shots on target, %", "Offensive duels won, %", "xA per 90", "Passes to penalty area per 90"],
+}
+
+COMPLETE_15_ADDITIONS = {
+    "Classic Goalkeeper": ["Accurate passes, %", "Accurate forward passes, %", "Progressive passes per 90", "Long passes per 90", "Clean sheets"],
+    "Sweeper Keeper": ["Long passes per 90", "Passes per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    "Build-Up Keeper": ["Aerial duels won, %", "Aerial duels per 90.1", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    "Ball-Playing CB": ["Successful defensive actions per 90", "PAdj Sliding tackles", "Aerial duels per 90", "Accurate passes, %", "Progressive runs per 90"],
+    "Combative CB / Stopper": ["Progressive passes per 90", "Accurate progressive passes, %", "Forward passes per 90", "Long passes per 90", "Progressive runs per 90"],
+    "Libero / Middle Pin CB": ["Progressive runs per 90", "Forward passes per 90", "Successful defensive actions per 90", "PAdj Sliding tackles", "Aerial duels per 90"],
+    "Wide CB (in 3)": ["Successful defensive actions per 90", "Defensive duels per 90", "Passes to final third per 90", "Accurate long passes, %", "Aerial duels per 90"],
+    "Defensive Midfielder #6": ["Received passes per 90", "Forward passes per 90", "Long passes per 90", "Progressive runs per 90", "Fouls per 90"],
+    "Deep-Lying Playmaker": ["Key passes per 90", "xA per 90", "Smart passes per 90", "Defensive duels won, %", "Progressive runs per 90"],
+    "Box-to-Box Midfielder": ["Non-penalty goals per 90", "Shot assists per 90", "Passes to final third per 90", "Offensive duels won, %", "Aerial duels won, %"],
+    "Playmaker #10": ["Touches in box per 90", "xG per 90", "Progressive runs per 90", "Offensive duels won, %", "Received passes per 90"],
+    "Full-Back": ["Aerial duels won, %", "Accelerations per 90", "Accurate forward passes, %", "Dribbles per 90", "Successful dribbles, %"],
+    "Wing-Back": ["xA per 90", "Shot assists per 90", "Successful defensive actions per 90", "Offensive duels won, %", "Progressive passes per 90"],
+    "Inverted Full-Back": ["PAdj Sliding tackles", "Long passes per 90", "Successful defensive actions per 90", "Key passes per 90", "xA per 90"],
+    "Classic Winger": ["Key passes per 90", "Offensive duels won, %", "Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+    "Inverted Winger": ["Dribbles per 90", "Accelerations per 90", "Shot assists per 90", "Key passes per 90", "Goal conversion, %"],
+    "Target Man #9": ["Shots per 90", "Head goals per 90", "Accurate passes, %", "Key passes per 90", "Passes to penalty area per 90"],
+    "Poacher": ["Accelerations per 90", "Fouls suffered per 90", "Successful dribbles, %", "xA per 90", "Shot assists per 90"],
+    "Pressing Forward": ["Shots per 90", "Received passes per 90", "Fouls suffered per 90", "Shot assists per 90", "Passes to penalty area per 90"],
+    "Creative Forward / False 9": ["xG per 90", "Non-penalty goals per 90", "Passes to penalty area per 90", "Offensive duels won, %", "Progressive runs per 90"],
+    "Wide Forward / Inside 9": ["Accelerations per 90", "Dribbles per 90", "Shot assists per 90", "Goal conversion, %", "Received passes per 90"],
+}
+
+COMPLETE_15_METRICS = {
+    role: BALANCED_10_METRICS[role] + COMPLETE_15_ADDITIONS[role]
+    for role in CORE_5_METRICS
+}
+
+CORE_5_WEIGHTS = {role: [25, 22, 20, 18, 15] for role in CORE_5_METRICS}
+CORE_5_WEIGHTS.update({
+    "Poacher": [28, 25, 18, 16, 13],
+    "Target Man #9": [25, 23, 20, 17, 15],
+})
+BALANCED_10_WEIGHTS = {role: [16, 14, 12, 11, 10, 9, 8, 7, 7, 6] for role in BALANCED_10_METRICS}
+# Complete 15 is deliberately nested. The first five identity metrics retain 50%
+# of the score, metrics 6-10 add 32% functional breadth, and metrics 11-15 add
+# 18% completeness. This makes Core-vs-Complete comparisons interpretable.
+COMPLETE_15_WEIGHTS = {role: [12, 11, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 4, 3, 3] for role in COMPLETE_15_METRICS}
+
+# Lower values are desirable for these metrics; the scoring engine flips them.
+# They are already handled by the app's direction-aware metric policy.
+
+def profile_definition(role_name: str, depth: str = "Complete 15") -> Tuple[List[str], List[int]]:
+    """Return one nested built-in role definition for the requested depth."""
+    if depth == "Core 5":
+        return list(CORE_5_METRICS.get(role_name, PROFILES[role_name])[:5]), list(CORE_5_WEIGHTS.get(role_name, [25, 22, 20, 18, 15]))
+    if depth == "Balanced 10":
+        return list(BALANCED_10_METRICS.get(role_name, PROFILES[role_name])[:10]), list(BALANCED_10_WEIGHTS.get(role_name, [16, 14, 12, 11, 10, 9, 8, 7, 7, 6]))
+    return list(COMPLETE_15_METRICS.get(role_name, PROFILES[role_name])[:15]), list(COMPLETE_15_WEIGHTS.get(role_name, [12, 11, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 4, 3, 3]))
+
+def active_depth_for_role(role_name: str) -> str:
+    depth = st.session_state.get("profile_depth_global", "Complete 15")
+    # A Custom override belongs only to the currently active built-in role. Other
+    # role comparisons remain on Complete 15 rather than inheriting unrelated metrics.
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        if active.get("profile_name") == role_name and active.get("depth") == "Custom":
+            return "Custom"
+        return "Complete 15"
+    return depth
+
+def requested_profile_metrics(role_name: str) -> List[str]:
+    depth = active_depth_for_role(role_name)
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        return list(active.get("requested_metrics", active.get("metrics", [])))
+    return profile_definition(role_name, depth)[0]
+
+def requested_profile_weights(role_name: str) -> List[int]:
+    depth = active_depth_for_role(role_name)
+    if depth == "Custom":
+        active = st.session_state.get("active_profile") or {}
+        return [int(x) for x in active.get("weights_pct", [])]
+    return profile_definition(role_name, depth)[1]
+
+# Role-specific KPI architecture for the profile wheels.
+# Design rules: 3-5 football-readable groups per Complete 15 profile,
+# no generic catch-all group, and at least two Complete-15 metrics per group.
+ROLE_KPI_GROUPS = {
+    "Classic Goalkeeper": {
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90", "Clean sheets"],
+        "Area Control": ["Exits per 90", "Aerial duels won, %", "Aerial duels per 90.1"],
+        "Distribution": ["Accurate long passes, %", "Long passes per 90", "Progressive passes per 90"],
+        "Build-Up": ["Back passes received as GK per 90", "Accurate passes, %", "Accurate forward passes, %"],
+    },
+    "Sweeper Keeper": {
+        "Sweeping": ["Exits per 90", "Aerial duels per 90.1", "Aerial duels won, %"],
+        "Distribution": ["Progressive passes per 90", "Accurate long passes, %", "Long passes per 90"],
+        "Build-Up": ["Back passes received as GK per 90", "Accurate forward passes, %", "Accurate passes, %", "Passes per 90"],
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    },
+    "Build-Up Keeper": {
+        "Build-Up": ["Accurate passes, %", "Accurate forward passes, %", "Back passes received as GK per 90", "Passes per 90"],
+        "Distribution": ["Accurate long passes, %", "Progressive passes per 90", "Long passes per 90"],
+        "Area Control": ["Exits per 90", "Aerial duels won, %", "Aerial duels per 90.1"],
+        "Shot Stopping": ["Save rate, %", "Prevented goals per 90", "Conceded goals per 90", "xG against per 90", "Shots against per 90"],
+    },
+    "Ball-Playing CB": {
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Distribution": ["Accurate long passes, %", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "Successful defensive actions per 90", "PAdj Sliding tackles"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Ball Carrying": ["Progressive runs per 90", "Accurate passes, %"],
+    },
+    "Combative CB / Stopper": {
+        "Defending": ["Defensive duels per 90", "Defensive duels won, %", "PAdj Interceptions", "PAdj Sliding tackles", "Successful defensive actions per 90"],
+        "Aerial": ["Aerial duels per 90", "Aerial duels won, %"],
+        "Build-Up": ["Accurate passes, %", "Progressive passes per 90", "Accurate progressive passes, %"],
+        "Progression": ["Forward passes per 90", "Long passes per 90", "Progressive runs per 90"],
+        "Box Defence & Discipline": ["Shots blocked per 90", "Fouls per 90"],
+    },
+    "Libero / Middle Pin CB": {
+        "Build-Up": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %"],
+        "Distribution": ["Long passes per 90", "Passes to final third per 90", "Accurate forward passes, %", "Forward passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "Successful defensive actions per 90", "PAdj Sliding tackles"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Ball Carrying": ["Progressive runs per 90", "Received passes per 90"],
+    },
+    "Wide CB (in 3)": {
+        "Ball Carrying": ["Progressive runs per 90", "Accelerations per 90", "Dribbles per 90", "Successful dribbles, %"],
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Defending": ["Defensive duels won, %", "PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels per 90"],
+        "Aerial": ["Aerial duels won, %", "Aerial duels per 90"],
+        "Distribution": ["Accurate long passes, %", "Accurate forward passes, %"],
+    },
+    "Defensive Midfielder #6": {
+        "Ball Winning": ["PAdj Interceptions", "Successful defensive actions per 90", "Defensive duels won, %", "PAdj Sliding tackles", "Fouls per 90"],
+        "Possession Security": ["Accurate passes, %", "Received passes per 90"],
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90", "Accurate forward passes, %"],
+        "Distribution": ["Forward passes per 90", "Long passes per 90"],
+        "Mobility & Aerial": ["Progressive runs per 90", "Aerial duels won, %"],
+    },
+    "Deep-Lying Playmaker": {
+        "Progressive Passing": ["Progressive passes per 90", "Accurate progressive passes, %", "Passes to final third per 90"],
+        "Distribution": ["Accurate long passes, %", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Possession Security": ["Accurate passes, %", "Received passes per 90"],
+        "Chance Creation": ["Key passes per 90", "xA per 90", "Smart passes per 90"],
+        "Defensive Support": ["PAdj Interceptions", "Defensive duels won, %", "Progressive runs per 90"],
+    },
+    "Box-to-Box Midfielder": {
+        "Mobility": ["Progressive runs per 90", "Accelerations per 90", "Progressive passes per 90", "Accurate progressive passes, %"],
+        "Defensive Work": ["Successful defensive actions per 90", "Defensive duels won, %", "PAdj Interceptions"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Passes to final third per 90"],
+        "Duels": ["Offensive duels won, %", "Aerial duels won, %"],
+    },
+    "Playmaker #10": {
+        "Chance Creation": ["xA per 90", "Key passes per 90", "Shot assists per 90", "Deep completions per 90"],
+        "Creative Passing": ["Smart passes per 90", "Accurate smart passes, %", "Through passes per 90", "Passes to penalty area per 90"],
+        "Progression": ["Progressive passes per 90", "Progressive runs per 90", "Successful dribbles, %"],
+        "Box Threat": ["Touches in box per 90", "xG per 90"],
+        "Link Play": ["Received passes per 90", "Offensive duels won, %"],
+    },
+    "Full-Back": {
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "Defending": ["Defensive duels won, %", "PAdj Interceptions", "Successful defensive actions per 90", "Aerial duels won, %"],
+        "Progression": ["Progressive passes per 90", "Accurate progressive passes, %", "Progressive runs per 90", "Accurate forward passes, %"],
+        "1v1 & Mobility": ["Accelerations per 90", "Dribbles per 90", "Successful dribbles, %"],
+    },
+    "Wing-Back": {
+        "Progression": ["Progressive runs per 90", "Accelerations per 90", "Progressive passes per 90"],
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Box & Creation": ["Touches in box per 90", "xA per 90", "Shot assists per 90"],
+        "Defensive Work": ["Defensive duels won, %", "Successful defensive actions per 90"],
+    },
+    "Inverted Full-Back": {
+        "Build-Up": ["Progressive passes per 90", "Accurate progressive passes, %", "Accurate passes, %", "Received passes per 90"],
+        "Progressive Passing": ["Passes to final third per 90", "Forward passes per 90", "Accurate forward passes, %", "Long passes per 90"],
+        "Defending": ["PAdj Interceptions", "Defensive duels won, %", "PAdj Sliding tackles", "Successful defensive actions per 90"],
+        "Progression & Creation": ["Progressive runs per 90", "Key passes per 90", "xA per 90"],
+    },
+    "Classic Winger": {
+        "Wide Delivery": ["Crosses per 90", "Accurate crosses, %", "Crosses to goalie box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Dribbles per 90", "Successful dribbles, %", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90"],
+    },
+    "Inverted Winger": {
+        "Finishing": ["xG per 90", "Non-penalty goals per 90", "Shots per 90", "Shots on target, %", "Goal conversion, %"],
+        "Box Threat": ["Touches in box per 90", "Passes to penalty area per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90"],
+    },
+    "Target Man #9": {
+        "Aerial & Duels": ["Aerial duels won, %", "Aerial duels per 90", "Offensive duels won, %", "Fouls suffered per 90"],
+        "Target Play": ["Received long passes per 90", "Received passes per 90", "Accurate passes, %"],
+        "Box Threat & Finishing": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90", "Shots per 90", "Head goals per 90"],
+        "Link Play": ["Shot assists per 90", "Key passes per 90", "Passes to penalty area per 90"],
+    },
+    "Poacher": {
+        "Finishing": ["Non-penalty goals per 90", "xG per 90", "Shots per 90", "Goal conversion, %", "Shots on target, %", "Head goals per 90"],
+        "Box Threat": ["Touches in box per 90", "Received passes per 90"],
+        "Movement": ["Progressive runs per 90", "Accelerations per 90"],
+        "Duels & 1v1": ["Offensive duels won, %", "Fouls suffered per 90", "Successful dribbles, %"],
+        "Creation": ["xA per 90", "Shot assists per 90"],
+    },
+    "Pressing Forward": {
+        "Defensive Work": ["Successful defensive actions per 90", "Defensive duels per 90", "PAdj Interceptions", "Fouls per 90"],
+        "Duels": ["Offensive duels per 90", "Offensive duels won, %", "Fouls suffered per 90"],
+        "Movement": ["Progressive runs per 90", "Received passes per 90"],
+        "Box Threat": ["xG per 90", "Touches in box per 90", "Shots per 90"],
+        "End Product & Link": ["Non-penalty goals per 90", "Shot assists per 90", "Passes to penalty area per 90"],
+    },
+    "Creative Forward / False 9": {
+        "Chance Creation": ["xA per 90", "Shot assists per 90", "Key passes per 90", "Deep completions per 90"],
+        "Link Play": ["Received passes per 90", "Accurate passes, %", "Smart passes per 90", "Progressive passes per 90"],
+        "1v1 & Progression": ["Successful dribbles, %", "Progressive runs per 90", "Offensive duels won, %"],
+        "Box Threat": ["Touches in box per 90", "xG per 90", "Non-penalty goals per 90", "Passes to penalty area per 90"],
+    },
+    "Wide Forward / Inside 9": {
+        "Finishing": ["xG per 90", "Non-penalty goals per 90", "Shots per 90", "Shots on target, %", "Goal conversion, %"],
+        "Box Threat": ["Touches in box per 90", "Passes to penalty area per 90", "Received passes per 90"],
+        "1v1 Threat": ["Successful dribbles, %", "Dribbles per 90", "Offensive duels won, %"],
+        "Progression": ["Progressive runs per 90", "Accelerations per 90"],
+        "Creation": ["xA per 90", "Shot assists per 90"],
+    },
+}
+
+# Flattened exact metric -> KPI lookup for each role. If a metric is accidentally
+# listed in two groups, the FIRST group above wins; validation below flags duplicates.
+ROLE_KPI_LOOKUP = {
+    role: {metric: group for group, metrics in groups.items() for metric in metrics}
+    for role, groups in ROLE_KPI_GROUPS.items()
+}
+
+
+def role_kpi_for_metric(role_name: str, metric: str) -> str:
+    """Return the reviewed football-readable KPI family for this role."""
+    group = ROLE_KPI_LOOKUP.get(role_name, {}).get(metric)
+    if group:
+        return group
+
+    # Custom profiles may introduce a metric outside the reviewed built-in 15.
+    # Keep a readable football label rather than exposing a generic "Other KPI".
+    metric_l = metric.lower()
+    if any(x in metric_l for x in ["xg", "goal", "shot", "touches in box"]):
+        return "End Product"
+    if any(x in metric_l for x in ["xa", "key pass", "shot assist", "through pass", "smart pass", "penalty area", "deep completion"]):
+        return "Chance Creation"
+    if any(x in metric_l for x in ["defensive", "interception", "sliding tackle", "shots blocked"]):
+        return "Defending"
+    if "aerial" in metric_l:
+        return "Aerial"
+    if any(x in metric_l for x in ["dribble", "progressive run", "acceleration"]):
+        return "Progression"
+    return "Passing & Possession"
+
+def single_player_profile_for_depth(role_name: str) -> List[Tuple[str, str]]:
+    """Canonical wheel definition for the active profile depth.
+
+    IMPORTANT: the active depth metric list is the source of truth. KPI mappings
+    only classify those metrics; they never decide which metrics survive. This
+    guarantees Core=5, Balanced=10 and Complete=15 whenever the built-in depth
+    itself contains that many metrics.
+    """
+    metrics = requested_profile_metrics(role_name)
+    return [(role_kpi_for_metric(role_name, metric), metric) for metric in metrics]
+
+
+def validate_depth_wheel_framework() -> List[str]:
+    """Audit every built-in role for depth count, nesting and KPI coverage."""
+    issues: List[str] = []
+    for role in CORE_5_METRICS:
+        core = list(CORE_5_METRICS.get(role, []))
+        balanced = list(BALANCED_10_METRICS.get(role, []))
+        complete = list(COMPLETE_15_METRICS.get(role, []))
+
+        if len(core) != 5:
+            issues.append(f"{role}: Core has {len(core)} metrics, expected 5.")
+        if len(balanced) != 10:
+            issues.append(f"{role}: Balanced has {len(balanced)} metrics, expected 10.")
+        if len(complete) != 15:
+            issues.append(f"{role}: Complete has {len(complete)} metrics, expected 15.")
+        if balanced[:len(core)] != core:
+            issues.append(f"{role}: Core is not nested at the start of Balanced.")
+        if complete[:len(balanced)] != balanced:
+            issues.append(f"{role}: Balanced is not nested at the start of Complete.")
+
+        groups = ROLE_KPI_GROUPS.get(role, {})
+        assigned = [m for ms in groups.values() for m in ms]
+        missing = [m for m in complete if m not in assigned]
+        duplicates = sorted({m for m in assigned if assigned.count(m) > 1 and m in complete})
+        used_groups = {role_kpi_for_metric(role, m) for m in complete}
+        group_counts = {g: sum(role_kpi_for_metric(role, m) == g for m in complete) for g in used_groups}
+        if missing:
+            issues.append(f"{role}: KPI mapping missing {missing}.")
+        if duplicates:
+            issues.append(f"{role}: metrics assigned to multiple KPI groups {duplicates}.")
+        if not (3 <= len(used_groups) <= 5):
+            issues.append(f"{role}: uses {len(used_groups)} KPI groups; expected 3-5.")
+        singleton = [g for g, n in group_counts.items() if n < 2]
+        if singleton:
+            issues.append(f"{role}: Complete 15 has singleton KPI groups {singleton}.")
+    return issues
+
+
+DEPTH_WHEEL_FRAMEWORK_ISSUES = validate_depth_wheel_framework()
+
+
+
+# Main Position eligibility used when a built-in profile is applied.
+# Applying a profile updates the Main Position filter to these Wyscout labels.
+PROFILE_POSITION_ELIGIBILITY = {
+    "Classic Goalkeeper": ["GK"],
+    "Sweeper Keeper": ["GK"],
+    "Build-Up Keeper": ["GK"],
+    "Ball-Playing CB": ["CB", "LCB", "RCB"],
+    "Combative CB / Stopper": ["CB", "LCB", "RCB"],
+    "Libero / Middle Pin CB": ["CB", "LCB", "RCB"],
+    "Wide CB (in 3)": ["CB", "LCB", "RCB"],
+    "Defensive Midfielder #6": ["DMF", "LDMF", "RDMF", "LCMF", "RCMF"],
+    "Deep-Lying Playmaker": ["DMF", "LDMF", "RDMF", "LCMF", "RCMF"],
+    "Box-to-Box Midfielder": ["LCMF", "RCMF"],
+    "Playmaker #10": ["AMF"],
+    "Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Wing-Back": ["LWB", "RWB", "LB", "RB"],
+    "Inverted Full-Back": ["LB", "RB", "LWB", "RWB"],
+    "Classic Winger": ["LW", "RW", "LAMF", "RAMF"],
+    "Inverted Winger": ["LW", "RW", "LWF", "RWF", "LAMF", "RAMF"],
+    "Target Man #9": ["CF"],
+    "Poacher": ["CF", "LWF", "RWF"],
+    "Pressing Forward": ["CF", "LWF", "RWF"],
+    "Creative Forward / False 9": ["CF", "AMF"],
+    "Wide Forward / Inside 9": ["LWF", "RWF", "LW", "RW"],
+}
+
+# =========================
+# Utilities
+# =========================
+def norm_key(s: str) -> str:
+    return re.sub(r"[\s,%–\-]+", "", str(s)).lower()
+
+
+def safe_widget_key(*parts: str) -> str:
+    raw = "::".join(parts)
+    return re.sub(r"[^a-zA-Z0-9_:\-]+", "_", raw)
+
+
+def multiselect_all(label: str, options: List[str], default_all: bool = True, help: str | None = None, key: str | None = None):
+    opts = [ALL_TOKEN] + options
+    default = [ALL_TOKEN] if default_all else []
+    picked = st.sidebar.multiselect(label, opts, default=default, help=help, key=key)
+    use_all = (not picked) or (ALL_TOKEN in picked)
+    return (options if use_all else [o for o in picked if o != ALL_TOKEN]), use_all
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def load_csv(file_bytes: bytes, filename: str) -> pd.DataFrame:
+    # cache key includes bytes + filename
     try:
-        ref = load_reference(str(Path(__file__).with_name('wyscout_league_tiers_v8_reference.csv')))
-    except (OSError, ValueError) as e:
-        st.error(f'League reference unavailable: {e}'); return
-    if players.empty:
-        st.info('Select a season containing players.'); return
-    tier = players['League'].map(ref['Sporting tier'])
-    team_col = season_team if season_team in players.columns else 'Team'
-    teams = players[team_col].fillna('').astype(str)
-    clubs = players.loc[tier.notna() & teams.ne(''), ['League', team_col]].drop_duplicates()
-    options = sorted(clubs.itertuples(index=False, name=None), key=lambda x:(str(x[1]).casefold(),str(x[0])))
-    if not options:
-        st.info('No rated clubs in the selected seasons.'); return
-    left, right = st.columns([1,2])
-    with left:
-        target_league, target_club = st.selectbox('1. Recruiting club', options, format_func=lambda x:f'{x[1]} — {x[0]}', key='rm9_club')
-        target_tier = int(ref.loc[target_league,'Sporting tier'])
-        st.metric('Target tier',target_tier)
-        role = st.selectbox('2. Player profile', list(profiles), key='rm9_role')
-        depth = st.selectbox('Profile depth',['Core 5','Balanced 10','Complete 15'],index=2,key='rm9_depth')
-        tiers = st.multiselect('3. Source tiers', list(range(1,11)), default=[t for t in range(1,11) if abs(t-target_tier)<=1],key='rm9_tiers')
-        league_on = st.toggle('Apply league adjustment',value=True,key='rm9_league')
-        club_on = st.toggle('Apply club adjustment',value=True,key='rm9_club_adj')
-        age = st.slider('Age', 15, 60, (15,60),key='rm9_age')
-        minutes = st.number_input('Minimum minutes',min_value=0,value=900,step=100,key='rm9_minutes')
-        coverage = st.slider('Minimum profile coverage (%)',50,100,70,5,key='rm9_coverage')/100
-        exclude = st.checkbox('Exclude recruiting club’s own players',value=True,key='rm9_exclude')
-        max_value = None
-        if 'Market value (M€)' in players:
-            if st.checkbox('Limit market value', key='rm10_value_on'):
-                max_value = st.number_input('Maximum market value (€m)', min_value=0.0, value=2.0, step=0.1, key='rm10_value')
-                unknown_value = st.checkbox('Include unknown market values', value=True, key='rm10_unknown_value')
-        expiry = None
-        if 'Contract expires' in players and st.checkbox('Filter contract expiry', key='rm10_expiry_on'):
-            expiry = st.date_input('Contract expires on or before', key='rm10_expiry')
-            unknown_expiry = st.checkbox('Include unknown expiry dates', value=True, key='rm10_unknown_expiry')
-        squad_minutes = st.number_input('Minimum minutes for squad benchmark', min_value=0, value=450, step=50, key='rm10_squad_minutes')
-    with right:
-        eligible = eligibility.get(role, [])
-        if not eligible:
-            st.warning('No position eligibility defined for this profile.'); return
-        mins = pd.to_numeric(players['Minutes played'],errors='coerce')
-        ages = pd.to_numeric(players['Age'],errors='coerce')
-        # Stable role benchmark: all selected seasons, independent of source tiers and age.
-        bench = benchmark_fn(players.loc[mins.ge(minutes)],role,'Role position',[])
-        mask = tier.isin(tiers) & players['Main Position'].isin(eligible) & mins.ge(minutes) & ages.between(*age)
-        own = players['League'].eq(target_league) & teams.eq(target_club)
-        if exclude: mask &= ~own
-        if max_value is not None:
-            values = pd.to_numeric(players['Market value (M€)'], errors='coerce')
-            mask &= values.le(max_value) | (values.isna() & unknown_value)
-        if expiry is not None:
-            dates = pd.to_datetime(players['Contract expires'], errors='coerce', format='mixed')
-            mask &= dates.le(pd.Timestamp(expiry)) | (dates.isna() & unknown_expiry)
-        squad_mask = own & players['Main Position'].isin(eligible) & mins.ge(squad_minutes)
-        # Score the full benchmark and squad together, before candidate-only filters.
-        population = players.loc[players.index.isin(bench.index) | squad_mask | mask].copy()
-        st.caption(f'Eligible positions: {", ".join(eligible)} | Role benchmark: {len(bench):,} rows across selected seasons')
-        if population.empty or bench.empty:
-            st.info('No eligible benchmark rows. Broaden the filters.'); return
-        if len(bench)<20: st.warning('Small role benchmark; interpret scores cautiously.')
-        with st.spinner('Calculating existing profile scores…'):
-            result,_ = score_fn(population,bench,role,depth,coverage)
-        result = result.rename(columns={'_shadow_role_score':'Profile Score'})
-        result['Source tier'] = result['League'].map(ref['Sporting tier'])
-        result['Tier difference'] = result['Source tier']-target_tier
-        labels = tuple(sorted(set(result['League'].astype(str))|{target_league}))
-        strength = strength_fn(labels,strength_path)
-        ratings = strength.set_index('League')['rating'] if not strength.empty else pd.Series(dtype=float)
-        target_rating = ratings.get(target_league,np.nan)
-        result['Source Opta rating'] = result['League'].map(ratings)
-        result['Opta difference'] = result['Source Opta rating']-target_rating
-        st.caption(f'Target league Opta rating: {target_rating:.2f}' if pd.notna(target_rating) else 'Target league Opta rating unavailable.')
-        terms=[]
-        if league_on:
-            result['League Adjustment'] = league_beta*result['Opta difference']; terms.append('League Adjustment')
-        if club_on:
-            result['Club Adjustment'] = np.nan
-            if season_team in result.columns:
-                try:
-                    lookup=club_fn(audit_path,audit_path.stat().st_mtime_ns,snapshot_path,snapshot_path.stat().st_mtime_ns)
-                    keys=pd.MultiIndex.from_frame(result[['League',season_team]])
-                    result['Club Adjustment']=club_beta*lookup.reindex(keys).to_numpy()
-                except (OSError,ValueError,KeyError) as e:
-                    st.warning(f'Club adjustment data unavailable: {e}')
-            else: st.warning('Season-specific team column unavailable; club adjustment cannot be verified.')
-            terms.append('Club Adjustment')
-        rank='Profile Score'
-        if terms:
-            rank='Adjusted Score'
-            result[rank]=result['Profile Score']+result[terms].sum(axis=1,min_count=len(terms))
-        # Empirical percentile against the same adjusted role benchmark, not the shortlist.
-        distribution = np.sort(result.loc[result.index.isin(bench.index),rank].dropna().to_numpy())
-        valid = result[rank].notna()
-        result['Benchmark Percentile'] = np.nan
-        if len(distribution):
-            v = result.loc[valid,rank].to_numpy()
-            result.loc[valid,'Benchmark Percentile'] = 100*(np.searchsorted(distribution,v,'left')+np.searchsorted(distribution,v,'right'))/(2*len(distribution))
-        squad = result.loc[result.index.isin(players.index[squad_mask])].sort_values(rank,ascending=False)
-        squad_scores = squad[rank].dropna()
-        result = result.loc[result.index.isin(players.index[mask])].copy()
-        result['Difference vs Club Average'] = result[rank] - squad_scores.mean()
-        result['Difference vs Best Club Player'] = result[rank] - squad_scores.max()
-        result=result.sort_values(rank,ascending=False,na_position='last',kind='stable')
-        a,b,c=st.columns(3); a.metric('Candidates',len(result)); b.metric('Source leagues',result['League'].nunique()); c.metric('Rankable',int(result[rank].notna().sum()))
-        if result[rank].isna().any(): st.warning('Blank scores indicate insufficient coverage or unavailable required ratings.')
-        st.subheader('Recruiting club benchmark')
-        st.caption('Selected club and league-season only. Independent of candidate age, tiers, value and contract filters. Squad average is unweighted.')
-        if squad_scores.empty:
-            st.info('No rankable squad players at the selected minutes threshold. Upgrade differences remain blank.')
+        return pd.read_csv(StringIO(file_bytes.decode("utf-8")))
+    except UnicodeDecodeError:
+        return pd.read_csv(StringIO(file_bytes.decode("latin-1")))
+    except Exception:
+        bio = BytesIO(file_bytes)
+        try:
+            return pd.read_csv(bio)
+        except UnicodeDecodeError:
+            bio.seek(0)
+            return pd.read_csv(bio, encoding="latin-1")
+
+
+def parse_market_value(series: pd.Series) -> pd.Series:
+    """Parse '€12.5m', '€800k', '12,000,000' into float (EUR M)."""
+    if pd.api.types.is_numeric_dtype(series):
+        s = pd.to_numeric(series, errors="coerce")
+        mx = s.max(skipna=True)
+        if pd.notna(mx) and mx > 1e6:
+            return s / 1e6
+        return s
+
+    def to_float(x):
+        if pd.isna(x):
+            return np.nan
+        s = str(x).strip().replace("€", "").replace(",", "").lower()
+        mult = 1.0
+        if s.endswith("m"):
+            mult = 1_000_000.0
+            s = s[:-1]
+        elif s.endswith("k"):
+            mult = 1_000.0
+            s = s[:-1]
+        try:
+            val = float(s) * mult
+        except ValueError:
+            return np.nan
+        return val / 1e6
+
+    return series.apply(to_float)
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Coerce numeric columns + create season fields."""
+    df = df_raw.copy()
+
+    if "Column1" in df.columns and df["Column1"].nunique(dropna=False) == len(df):
+        df = df.drop(columns=["Column1"])
+
+    if "Market value" in df.columns:
+        df["Market value (M€)"] = parse_market_value(df["Market value"])
+
+    for col in df.columns:
+        if col in NON_FEATURE_COLUMNS or col == "Market value":
+            continue
+        if col.endswith(PCT_SUFFIX):
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace("%", "", regex=False), errors="coerce")
         else:
-            a,b,c=st.columns(3); a.metric('Rankable squad players',len(squad_scores)); b.metric('Club average',f'{squad_scores.mean():.3f}'); c.metric('Best club score',f'{squad_scores.max():.3f}')
-        squad_cols=[c for c in ['Player','Age','Minutes played','Profile Score',*terms,rank,'Benchmark Percentile'] if c in squad]
-        st.dataframe(squad[list(dict.fromkeys(squad_cols))].round(3),hide_index=True,use_container_width=True)
-        st.subheader('Recruitment shortlist')
-        st.caption(f'Percentiles use {len(distribution):,} rankable role-benchmark rows with the same adjustment settings. Positive differences indicate higher statistical profile scores, not guaranteed upgrades.')
-        defaults=list(dict.fromkeys(['Player',team_col,'League','Main Position','Age','Minutes played',rank,'Benchmark Percentile','Difference vs Club Average','Difference vs Best Club Player','Source tier','Tier difference','Source Opta rating','Opta difference','Profile Score',*terms,'Market value (M€)','Contract expires']))
-        defaults=[c for c in defaults if c in result]
-        options=defaults+[c for c in result.columns if c not in defaults and not c.startswith('_')]
-        columns=st.multiselect('Table columns (in display order)',options,default=defaults,key='rm10_columns')
-        columns=[c for c in columns if c in result]
-        limit=st.slider('Rows to display',10,500,100,10,key='rm9_limit')
-        if columns:
-            st.dataframe(result[columns].head(limit).round(3),use_container_width=True,hide_index=True)
-            st.download_button('Export recruitment shortlist (CSV)',result[columns].to_csv(index=False).encode('utf-8-sig'),'recruitment_shortlist.csv','text/csv',key='rm9_export')
-        with st.expander('Recruitment market overview'):
-            market=result.groupby(['Source tier','League'],dropna=False)[rank].agg(Candidates='size',Rankable='count',Average='mean',Best='max').reset_index().sort_values('Best',ascending=False)
-            st.dataframe(market.round(3),hide_index=True,use_container_width=True)
-        with st.expander('Recruitment scatter plot'):
-            plot=result.dropna(subset=[rank,'Age']).copy()
-            if not plot.empty:
-                plot['Tier']=plot['Source tier'].astype(str)
-                fig=px.scatter(plot,x='Age',y=rank,color='Tier',hover_name='Player',hover_data=[team_col,'League','Minutes played'])
-                if not squad_scores.empty:
-                    fig.add_hline(y=squad_scores.mean(),line_dash='dash',annotation_text='Club average')
-                    fig.add_hline(y=squad_scores.max(),line_dash='dot',annotation_text='Best club player')
-                st.plotly_chart(fig,use_container_width=True)
-        with st.expander('Compare shortlisted players'):
-            choices=result.index.tolist()
-            selected=st.multiselect('Select up to five player records',choices,format_func=lambda i:f"{result.loc[i,'Player']} — {result.loc[i,team_col]} — {result.loc[i,'League']}",max_selections=5,key='rm10_compare')
-            if selected:
-                st.dataframe(result.loc[selected,defaults].round(3),hide_index=True,use_container_width=True)
-        st.caption('Existing league and club adjustment formulas are unchanged. Market values and contract dates are dataset observations, not verified current availability.')
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    def extract_season_label(league_value: object) -> str | None:
+        if not isinstance(league_value, str):
+            return None
+        match = SEASON_RX.search(league_value.strip())
+        if match:
+            return "-".join(part for part in match.groups() if part is not None)
+        return None
+
+    def season_start_end(season_label: str) -> Tuple[int | None, int | None]:
+        m = SEASON_RX.fullmatch(season_label)
+        if not m:
+            return (None, None)
+        start = int(m.group(1))
+        end_raw = m.group(2)
+        if not end_raw:
+            return (start, start)
+        end = int(end_raw)
+        if end < 100:
+            end = 2000 + end if end < 70 else 1900 + end
+        return (start, end)
+
+    df["Season label"] = df["League"].apply(extract_season_label)
+    starts_ends = df["Season label"].apply(lambda s: season_start_end(s) if isinstance(s, str) else (None, None))
+    df["Season start"] = starts_ends.apply(lambda t: t[0])
+    df["Season end"] = starts_ends.apply(lambda t: t[1])
+    df["Season group"] = pd.Series(df["Season start"]).fillna(df["Season end"]).astype("Int64")
+
+    # Memory optimization: downcast wide numeric columns where possible.
+    # This preserves values while reducing RAM for large Wyscout exports.
+    for col in df.select_dtypes(include=["float64"]).columns:
+        df[col] = pd.to_numeric(df[col], downcast="float")
+    for col in df.select_dtypes(include=["int64"]).columns:
+        df[col] = pd.to_numeric(df[col], downcast="integer")
+
+    # Repeated categorical labels are stored once rather than as tens of thousands
+    # of duplicate Python strings. Player is deliberately left as text because of
+    # its high cardinality and frequent string operations.
+    for col in [
+        "Team", "League", "Main Position", "Position", "Foot",
+        "Birth country", "Passport country", "On loan", "Season label",
+    ]:
+        if col in df.columns:
+            try:
+                df[col] = df[col].astype("category")
+            except (TypeError, ValueError):
+                pass
+
+    return df
+
+
+def get_numeric_columns(df: pd.DataFrame) -> List[str]:
+    numeric = df.select_dtypes(include="number").columns
+    numeric = [c for c in numeric if c not in NON_FEATURE_COLUMNS and c != "Market value"]
+    return numeric
+
+
+def resolve_metrics_aliases(requested: List[str], columns: List[str]) -> Tuple[List[str], List[str]]:
+    col_norm_map = {norm_key(c): c for c in columns}
+    resolved, missing = [], []
+    for name in requested:
+        if name in columns:
+            resolved.append(name)
+            continue
+        if "%" in name and ", %" not in name:
+            alt = name.replace(" %", ", %").replace("%", ", %")
+            if alt in columns:
+                resolved.append(alt)
+                continue
+        key = norm_key(name)
+        if key in col_norm_map:
+            resolved.append(col_norm_map[key])
+            continue
+        missing.append(name)
+    return resolved, missing
+
+
+def normalize_weights(pcts: np.ndarray) -> np.ndarray:
+    total = float(np.nansum(pcts))
+    if total <= 0 or len(pcts) == 0:
+        return np.ones_like(pcts, dtype=float) / max(1, len(pcts))
+    return (pcts / total).astype(float)
+
+
+def sparse_mask(X: pd.DataFrame, threshold: float = 0.95) -> pd.Series:
+    zeros_or_nan = X.isna() | (X == 0)
+    return zeros_or_nan.mean(axis=0) >= threshold
+
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def benchmark_metric_stats(benchmark_numeric: pd.DataFrame) -> pd.DataFrame:
+    """Cache benchmark means/SDs/counts; input is already numeric and role-filtered."""
+    return pd.DataFrame({
+        "mean": benchmark_numeric.mean(axis=0),
+        "std": benchmark_numeric.std(axis=0, ddof=0),
+        "count": benchmark_numeric.count(axis=0),
+    })
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def benchmark_population_for_role(
+    source_df: pd.DataFrame,
+    role_name: str | None,
+    mode: str,
+    selected_positions: List[str],
+) -> pd.DataFrame:
+    """Benchmark is intentionally independent from age/team search filters."""
+    # Filtering below is read-only, so avoid cloning the entire benchmark source.
+    bench = source_df
+    if "Main Position" not in bench.columns:
+        return bench
+    if mode == "Role position" and role_name in PROFILES:
+        return bench.loc[position_family_mask(bench["Main Position"], role_name)]
+    if mode == "Selected positions" and selected_positions:
+        return bench.loc[bench["Main Position"].isin(selected_positions)]
+    return bench
+
+
+def role_kpi_subscores(
+    z_values: pd.DataFrame,
+    role_name: str,
+    resolved_metric_map: Dict[str, str],
+    custom_weights_pct: Dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Weighted KPI sub-scores from already direction-aware z-values."""
+    out = pd.DataFrame(index=z_values.index)
+    for kpi, metric_weights in PROFILE_CONFIG.get(role_name, {}).items():
+        cols, ws = [], []
+        for requested_metric, default_w in metric_weights.items():
+            resolved = resolved_metric_map.get(requested_metric)
+            if resolved and resolved in z_values.columns:
+                cols.append(resolved)
+                ws.append(float((custom_weights_pct or {}).get(resolved, default_w)))
+        if not cols:
+            continue
+        W = pd.Series(ws, index=cols, dtype=float)
+        Z = z_values[cols]
+        available_w = Z.notna().mul(W, axis=1).sum(axis=1)
+        weighted = Z.fillna(0).mul(W, axis=1).sum(axis=1)
+        out[f"KPI: {kpi}"] = (weighted / available_w.replace(0, np.nan)).round(2)
+    return out
+
+def make_profile_score_vectorized(
+    score_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    metrics: List[str],
+    weights: np.ndarray,
+    new_col: str,
+    sparse_threshold: float = 0.95,
+    coverage_threshold: float = 0.70,
+) -> Tuple[pd.DataFrame, List[str], List[str], pd.DataFrame]:
+    """
+    Direction-aware weighted z-score.
+
+    Key methodological safeguards:
+    - benchmark population is separate from the displayed/search player pool;
+    - sparse metrics are assessed on the benchmark;
+    - missing player metrics are NOT treated as average;
+    - each player's available weights are renormalized;
+    - coverage is reported and low-coverage scores are suppressed.
+    """
+    present = [m for m in metrics if m in score_df.columns and m in benchmark_df.columns]
+    if not present:
+        out = score_df.copy()
+        out[new_col] = np.nan
+        out[f"{new_col} Coverage %"] = 0.0
+        return out, [], metrics, pd.DataFrame(index=score_df.index)
+
+    B = benchmark_df[present].apply(pd.to_numeric, errors="coerce")
+    sparse = sparse_mask(B, threshold=sparse_threshold)
+    usable_metrics = [m for m in present if not bool(sparse.get(m, False))]
+    skipped_sparse = [m for m in present if m not in usable_metrics]
+
+    out = score_df.copy()
+    if not usable_metrics:
+        out[new_col] = np.nan
+        out[f"{new_col} Coverage %"] = 0.0
+        return out, [], skipped_sparse, pd.DataFrame(index=score_df.index)
+
+    w_map = {m: float(w) for m, w in zip(metrics, weights)}
+    W = pd.Series({m: w_map.get(m, 0.0) for m in usable_metrics}, dtype=float)
+    if W.sum() <= 0:
+        W[:] = 1.0
+    W = W / W.sum()
+
+    stats = benchmark_metric_stats(B[usable_metrics])
+    means = stats["mean"]
+    stds = stats["std"].replace(0, np.nan)
+
+    X = score_df[usable_metrics].apply(pd.to_numeric, errors="coerce")
+    Z = (X - means) / stds
+    flip_cols = [c for c in usable_metrics if c in LOWER_IS_BETTER]
+    if flip_cols:
+        Z[flip_cols] = -Z[flip_cols]
+
+    available_weight = Z.notna().mul(W, axis=1).sum(axis=1)
+    weighted_sum = Z.fillna(0.0).mul(W, axis=1).sum(axis=1)
+    score = weighted_sum / available_weight.replace(0, np.nan)
+    coverage = available_weight * 100.0
+
+    score = score.where(available_weight >= float(coverage_threshold))
+    out[new_col] = score.round(2)
+    out[f"{new_col} Coverage %"] = coverage.round(0)
+
+    return out, usable_metrics, skipped_sparse, Z
+
+
+def defaults_for_resolved(profile_name: str, resolved_metric_names: List[str]) -> List[int]:
+    dm = DEFAULT_WEIGHTS.get(profile_name, {})
+    dm_norm = {norm_key(k): int(v) for k, v in dm.items()}
+    if not resolved_metric_names:
+        return []
+    equal = max(1, int(100 / len(resolved_metric_names)))
+    return [int(dm_norm.get(norm_key(m), equal)) for m in resolved_metric_names]
+
+
+
+def percentile_rank_against_population(
+    population: pd.Series,
+    player_value: float,
+    lower_is_better: bool = False,
+) -> float:
+    """Percentile rank in [0, 100], with ties handled by average rank."""
+    s = pd.to_numeric(population, errors="coerce").dropna()
+    if s.empty or pd.isna(player_value):
+        return np.nan
+    less = float((s < player_value).sum())
+    equal = float((s == player_value).sum())
+    pct = 100.0 * (less + 0.5 * equal) / len(s)
+    if lower_is_better:
+        pct = 100.0 - pct
+    return float(np.clip(pct, 0.0, 100.0))
+
+
+
+def percentile_ranks_against_population_vectorized(
+    population: pd.Series,
+    values: pd.Series,
+    lower_is_better: bool = False,
+) -> pd.Series:
+    """Vectorized equivalent of percentile_rank_against_population.
+
+    Preserves the app's existing midpoint tie handling exactly:
+    percentile = 100 * (count_less + 0.5 * count_equal) / N.
+    Uses NumPy searchsorted instead of one Python function call per player.
+    """
+    pop = pd.to_numeric(population, errors="coerce").dropna().to_numpy(dtype=float)
+    result = pd.Series(np.nan, index=values.index, dtype=float)
+    if pop.size == 0:
+        return result
+
+    pop.sort()
+    numeric_values = pd.to_numeric(values, errors="coerce")
+    valid = numeric_values.notna()
+    if not valid.any():
+        return result
+
+    vals = numeric_values.loc[valid].to_numpy(dtype=float)
+    left = np.searchsorted(pop, vals, side="left")
+    right = np.searchsorted(pop, vals, side="right")
+    pct = 100.0 * (left + 0.5 * (right - left)) / pop.size
+    if lower_is_better:
+        pct = 100.0 - pct
+    result.loc[valid] = np.clip(pct, 0.0, 100.0)
+    return result
+
+def position_family_mask(series: pd.Series, role_name: str) -> pd.Series:
+    """Best-effort position-relevant benchmark using Main Position text."""
+    hints = ROLE_POSITION_HINTS.get(role_name, [])
+    if not hints:
+        return pd.Series(True, index=series.index)
+
+    def matches(value: object) -> bool:
+        s = str(value).upper().strip()
+        # Wyscout exports vary: CB, RCB, LCB, Centre Back, etc.
+        if "GK" in hints:
+            return "GK" in s or "GOALKEEP" in s
+        if "CB" in hints:
+            return any(x in s for x in ["CB", "CENTRE BACK", "CENTER BACK"])
+        if any(x in hints for x in ["LB", "RB", "LWB", "RWB"]):
+            return any(x in s for x in ["LB", "RB", "LWB", "RWB", "FULL BACK", "WING BACK"])
+        if any(x in hints for x in ["DMF", "CMF", "AMF"]):
+            return any(x in s for x in ["DMF", "CMF", "AMF", "DM", "CM", "AM", "MIDFIELD"])
+        if any(x in hints for x in ["LW", "RW", "LWF", "RWF", "LMF", "RMF"]):
+            return any(x in s for x in ["LW", "RW", "LWF", "RWF", "LMF", "RMF", "WINGER"])
+        if any(x in hints for x in ["CF", "ST"]):
+            return any(x in s for x in ["CF", "ST", "CENTRE FORWARD", "CENTER FORWARD", "STRIKER"])
+        return any(h in s for h in hints)
+
+    return series.apply(matches)
+
+
+def directional_z_against_population(
+    population: pd.Series,
+    player_value: float,
+    lower_is_better: bool = False,
+) -> float:
+    """Directional z-score against the selected benchmark population."""
+    s = pd.to_numeric(population, errors="coerce").dropna()
+    if s.empty or pd.isna(player_value):
+        return np.nan
+    sd = float(s.std(ddof=0))
+    if not np.isfinite(sd) or sd == 0:
+        return 0.0
+    z = (float(player_value) - float(s.mean())) / sd
+    if lower_is_better:
+        z = -z
+    return float(z)
+
+
+def build_single_player_profile(
+    player_row: pd.Series,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Return KPI group, resolved metric, raw value and directional percentile."""
+    requested = single_player_profile_for_depth(role_name)
+    records = []
+    missing = []
+
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], benchmark_df.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+        metric = resolved[0]
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        lower_better = metric in LOWER_IS_BETTER
+        pct = percentile_rank_against_population(
+            benchmark_df[metric],
+            value,
+            lower_is_better=lower_better,
+        )
+        z = directional_z_against_population(
+            benchmark_df[metric],
+            value,
+            lower_is_better=lower_better,
+        )
+        # Keep the complete selected depth on the wheel. Missing player values are
+        # retained as N/A rather than silently removing the metric and shrinking a
+        # Complete 15 profile to (for example) 10 displayed metrics.
+        records.append(
+            {
+                "KPI Group": wheel_kpi_group(metric, group),
+                "Metric": metric,
+                "Raw Value": float(value) if pd.notna(value) else np.nan,
+                "Percentile": float(pct) if pd.notna(pct) else np.nan,
+                "Z-score": float(z) if pd.notna(z) else np.nan,
+            }
+        )
+
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+
+def build_single_player_profile_league_adjusted(
+    player_row: pd.Series,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+    league_strength_lookup: pd.DataFrame,
+    reference_rating: float,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Build the Single Player wheel after translating every observation in the
+    multi-league benchmark to one explicit reference competition.
+
+    Method:
+      1) Standardize each role metric inside the selected pooled benchmark.
+      2) Make the z-score direction-aware (higher = better).
+      3) Add beta * (player league rating - reference rating) to every player's
+         metric z-score.
+      4) Rank the selected player's adjusted z-score against the adjusted
+         benchmark distribution for that metric.
+
+    Raw Wyscout values are never modified.
+    """
+    requested = single_player_profile_for_depth(role_name)
+    records, missing = [], []
+
+    if benchmark_df.empty or league_strength_lookup.empty or "League" not in benchmark_df.columns:
+        return pd.DataFrame(), [m for _, m in requested]
+
+    rating_map = league_strength_lookup.set_index("League")["rating"]
+    bench_ratings = benchmark_df["League"].map(rating_map)
+
+    player_league = player_row.get("League")
+    player_rating = rating_map.get(player_league, np.nan)
+    if pd.isna(player_rating):
+        return pd.DataFrame(), [m for _, m in requested]
+
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], benchmark_df.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+
+        metric = resolved[0]
+        series = pd.to_numeric(benchmark_df[metric], errors="coerce")
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        valid = series.notna() & bench_ratings.notna()
+        population = series.loc[valid]
+
+        if pd.isna(value) or len(population) < 2:
+            continue
+
+        mean = population.mean()
+        std = population.std(ddof=0)
+        if pd.isna(std) or std <= 1e-12:
+            continue
+
+        direction = -1.0 if metric in LOWER_IS_BETTER else 1.0
+        bench_z = direction * ((population - mean) / std)
+        bench_adj_z = bench_z + LEAGUE_TRANSLATION_BETA * (
+            bench_ratings.loc[valid].astype(float) - float(reference_rating)
+        )
+
+        player_z = direction * ((float(value) - mean) / std)
+        player_adj_z = player_z + LEAGUE_TRANSLATION_BETA * (
+            float(player_rating) - float(reference_rating)
+        )
+
+        pct = float((bench_adj_z <= player_adj_z).mean() * 100.0)
+        records.append({
+            "KPI Group": wheel_kpi_group(metric, group),
+            "Metric": metric,
+            "Raw Value": float(value),
+            "Percentile": pct,
+            "Z-score": float(player_adj_z),
+        })
+
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+def build_role_similarity_table(
+    reference_row: pd.Series,
+    candidates: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    role_name: str,
+    coverage_threshold: float,
+) -> pd.DataFrame:
+    """
+    Playing-style similarity for one canonical role.
+
+    Each role metric is standardized against the selected multi-league role
+    benchmark. Similarity is based on weighted standardized distance, so league
+    strength does NOT alter style similarity. A weighted RMSE of 0 is identical;
+    similarity is mapped to 0-100 as exp(-0.5 * RMSE^2).
+
+    Missing metrics are handled pairwise and the available role weights are
+    renormalized. Candidates below the requested profile-weight coverage are
+    suppressed.
+    """
+    requested = requested_profile_metrics(role_name)
+    depth_weights = requested_profile_weights(role_name)
+    depth_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_map[req] = rr[0]
+
+    metrics = list(dict.fromkeys(resolved_map.values()))
+    if not metrics or candidates.empty:
+        return pd.DataFrame()
+
+    weight_by_metric = {}
+    for req, metric in resolved_map.items():
+        weight_by_metric[metric] = weight_by_metric.get(metric, 0.0) + float(depth_weight_map.get(req, 0.0))
+    intended_weight = float(sum(weight_by_metric.values()))
+    if intended_weight <= 0:
+        return pd.DataFrame()
+
+    B = benchmark_df[metrics].apply(pd.to_numeric, errors="coerce")
+    means = B.mean(axis=0)
+    stds = B.std(axis=0, ddof=0)
+    usable = [m for m in metrics if pd.notna(stds.get(m)) and float(stds[m]) > 1e-12]
+    if not usable:
+        return pd.DataFrame()
+
+    means = means[usable]
+    stds = stds[usable]
+    weights = pd.Series({m: weight_by_metric[m] for m in usable}, dtype=float)
+
+    ref_vals = pd.Series(
+        {m: pd.to_numeric(pd.Series([reference_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in usable},
+        dtype=float,
+    )
+    ref_z = (ref_vals - means) / stds
+
+    C = candidates[usable].apply(pd.to_numeric, errors="coerce")
+    Z = (C - means) / stds
+
+    rows = []
+    for idx in candidates.index:
+        z = Z.loc[idx]
+        valid = z.notna() & ref_z.notna()
+        available_weight = float(weights.loc[valid].sum()) if valid.any() else 0.0
+        coverage = 100.0 * available_weight / intended_weight if intended_weight else 0.0
+        if available_weight <= 0 or coverage < coverage_threshold * 100.0:
+            continue
+        w = weights.loc[valid] / available_weight
+        diff2 = (z.loc[valid] - ref_z.loc[valid]) ** 2
+        weighted_rmse = float(np.sqrt((diff2 * w).sum()))
+        similarity = float(100.0 * np.exp(-0.5 * weighted_rmse ** 2))
+        rows.append({
+            "_row_index": idx,
+            "Similarity %": similarity,
+            "Similarity Coverage %": coverage,
+            "Style Distance": weighted_rmse,
+        })
+
+    return pd.DataFrame(rows)
+
+def performance_band_color(value: float, scale_mode: str) -> str:
+    """Performance colour for percentile or direction-aware z-score."""
+    if pd.isna(value):
+        return "#7F8C8D"
+    if scale_mode == "Percentile":
+        if value < 25:
+            return "#8B1E1E"   # dark red
+        if value < 50:
+            return "#E57373"   # light red
+        if value < 75:
+            return "#81C784"   # light green
+        return "#1B5E20"       # dark green
+
+    # z thresholds mirror approximately the 25th / 50th / 75th percentiles.
+    if value < -0.67:
+        return "#8B1E1E"
+    if value < 0:
+        return "#E57373"
+    if value < 0.67:
+        return "#81C784"
+    return "#1B5E20"
+
+
+def single_player_wheel(
+    profile_df: pd.DataFrame,
+    player_name: str,
+    subtitle: str,
+    scale_mode: str = "Percentile",
+) -> go.Figure:
+    """
+    Fixed-radius scouting wheel.
+
+    Design principle:
+    - every metric receives equal visual space;
+    - KPI groups are structural coloured bands, not variable-length wedges;
+    - performance is shown by a dot on a fixed radial scale;
+    - percentile and z-score therefore remain readable even for low values;
+    - the centre is reserved for player/profile context.
+    """
+    if profile_df.empty:
+        return go.Figure()
+
+    p = profile_df.reset_index(drop=True).copy()
+    # Canonical KPI assignment + stable block ordering. The first KPI family
+    # encountered keeps its place, while every metric in that family is moved
+    # next to it. Metrics inside each family retain their original order.
+    p["KPI Group"] = [wheel_kpi_group(m, g) for m, g in zip(p["Metric"], p["KPI Group"])]
+    group_order = list(dict.fromkeys(p["KPI Group"].tolist()))
+    p["_kpi_order"] = pd.Categorical(p["KPI Group"], categories=group_order, ordered=True)
+    p = p.sort_values("_kpi_order", kind="stable").drop(columns="_kpi_order").reset_index(drop=True)
+    groups = group_order
+
+    # Neutral categorical palette: colour = KPI family, NOT performance quality.
+    # Avoid traffic-light red/green/orange semantics.
+    # High-separation categorical palette for KPI families.
+    # Red and green are deliberately excluded because those colours are reserved
+    # for performance bands on the radial lines / endpoint dots.
+    palette = [
+        "#3478B8",  # blue
+        "#8E5AB5",  # purple
+        "#16A6B6",  # cyan / teal
+        "#E58A2B",  # orange
+        "#244A73",  # navy
+        "#D4A72C",  # gold
+        "#C44E8B",  # magenta
+        "#687684",  # slate
+    ]
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    # Presentation aliases only; underlying Wyscout columns remain untouched.
+    display_aliases = {
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+    labels = [display_aliases.get(m, m) for m in p["Metric"]]
+    p["Display Metric"] = labels
+
+    n = len(p)
+    # Keep each metric equal-width, with a clearly larger angular gap at KPI boundaries than between metrics inside a KPI block.
+    group_seq = p["KPI Group"].tolist()
+    gap_units = 0.90
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
+
+    theta = []
+    cursor = 0.0
+    for i in range(n):
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.86
+
+    # Thin fixed-radius KPI band: supporting context, while the inner profile is the focal layer.
+    band_inner = 78.0
+    band_outer = 86.0
+    band_len = band_outer - band_inner
+
+    fig = go.Figure()
+
+    for group in groups:
+        idx = p.index[p["KPI Group"] == group].tolist()
+        positions = [float(theta[i]) for i in idx]
+        fig.add_trace(
+            go.Barpolar(
+                r=[band_len] * len(idx),
+                base=[band_inner] * len(idx),
+                theta=positions,
+                width=[width] * len(idx),
+                marker_color=group_colors[group],
+                marker_line_color="white",
+                marker_line_width=1.2,
+                opacity=0.88,
+                name=group,
+                hoverinfo="skip",
+            )
+        )
+
+    # Enlarged performance annulus so the player profile is visually dominant.
+    perf_inner = 20.0
+    perf_outer = 74.0
+    perf_span = perf_outer - perf_inner
+
+    if scale_mode == "Percentile":
+        values = np.clip(p["Percentile"].to_numpy(dtype=float), 0, 100)
+        valid_values = np.isfinite(values)
+        marker_r = np.where(valid_values, perf_inner + (values / 100.0) * perf_span, perf_inner)
+        value_text = [f"{int(round(v))}" if np.isfinite(v) else "N/A" for v in values]
+        scale_ticks = [0, 25, 50, 75, 100]
+        scale_r = [perf_inner + (v / 100.0) * perf_span for v in scale_ticks]
+        scale_text = [str(v) for v in scale_ticks]
+    else:
+        raw_z = p["Z-score"].to_numpy(dtype=float)
+        valid_values = np.isfinite(raw_z)
+        clipped = np.clip(raw_z, -2.0, 2.0)
+        marker_r = np.where(valid_values, perf_inner + ((clipped + 2.0) / 4.0) * perf_span, perf_inner)
+        value_text = [f"{v:+.2f}" if np.isfinite(v) else "N/A" for v in raw_z]
+        scale_ticks = [-2, -1, 0, 1, 2]
+        scale_r = [perf_inner + ((v + 2.0) / 4.0) * perf_span for v in scale_ticks]
+        scale_text = [f"{v:+d}" if v != 0 else "0" for v in scale_ticks]
+
+    performance_values = (
+        p["Percentile"].to_numpy(dtype=float)
+        if scale_mode == "Percentile"
+        else p["Z-score"].to_numpy(dtype=float)
+    )
+    performance_colors = [
+        performance_band_color(v, scale_mode) for v in performance_values
+    ]
+
+    # Calm reference rings. In the default percentile view, 50 is the
+    # benchmark median and 25/75 provide quick orientation.
+    ring_theta = np.linspace(0, 360, 361)
+    for tick, rv in zip(scale_ticks, scale_r):
+        if scale_mode == "Percentile":
+            if tick == 50:
+                ring_color, ring_width = "rgba(45,55,65,0.55)", 2.6
+            elif tick in (25, 75):
+                ring_color, ring_width = "rgba(95,105,115,0.14)", 1.15
+            else:
+                ring_color, ring_width = "rgba(120,130,140,0.10)", 1.0
+        else:
+            if tick == 0:
+                ring_color, ring_width = "rgba(45,55,65,0.55)", 2.6
+            else:
+                ring_color, ring_width = "rgba(120,130,140,0.14)", 1.0
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[rv] * len(ring_theta),
+                theta=ring_theta,
+                mode="lines",
+                line=dict(color=ring_color, width=ring_width),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    custom = np.column_stack([
+        p["Raw Value"].to_numpy(dtype=float),
+        p["Percentile"].to_numpy(dtype=float),
+        p["Z-score"].to_numpy(dtype=float),
+        p["Metric"].astype(str).to_numpy(),
+        p["KPI Group"].astype(str).to_numpy(),
+        p["Display Metric"].astype(str).to_numpy(),
+    ])
+
+    # Thin spokes make it easy to associate marker, number and metric.
+    for i in range(n):
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[perf_inner, marker_r[i]],
+                theta=[theta[i], theta[i]],
+                mode="lines",
+                line=dict(color=performance_colors[i], width=9.5),
+                opacity=0.82,
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Performance markers: the primary quantitative encoding.
+    marker_colors = performance_colors
+    fig.add_trace(
+        go.Scatterpolar(
+            r=marker_r,
+            theta=theta,
+            mode="markers",
+            marker=dict(
+                size=21,
+                color=marker_colors,
+                line=dict(color="white", width=2.4),
+            ),
+            customdata=custom,
+            hovertemplate=(
+                "<b>%{customdata[5]}</b><br>"
+                "KPI: %{customdata[4]}<br>"
+                "Raw value: %{customdata[0]:.2f}<br>"
+                "Percentile: %{customdata[1]:.0f}<br>"
+                "Z-score: %{customdata[2]:+.2f}<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+
+    # Numerical result sits in the fixed KPI tile rather than collapsing toward centre.
+    fig.add_trace(
+        go.Scatterpolar(
+            r=[82.0] * n,
+            theta=theta,
+            mode="text",
+            text=[f"<b>{v}</b>" for v in value_text],
+            textfont=dict(size=17, color="white"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    # KPI group names are intentionally shown only in the legend.
+
+    # Centre content.
+    role_label = subtitle.split("|")[0].strip() if subtitle else ""
+    centre_text = (
+        f"<b>{player_name}</b>"
+        + (f"<br><span style='font-size:11px'>{role_label}</span>" if role_label else "")
+    )
+    fig.add_annotation(
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
+        text=centre_text,
+        showarrow=False,
+        align="center",
+        font=dict(size=16, color="#17202A"),
+        bgcolor="rgba(255,255,255,0.94)",
+        bordercolor="rgba(120,130,140,0.22)",
+        borderwidth=1,
+        borderpad=11,
+    )
+
+    # Scale key in the lower-left, avoiding radial-axis clutter.
+    key = "Percentile: 0–100" if scale_mode == "Percentile" else "Z-score: −2 to +2 · 0 = benchmark mean"
+    fig.add_annotation(
+        x=0.01, y=0.01,
+        xref="paper", yref="paper",
+        text=key,
+        showarrow=False,
+        xanchor="left",
+        yanchor="bottom",
+        font=dict(size=10, color="#6B7785"),
+    )
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{player_name}</b><br><sup>{subtitle}</sup>",
+            x=0.5,
+            xanchor="center",
+            y=0.985,
+            font=dict(size=20, color="#17202A"),
+        ),
+        template="plotly_white",
+        height=920,
+        margin=dict(l=180, r=180, t=132, b=125),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.025,
+            xanchor="center",
+            x=0.5,
+            title_text="",
+            font=dict(size=10),
+        ),
+        polar=dict(
+            bgcolor="white",
+            radialaxis=dict(
+                range=[0, 96],
+                visible=False,
+            ),
+            angularaxis=dict(
+                tickmode="array",
+                tickvals=theta,
+                ticktext=labels,
+                direction="clockwise",
+                rotation=90,
+                gridcolor="rgba(255,255,255,0)",
+                tickfont=dict(size=16, color="#303A44"),
+                showline=False,
+            ),
+        ),
+        barmode="overlay",
+    )
+
+    return fig
+
+
+def wheel_kpi_group(metric: str, supplied_group: str | None = None) -> str:
+    """Return the KPI family supplied by the active role definition.
+
+    Never apply a global metric->KPI override here: the same metric can have a
+    different tactical meaning in different roles (for example aerial ability
+    for a goalkeeper versus a centre-back).
+    """
+    group = str(supplied_group or "").strip()
+    if group and group.lower() not in {"profile", "other kpi"}:
+        return group
+
+    # Generic fallback is used only when no role-specific group was supplied.
+    try:
+        resolved = str(kpi_for_metric(metric) or "").strip()
+        if resolved and resolved.lower() != "profile":
+            return resolved
+    except Exception:
+        pass
+
+    return "Passing & Possession"
+
+
+def multi_player_profile_wheel(
+    raw_table: pd.DataFrame,
+    z_table: pd.DataFrame,
+    percentile_table: pd.DataFrame,
+    display_scale: str,
+    players: List[str],
+    profile_name: str,
+    metrics: List[str],
+    kpi_lookup: Dict[str, str],
+) -> go.Figure:
+    """
+    Multi-player version of the fixed-radius scouting wheel.
+
+    It deliberately mirrors the single-player profile:
+    - identical KPI band architecture;
+    - identical metric order and KPI gaps;
+    - identical -2 to +2 z-score mapping;
+    - multiple players shown as lines + markers rather than overlapping fills.
+    """
+    if not players or not metrics:
+        return go.Figure()
+
+    display_aliases = {
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90",
+        "Yellow cards per 90": "Yellow Cards /90",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+
+    # Build TRUE contiguous KPI blocks. First-seen KPI family order is preserved;
+    # metrics retain their original order inside each family. Because all data
+    # tables are accessed by metric column name, reordering this list also keeps
+    # every player's values aligned correctly.
+    original_metrics = list(metrics)
+    first_seen_groups = []
+    metric_group = {}
+    for m in original_metrics:
+        g = wheel_kpi_group(m, kpi_lookup.get(m))
+        metric_group[m] = g
+        if g not in first_seen_groups:
+            first_seen_groups.append(g)
+    metrics = [m for g in first_seen_groups for m in original_metrics if metric_group[m] == g]
+    labels = [display_aliases.get(m, m) for m in metrics]
+    groups = first_seen_groups
+
+    # Neutral categorical palette: colour = KPI family, NOT performance quality.
+    # Avoid traffic-light red/green/orange semantics.
+    # High-separation categorical palette for KPI families.
+    # Red and green are deliberately excluded because those colours are reserved
+    # for performance bands on the radial lines / endpoint dots.
+    palette = [
+        "#3478B8",  # blue
+        "#8E5AB5",  # purple
+        "#16A6B6",  # cyan / teal
+        "#E58A2B",  # orange
+        "#244A73",  # navy
+        "#D4A72C",  # gold
+        "#C44E8B",  # magenta
+        "#687684",  # slate
+    ]
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    group_seq = [wheel_kpi_group(m, kpi_lookup.get(m)) for m in metrics]
+    n = len(metrics)
+    gap_units = 0.90
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
+
+    theta = []
+    cursor = 0.0
+    for i in range(n):
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.90
+
+    fig = go.Figure()
+
+    # Same KPI band as the single-player wheel.
+    band_inner = 80.0
+    band_outer = 90.0
+    band_len = band_outer - band_inner
+    for group in groups:
+        idx = [i for i, g in enumerate(group_seq) if g == group]
+        fig.add_trace(
+            go.Barpolar(
+                r=[band_len] * len(idx),
+                base=[band_inner] * len(idx),
+                theta=[float(theta[i]) for i in idx],
+                width=[width] * len(idx),
+                marker_color=group_colors[group],
+                marker_line_color="white",
+                marker_line_width=1.2,
+                opacity=0.88,
+                name=group,
+                legendgroup=f"kpi_{group}",
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Same fixed-radius performance annulus as the single-player wheel.
+    # Only the statistical scale changes; geometry/KPI structure stays identical.
+    perf_inner = 20.0
+    perf_outer = 76.0
+    perf_span = perf_outer - perf_inner
+    ring_theta = np.linspace(0, 360, 361)
+
+    if display_scale == "Percentile":
+        scale_ticks = [0, 25, 50, 75, 100]
+        reference_tick = 50
+        def map_to_radius(v: float) -> float:
+            vv = float(np.clip(v, 0.0, 100.0))
+            return perf_inner + (vv / 100.0) * perf_span
+    else:
+        scale_ticks = [-2, -1, 0, 1, 2]
+        reference_tick = 0
+        def map_to_radius(v: float) -> float:
+            vv = float(np.clip(v, -2.0, 2.0))
+            return perf_inner + ((vv + 2.0) / 4.0) * perf_span
+
+    for tick in scale_ticks:
+        rv = map_to_radius(tick)
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[rv] * len(ring_theta),
+                theta=ring_theta,
+                mode="lines",
+                line=dict(
+                    color="rgba(45,55,65,0.62)" if tick == reference_tick else "rgba(120,130,140,0.16)",
+                    width=2.8 if tick == reference_tick else 1,
+                ),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Metric spokes stay neutral so several player traces remain readable.
+    for angle in theta:
+        fig.add_trace(
+            go.Scatterpolar(
+                r=[perf_inner, perf_outer],
+                theta=[angle, angle],
+                mode="lines",
+                line=dict(color="rgba(120,130,140,0.16)", width=1.4),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Multi-player performance: no fills, only lines + markers.
+    # Plotly assigns a distinct player color automatically.
+    for player in players:
+        if player not in z_table.index:
+            continue
+
+        z = pd.to_numeric(z_table.loc[player, metrics], errors="coerce").fillna(0.0)
+        pct = pd.to_numeric(percentile_table.loc[player, metrics], errors="coerce").fillna(50.0)
+        raw = pd.to_numeric(raw_table.loc[player, metrics], errors="coerce")
+
+        display_values = pct if display_scale == "Percentile" else z
+        marker_r = np.array([map_to_radius(v) for v in display_values], dtype=float)
+
+        custom = np.column_stack([
+            raw.to_numpy(dtype=float),
+            z.to_numpy(dtype=float),
+            pct.to_numpy(dtype=float),
+            np.array([wheel_kpi_group(m, kpi_lookup.get(m)) for m in metrics], dtype=object),
+            np.array(labels, dtype=object),
+        ])
+
+        fig.add_trace(
+            go.Scatterpolar(
+                r=list(marker_r) + [float(marker_r[0])],
+                theta=list(theta) + [float(theta[0])],
+                mode="lines+markers",
+                name=player,
+                line=dict(width=6.5),
+                marker=dict(size=15, line=dict(color="white", width=2.2)),
+                customdata=np.vstack([custom, custom[0]]),
+                hovertemplate=(
+                    "<b>%{fullData.name}</b><br>"
+                    "%{customdata[4]}<br>"
+                    "KPI: %{customdata[3]}<br>"
+                    "Raw value: %{customdata[0]:.2f}<br>"
+                    "Percentile: %{customdata[2]:.0f}<br>"
+                    "Z-score: %{customdata[1]:+.2f}<extra></extra>"
+                ),
+            )
+        )
+
+    # Centre context mirrors the single-player chart.
+    if display_scale == "Percentile":
+        centre_text = "<b>Percentile</b><br><span style='font-size:11px'>Higher = better · 50 = median</span>"
+    else:
+        centre_text = "<b>Z-score</b><br><span style='font-size:11px'>0 = benchmark mean</span>"
+    fig.add_annotation(
+        x=0.5, y=0.5,
+        xref="paper", yref="paper",
+        text=centre_text,
+        showarrow=False,
+        align="center",
+        font=dict(size=14, color="#17202A"),
+        bgcolor="rgba(255,255,255,0.94)",
+        bordercolor="rgba(120,130,140,0.22)",
+        borderwidth=1,
+        borderpad=8,
+    )
+
+
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{profile_name}</b> — Multi-Player Role Comparison",
+            x=0.5,
+            xanchor="center",
+            y=0.998,
+            font=dict(size=22, color="#17202A"),
+        ),
+        template="plotly_white",
+        height=1020,
+        margin=dict(l=45, r=45, t=145, b=30),
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.035,
+            xanchor="center",
+            x=0.5,
+            title_text="",
+            font=dict(size=12),
+        ),
+        polar=dict(
+            domain=dict(x=[0.03, 0.97], y=[0.015, 0.915]),
+            bgcolor="white",
+            radialaxis=dict(range=[0, 93], visible=False),
+            angularaxis=dict(
+                tickmode="array",
+                tickvals=theta,
+                ticktext=labels,
+                direction="clockwise",
+                rotation=90,
+                gridcolor="rgba(255,255,255,0)",
+                tickfont=dict(size=16, color="#303A44"),
+                showline=False,
+            ),
+        ),
+        barmode="overlay",
+    )
+
+    # KPI legend, matching the single-player visual language, is kept separate
+    # from the player legend so player colours remain unambiguous.
+    kpi_text = "  ·  ".join(
+        f"<span style='color:{group_colors[g]}'><b>■ {g}</b></span>" for g in groups
+    )
+    fig.add_annotation(
+        x=0.5, y=0.982,
+        xref="paper", yref="paper",
+        text=kpi_text,
+        showarrow=False,
+        xanchor="center",
+        yanchor="bottom",
+        font=dict(size=13)
+    )
+
+    return fig
+
+
+
+# =========================
+# Calculated Metrics v1
+# =========================
+POSITION_FAMILIES = {
+    "Goalkeeper": {"GK"},
+    "Centre-Back": {"CB", "LCB", "RCB"},
+    "Full-Back / Wing-Back": {"LB", "RB", "LWB", "RWB"},
+    "Central Midfield": {"DMF", "LDMF", "RDMF", "CMF", "LCMF", "RCMF"},
+    "Attacking Midfield": {"AMF"},
+    "Winger": {"LW", "RW", "LAMF", "RAMF"},
+    "Forward": {"CF", "LWF", "RWF"},
+}
+
+CALCULATED_METRICS = {
+    "Calc: GK Shot Stopping": {"families": ["Goalkeeper"], "components": {"Save rate, %": 40, "Prevented goals per 90": 35, "Conceded goals per 90": 15, "xG against per 90": 10}},
+    "Calc: GK Area Control": {"families": ["Goalkeeper"], "components": {"Exits per 90": 40, "Aerial duels per 90.1": 25, "Aerial duels won, %": 35}},
+    "Calc: GK Distribution": {"families": ["Goalkeeper"], "components": {"Accurate passes, %": 20, "Accurate long passes, %": 30, "Accurate forward passes, %": 20, "Progressive passes per 90": 20, "Back passes received as GK per 90": 10}},
+    "Calc: Defensive Activity": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Successful defensive actions per 90": 35, "PAdj Interceptions": 35, "PAdj Sliding tackles": 30}},
+    "Calc: Duel Dominance": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield"], "components": {"Defensive duels won, %": 60, "Aerial duels won, %": 40}},
+    "Calc: Aerial Impact": {"families": ["Centre-Back", "Central Midfield", "Forward"], "components": {"Aerial duels per 90": 45, "Aerial duels won, %": 55}},
+    "Calc: Passing Progression": {"families": ["Centre-Back", "Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield"], "components": {"Progressive passes per 90": 50, "Passes to final third per 90": 30, "Forward passes per 90": 20}},
+    "Calc: Carrying Progression": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger"], "components": {"Progressive runs per 90": 40, "Dribbles per 90": 30, "Accelerations per 90": 30}},
+    "Calc: Wide Delivery": {"families": ["Full-Back / Wing-Back", "Winger"], "components": {"Crosses per 90": 25, "Accurate crosses, %": 30, "Crosses to goalie box per 90": 25, "Passes to penalty area per 90": 20}},
+    "Calc: 1v1 Threat": {"families": ["Attacking Midfield", "Winger"], "components": {"Dribbles per 90": 35, "Successful dribbles, %": 35, "Offensive duels won, %": 30}},
+    "Calc: Chance Creation": {"families": ["Full-Back / Wing-Back", "Central Midfield", "Attacking Midfield", "Winger", "Forward"], "components": {"xA per 90": 40, "Shot assists per 90": 30, "Key passes per 90": 20, "Deep completions per 90": 10}},
+    "Calc: Box Threat": {"families": ["Attacking Midfield", "Winger", "Forward"], "components": {"xG per 90": 40, "Touches in box per 90": 30, "Shots per 90": 20, "Non-penalty goals per 90": 10}},
+    "Calc: Finishing": {"families": ["Winger", "Forward"], "components": {"Non-penalty goals per 90": 35, "Goal conversion, %": 25, "Shots on target, %": 20, "xG per 90": 20}},
+    "Calc: Link Play": {"families": ["Forward"], "components": {"Received passes per 90": 25, "Received long passes per 90": 20, "Accurate passes, %": 25, "Shot assists per 90": 15, "xA per 90": 15}},
+}
+
+EFFICIENCY_METRICS = [
+    "Calc: Shot Quality (xG/Shot)",
+    "Calc: Finishing Above xG /90",
+    "Calc: Chance Quality (xA/Key Pass)",
+]
+CALCULATED_INDEX_NAMES = list(CALCULATED_METRICS.keys())
+
+def calculated_position_family(value: object) -> str | None:
+    s = str(value or "").strip().upper()
+    for family, positions in POSITION_FAMILIES.items():
+        if s in positions:
+            return family
+    return None
+
+def add_efficiency_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    def n(col):
+        return pd.to_numeric(out[col], errors="coerce") if col in out.columns else pd.Series(np.nan, index=out.index)
+    shots = n("Shots per 90").replace(0, np.nan)
+    key_passes = n("Key passes per 90").replace(0, np.nan)
+    out["Calc: Shot Quality (xG/Shot)"] = n("xG per 90") / shots
+    out["Calc: Finishing Above xG /90"] = n("Non-penalty goals per 90") - n("xG per 90")
+    out["Calc: Chance Quality (xA/Key Pass)"] = n("xA per 90") / key_passes
+    return out
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def add_calculated_indices(score_df: pd.DataFrame, benchmark_df: pd.DataFrame) -> pd.DataFrame:
+    out = add_efficiency_metrics(score_df)
+    bench = add_efficiency_metrics(benchmark_df)
+    families_score = out["Main Position"].map(calculated_position_family)
+    families_bench = bench["Main Position"].map(calculated_position_family)
+    active_score_families = set(families_score.dropna().unique().tolist())
+
+    for index_name, cfg in CALCULATED_METRICS.items():
+        out[index_name] = np.nan
+
+        # Skip the whole composite when it is irrelevant to every player in the
+        # current Players workspace. The output column still exists, preserving
+        # the app's schema and selector logic.
+        relevant_families = [
+            family for family in cfg["families"]
+            if family in active_score_families
+        ]
+        if not relevant_families:
+            continue
+
+        for family in relevant_families:
+            score_mask = families_score.eq(family)
+            bench_mask = families_bench.eq(family)
+            if not score_mask.any() or not bench_mask.any():
+                continue
+            requested = list(cfg["components"].keys())
+            resolved, _ = resolve_metrics_aliases(requested, bench.columns.tolist())
+            req_to_col = {}
+            for req in requested:
+                rr, _ = resolve_metrics_aliases([req], bench.columns.tolist())
+                if rr and rr[0] in out.columns:
+                    req_to_col[req] = rr[0]
+            cols = list(dict.fromkeys(req_to_col.values()))
+            if not cols:
+                continue
+            B = bench.loc[bench_mask, cols].apply(pd.to_numeric, errors="coerce")
+            sparse = sparse_mask(B, threshold=0.95)
+            cols = [c for c in cols if not bool(sparse.get(c, False))]
+            if not cols:
+                continue
+            stats = benchmark_metric_stats(B[cols])
+            means, stds = stats["mean"], stats["std"].replace(0, np.nan)
+            W = pd.Series({req_to_col[r]: float(w) for r, w in cfg["components"].items() if r in req_to_col and req_to_col[r] in cols})
+            W = W.groupby(level=0).sum(); W = W / W.sum()
+            Zb = (B[cols] - means) / stds
+            flip = [c for c in cols if c in LOWER_IS_BETTER]
+            if flip: Zb[flip] = -Zb[flip]
+            avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
+            score_b = Zb.fillna(0).mul(W, axis=1).sum(axis=1) / avail_b.replace(0, np.nan)
+            score_b = score_b.where(avail_b >= 0.70).dropna()
+            X = out.loc[score_mask, cols].apply(pd.to_numeric, errors="coerce")
+            Z = (X - means) / stds
+            if flip: Z[flip] = -Z[flip]
+            avail = Z.notna().mul(W, axis=1).sum(axis=1)
+            composite = Z.fillna(0).mul(W, axis=1).sum(axis=1) / avail.replace(0, np.nan)
+            composite = composite.where(avail >= 0.70)
+            out.loc[score_mask, index_name] = percentile_ranks_against_population_vectorized(
+                score_b, composite, lower_is_better=False
+            )
+    return out
+
+# =========================
+# Cached benchmark scoring package
+# =========================
+@st.cache_data(show_spinner=False, max_entries=64)
+def build_benchmark_scoring_package(
+    benchmark_numeric: pd.DataFrame,
+    metrics: Tuple[str, ...],
+    weights: Tuple[float, ...],
+    coverage_threshold: float,
+) -> Dict[str, object]:
+    """
+    Build the reusable mathematical part of a weighted role/profile benchmark.
+
+    The package contains the benchmark mean/std, direction-adjusted Z matrix,
+    normalized metric weights, row-level coverage and weighted benchmark score
+    distribution. Because all benchmark-defining inputs are arguments, Streamlit
+    can safely reuse it only for the identical benchmark/metric/weight setup.
+    """
+    cols = [m for m in metrics if m in benchmark_numeric.columns]
+    if not cols:
+        return {
+            "usable": [], "means": pd.Series(dtype=float),
+            "stds": pd.Series(dtype=float), "weights": pd.Series(dtype=float),
+            "benchmark_z": pd.DataFrame(index=benchmark_numeric.index),
+            "benchmark_scores": pd.Series(np.nan, index=benchmark_numeric.index, dtype=float),
+        }
+
+    B = benchmark_numeric.loc[:, cols]
+    # Preprocessing already makes Wyscout feature columns numeric. Keep a
+    # defensive conversion only when an unexpected non-numeric column arrives.
+    non_numeric = [c for c in cols if not pd.api.types.is_numeric_dtype(B[c])]
+    if non_numeric:
+        B = B.copy()
+        B[non_numeric] = B[non_numeric].apply(pd.to_numeric, errors="coerce")
+
+    sparse = sparse_mask(B, threshold=0.95)
+    usable = [m for m in cols if not bool(sparse.get(m, False))]
+    if not usable:
+        return {
+            "usable": [], "means": pd.Series(dtype=float),
+            "stds": pd.Series(dtype=float), "weights": pd.Series(dtype=float),
+            "benchmark_z": pd.DataFrame(index=B.index),
+            "benchmark_scores": pd.Series(np.nan, index=B.index, dtype=float),
+        }
+
+    weight_map = {m: float(w) for m, w in zip(metrics, weights)}
+    W = pd.Series({m: weight_map.get(m, 0.0) for m in usable}, dtype=float)
+    if float(W.sum()) <= 0:
+        W[:] = 1.0
+    W = W / float(W.sum())
+
+    stats = benchmark_metric_stats(B[usable])
+    means = stats["mean"]
+    stds = stats["std"].replace(0, np.nan)
+
+    Zb = (B[usable] - means) / stds
+    flip = [m for m in usable if m in LOWER_IS_BETTER]
+    if flip:
+        Zb[flip] = -Zb[flip]
+
+    avail_b = Zb.notna().mul(W, axis=1).sum(axis=1)
+    score_b = (
+        Zb.fillna(0.0).mul(W, axis=1).sum(axis=1)
+        / avail_b.replace(0, np.nan)
+    )
+    score_b = score_b.where(avail_b >= float(coverage_threshold))
+
+    return {
+        "usable": usable,
+        "means": means,
+        "stds": stds,
+        "weights": W,
+        "benchmark_z": Zb,
+        "benchmark_scores": score_b,
+    }
+
+
+
+
+# =========================
+# League Strength / League Projection v1
+# =========================
+# Empirical calibration from consecutive-season cross-league movers in the
+# supplied Wyscout dataset. 600+ minutes on both sides was selected as the V1
+# balance between sample size and reliability. One Opta league-rating point is
+# associated with ~0.020 role-score SD of translation difficulty.
+LEAGUE_TRANSLATION_BETA = 0.020
+OPTA_LEAGUE_META_PATH = Path(__file__).with_name("league-meta.json")
+
+# Country prefixes used by older and newer Wyscout exports and Opta snapshots.
+OPTA_COUNTRY_ALIASES = {
+    "bosnia": "bosnia and herzegovina",
+    "china": "china pr",
+    "czech": "czechia",
+    "czech republic": "czechia",
+    "ireland": "republic of ireland",
+    "korea": "korea republic",
+    "south korea": "korea republic",
+    "turkey": "turkiye",
+    "united states": "usa",
+    "united states of america": "usa",
+    "us": "usa",
+    "u s a": "usa",
+}
+
+# Exact Wyscout competition keys (after country normalization) to Opta names.
+# Within each tuple, older Opta names serve as fallbacks when the first is absent.
+OPTA_LEAGUE_ALIASES = {
+    "albania abissnet superiore": ("Albanian Kategoria Superiore",),
+    "albania superiore league": ("Albanian Kategoria Superiore",),
+    "argentina liga profesional de futbol": ("Liga Profesional Argentina",),
+    "argentina primera division": ("Liga Profesional Argentina",),
+    "australia a league": ("Australian A-League Men",),
+    "austria bundesliga": ("Austrian Bundesliga",),
+    "belgium challenger pro league": ("Belgian Challenger Pro League", "Belgian First Division B"),
+    "belgium first division a": ("Belgian Jupiler Pro League", "Belgian First Division A"),
+    "belgium first division b": ("Belgian Challenger Pro League", "Belgian First Division B"),
+    "belgium pro league": ("Belgian Jupiler Pro League", "Belgian First Division A"),
+    "bolivia lfpb": ("Bolivia Primera División",),
+    "brazil serie a": ("Brazilian Serie A",),
+    "brazil serie b": ("Brazilian Serie B",),
+    "canada premier league": ("Canadian Premier League",),
+    "chile primera division": ("Chile Primera",),
+    "china pr csl": ("Chinese Super League",),
+    "china pr super league": ("Chinese Super League",),
+    "colombia liga betplay": ("Colombia Primera A",),
+    "croatia 1 hnl": ("Croatia Prva HNL",),
+    "croatia superleague": ("Croatia Prva HNL",),
+    "cyprus 1 division": ("Cypriot Division 1",),
+    "cyprus first division": ("Cypriot Division 1",),
+    "czechia chance liga": ("Czech First League",),
+    "czechia chance national liga": ("FNL",),
+    "czechia fortuna liga": ("Czech First League",),
+    "denmark 1st division": ("Danish 1. Division", "Danish 1st Division"),
+    "denmark superliga": ("Danish Superligaen",),
+    "ecuador serie a": ("Ecuador Liga Pro",),
+    "egypt premier league": ("Egyptian Premier League",),
+    "england championship": ("English Football League - Championship", "English Championship"),
+    "england league one": ("English Football League - League One", "English League One"),
+    "england league two": ("English Football League - League Two", "English League Two"),
+    "england national league": ("English National League",),
+    "england national league north south": ("National League N / S",),
+    "england premier league": ("English Premier League",),
+    "estonia a lecoq premium liiga": ("Estonian Premium liiga",),
+    "estonia meistriliiga": ("Estonian Premium liiga",),
+    "finland veikkausliiga": ("Finnish Veikkausliiga",),
+    "france championnat national": ("French Ligue 3", "French National"),
+    "france ligue 1": ("French Ligue 1",),
+    "france ligue 2": ("French Ligue 2",),
+    "france ligue 3": ("French Ligue 3", "French National"),
+    "georgia erovnuli liga": ("Georgian Premier League",),
+    "germany 2 bundesliga": ("German Bundesliga Zwei", "German 2. Bundesliga"),
+    "germany 3 liga": ("German 3rd Liga", "German 3. Liga"),
+    "germany bundesliga": ("German Bundesliga",),
+    "greece stoiximan super league": ("Greek Super League",),
+    "greece super league": ("Greek Super League",),
+    "hungary nb i": ("Hungarian Liga NB I",),
+    "hungary nb1": ("Hungarian Liga NB I",),
+    "indonesia liga 1": ("Indonesia Super League",),
+    "israel ligat ha al": ("Israeli Ligat Ha'al",),
+    "italy serie a": ("Italian Serie A",),
+    "italy serie b": ("Italian Serie B",),
+    "japan j1 league": ("Japanese J1 League",),
+    "japan j2 league": ("Japanese J2 League",),
+    "japan j3 league": ("Japanese J3 League",),
+    "korea republic k league 1": ("Korean K-League 1",),
+    "korea republic k league 2": ("Korean K-League 2",),
+    "latvia virsliga": ("Latvian Virsliga",),
+    "malaysia super league": ("Malaysian Super League",),
+    "mexico liga de expansion": ("Liga de Expansión MX",),
+    "mexico liga mx": ("Mexican Primera",),
+    "netherlands eerste divisie": ("Dutch Eerste Divisie",),
+    "netherlands eredivisie": ("Dutch Eredivisie",),
+    "norway eliteserien": ("Norwegian Eliteserien",),
+    "norway first division": ("Norwegian 1. divisjon",),
+    "norway obos ligaen": ("Norwegian 1. divisjon",),
+    "paraguay division profesional": ("Paraguay Primera División",),
+    "peru primera division": ("Peru Liga 1",),
+    "poland 1 liga": ("I Liga",),
+    "poland ekstraklasa": ("Polish Ekstraklasa",),
+    "portugal primeira liga": ("Portuguese Primeira Liga",),
+    "portugal segunda liga": ("Portuguese Segunda Liga",),
+    "republic of ireland first division": ("Irish First Division",),
+    "republic of ireland premier division": ("Irish Premier League",),
+    "romania superliga": ("Romania Liga I",),
+    "russia premier league": ("Russian Premier League",),
+    "scotland championship": ("Scottish Championship",),
+    "scotland league one": ("Scottish League One",),
+    "scotland league two": ("Scottish League Two",),
+    "scotland premiership": ("Scottish Premiership",),
+    "serbia super liga": ("Serbian Super Liga",),
+    "slovakia nike liga": ("Slovakia 1. liga",),
+    "slovakia super liga": ("Slovakia 1. liga",),
+    "slovenia 1 snl": ("Slovenia PrvaLiga",),
+    "slovenia prva liga": ("Slovenia PrvaLiga",),
+    "spain la liga": ("Spanish La Liga",),
+    "spain primera division rfef": ("Spanish Primera Division RFEF",),
+    "spain segunda": ("Spanish Segunda Division",),
+    "spain segunda division": ("Spanish Segunda Division",),
+    "sweden allsvenskan": ("Swedish Allsvenskan",),
+    "sweden superettan": ("Swedish Superettan",),
+    "switzerland challenge league": ("dieci Challenge League", "Swiss Challenge League"),
+    "switzerland super league": ("Brack Super League", "Swiss Super League"),
+    "turkiye super lig": ("Turkish Super Lig",),
+    "ukraine ukrainian premier league": ("Ukraine Premier League",),
+    "uruguay primera division": ("Uruguay Liga AUF",),
+    "usa major league soccer": ("US Major League Soccer",),
+    "usa mls": ("US Major League Soccer",),
+    "usa mls next pro": ("MLS Next Pro",),
+    "usa usl league 1": ("USL League One",),
+}
+
+# Opta files the binational A-League Men under New Zealand in this snapshot.
+OPTA_LEAGUE_ADDITIONAL_COUNTRIES = {"australia a league": ("new zealand",)}
+
+
+# Opta league season-average ratings from the league-meta.json bundled with the app.
+OPTA_BUNDLED_LEAGUE_COLUMNS = ("leagueName", "countryName", "seasonAverageRating", "globalRank", "leagueId")
+OPTA_BUNDLED_LEAGUE_RECORDS = (
+    ('English Premier League', 'England', 92.6158763708, 1, '2kwbbcootiqqgmrzs6o5inle5'),
+    ('German Bundesliga', 'Germany', 86.9293428957, 3, '6by3h89i2eykc341oz7lv1ddd'),
+    ('Spanish La Liga', 'Spain', 87.1674743591, 2, '34pl8szyvrbwcmfkuocjm3r6t'),
+    ('French Ligue 1', 'France', 85.81283, 5, 'dm5ka0os1e3dxcp3vh05kmp33'),
+    ('Italian Serie A', 'Italy', 85.9661705904, 4, '1r097lpxe0xn03ihb7wi98kao'),
+    ('Portuguese Primeira Liga', 'Portugal', 81.7697643991, 9, '8yi6ejjd1zudcqtbn07haahg6'),
+    ('Belgian Jupiler Pro League', 'Belgium', 82.7981652659, 7, '4zwgbb66rif2spcoeeol2motx'),
+    ('Brazilian Serie A', 'Brazil', 84.3268946324, 6, 'scf9p4y91yjvqvg5jndxzhxj'),
+    ('Norwegian Eliteserien', 'Norway', 80.3465168978, 13, '9ynnnx1qmkizq1o3qr3v0nsuk'),
+    ('Dutch Eredivisie', 'Netherlands', 79.9631227548, 15, 'akmkihra9ruad09ljapsm84b3'),
+    ('Turkish Super Lig', 'Türkiye', 80.1496423786, 14, '482ofyysbdbeoxauk19yg7tdt'),
+    ('Czech First League', 'Czechia', 79.098503474, 22, 'bu1l7ckihyr0errxw61p0m05'),
+    ('Ecuador Liga Pro', 'Ecuador', 79.5697872039, 19, '6lwpjhktjhl9g7x2w7njmzva6'),
+    ('Greek Super League', 'Greece', 78.7443242763, 24, 'c0r21rtokgnbtc0o2rldjmkxu'),
+    ('Liga Profesional Argentina', 'Argentina', 82.3087786661, 8, '581t4mywybx21wcpmpykhyzr3'),
+    ('Cypriot Division 1', 'Cyprus', 77.467999444, 32, 'btouq8t23agr62ij7e0ju5p6n'),
+    ('English Football League - Championship', 'England', 81.2428338469, 10, '7ntvbsyq31jnzoqoa8850b9b8'),
+    ('Saudi Arabian League', 'Saudi Arabia', 75.5636770648, 39, 'ea0h6cf3bhl698hkxhpulh2zz'),
+    ('Croatia Prva HNL', 'Croatia', 79.1786973803, 21, '1b70m6qtxrp75b4vtk8hxh8c3'),
+    ('Mexican Primera', 'Mexico', 79.9103642815, 16, '2hsidwomhjsaaytdy9u5niyi4'),
+    ('Danish Superligaen', 'Denmark', 80.4584538647, 11, '29actv1ohj8r10kd9hu0jnb0n'),
+    ('Hungarian Liga NB I', 'Hungary', 77.5422134918, 31, '47s2kt0e8m444ftqvsrqa3bvq'),
+    ('Colombia Primera A', 'Colombia', 79.5927785584, 18, '2ty8ihceabty8yddmu31iuuej'),
+    ('Polish Ekstraklasa', 'Poland', 80.347565132, 12, '7hl0svs2hg225i2zud0g3xzp2'),
+    ('Russian Premier League', 'Russia', 78.3414456799, 26, '3ab1uwtoyjopdj1y1fynyy9jg'),
+    ('Ukraine Premier League', 'Ukraine', 73.2252872539, 57, '6wubmo7di3kdpflluf6s8c7vs'),
+    ('Azerbaijan Premier League', 'Azerbaijan', 74.2626869438, 51, '3428tckxcirwwh3o3jgc1m8ji'),
+    ('Brack Super League', 'Switzerland', 78.9972799564, 23, 'e0lck99w8meo9qoalfrxgo33o'),
+    ('US Major League Soccer', 'USA', 79.8720030632, 17, '287tckirbfj9nb8ar2k9r60vn'),
+    ('Austrian Bundesliga', 'Austria', 78.514907496, 25, '5c96g1zm7vo5ons9c42uy2w3r'),
+    ('Japanese J1 League', 'Japan', 77.9136182541, 29, '8o5tv5viv4hy1qg9jp94k7ayb'),
+    ('Serbian Super Liga', 'Serbia', 73.0906047913, 58, '3ww12jab49q8q8mk9avdwjqgk'),
+    ('Scottish Premiership', 'Scotland', 75.6205157866, 38, 'e21cf135btr8t3upw0vl6n6x0'),
+    ('Spanish Segunda Division', 'Spain', 79.2245806649, 20, '3is4bkgf3loxv9qfg3hm8zfqb'),
+    ('Egyptian Premier League', 'Egypt', 75.1310267419, 43, '8k1xcsyvxapl4jlsluh3eomre'),
+    ('Bolivia Primera División', 'Bolivia', 74.7355197021, 46, 'alpfd99yd3lfv7bhjo0biuq7b'),
+    ("Israeli Ligat Ha'al", 'Israel', 75.2309391515, 41, '2xg0qvif1rh7du6wmk2eleku3'),
+    ('Uruguay Liga AUF', 'Uruguay', 77.152443835, 34, '2wolc27r8z03itcvwp43e38c5'),
+    ('Paraguay Primera División', 'Paraguay', 78.0791396219, 28, '5y0z0l2epprzbscvzsgldw8vu'),
+    ('Bulgaria First League', 'Bulgaria', 73.400289989, 55, 'c0yqkbilbbg70ij2473xymmqv'),
+    ('Chile Primera', 'Chile', 78.2461494832, 27, '2y8bntiif3a9y6gtmauv30gt'),
+    ('Swedish Allsvenskan', 'Sweden', 77.4019333149, 33, 'b60nisd3qn427jm0hrg9kvmab'),
+    ('Ligi kuu Bara', 'Tanzania', 67.0120570042, 115, '9z5643nd06afqu01ea2wt8y4g'),
+    ('Honduras Liga Nacional', 'Honduras', 72.5693731227, 63, '1wwro3z1eb3fl601dju6inlc6'),
+    ('Slovakia 1. liga', 'Slovakia', 74.7070122525, 47, '1mpjd0vbxbtu9zw89yj09xk3z'),
+    ('German Bundesliga Zwei', 'Germany', 77.7678246349, 30, '722fdbecxzcq9788l6jqclzlw'),
+    ('Italian Serie B', 'Italy', 75.6399748893, 37, '8ey0ww2zsosdmwr8ehsorh6t7'),
+    ('Romania Liga I', 'Romania', 74.852061764, 45, '89ovpy1rarewwzqvi30bfdr8b'),
+    ('South Africa PSL', 'South Africa', 72.399537092, 64, 'yv73ms6v1995b5wny16jcfi3'),
+    ('Peru Liga 1', 'Peru', 75.7847102906, 36, 'a9vrdkelbgif0gtu3wxsr75xo'),
+    ('UAE Pro League', 'United Arab Emirates', 72.8242994298, 60, 'f39uq10c8xhg5e6rwwcf6lhgc'),
+    ('Malaysian Super League', 'Malaysia', 61.7988979258, 184, 'eg6s9f1jj7jr6stmbosn0g6c8'),
+    ('Botola Pro', 'Morocco', 75.134293956, 42, '1eruend45vd20g9hbrpiggs5u'),
+    ('Bosnia and Herzegovina Premijer Liga', 'Bosnia and Herzegovina', 71.3331941505, 69, '4yngyfinzd6bb1k7anqtqs0wt'),
+    ('French Ligue 2', 'France', 75.4515535927, 40, '4w7x0s5gfs5abasphlha5de8k'),
+    ('Armenian Premier League', 'Armenia', 68.8509372818, 92, 'dn9kmfdbz74lzt3m8e9g0vwjq'),
+    ('Argentina Primera Nacional', 'Argentina', 75.989787502, 35, 'byu00jvt1j6csyv4y1lkt2fm2'),
+    ('Algerian Ligue 1', 'Algeria', 74.4737900976, 50, '57nu0wygurzkp6fuy5hhrtaa2'),
+    ('Venezuela Primera División', 'Venezuela', 74.6860068737, 48, '46b141eaqq9q7o4gz5gtdpikk'),
+    ('Costa Rica Primera Division', 'Costa Rica', 74.6757628177, 49, 'civf31q1inxohs4a03y8reetf'),
+    ('English Football League - League One', 'England', 74.9641061551, 44, '3frp1zxrqulrlrnk503n6l4l'),
+    ('Latvian Virsliga', 'Latvia', 67.3382374825, 112, '3w1hkk9k9gr8fwssyn4icvdfo'),
+    ('Guatemala Liga Nacional', 'Guatemala', 72.8634748856, 59, 'ae1wva3zrzcp2zd15gpvsntg6'),
+    ('Spanish Primera Division RFEF', 'Spain', 74.1763057746, 53, 'degxm4y6gmvp011ccyrev6z5p'),
+    ('Ligue 1', 'Tunisia', 69.234735923, 88, 'f4jc2cc5nq7flaoptpi5ua4k4'),
+    ('Icelandic Besta deild', 'Iceland', 69.124018397, 89, 'zilopfej2h0n3vpan5tcynpo'),
+    ('Slovenia PrvaLiga', 'Slovenia', 72.3115308523, 66, '7nmz249q89qg5ezcvzlheljji'),
+    ('Albanian Kategoria Superiore', 'Albania', 72.5858598402, 62, '1zcp6rnjil25rnsv1ttcz3dhx'),
+    ('Kazakhstan Premier League', 'Kazakhstan', 69.9221076373, 80, '9ikchyu9fb8bvx0s673jofj6s'),
+    ('Persian Gulf Pro League', 'Iran', 71.8063764526, 68, '3btdfgw79qiz3jmyfudovtbu2'),
+    ('Premier League', 'Kuwait', 65.9192512605, 134, '3j81qr7yc4gdnakfwnxf95ovh'),
+    ('Finnish Veikkausliiga', 'Finland', 71.1673846009, 70, 'dvstmwnvw0mt5p38twn9yttyb'),
+    ('Ligue 1', 'Congo DR', 63.4610390808, 161, '7pl8j3qzfufcquaf8kvduau2r'),
+    ('Premier League', 'Libya', 64.2392680275, 156, '83ib9ygyuj24tov28t0ihv2le'),
+    ('Korean K-League 1', 'Korea Republic', 74.1816264756, 52, 'avs3xposm3t9x1x2vzsoxzcbu'),
+    ('Norwegian 1. divisjon', 'Norway', 70.3154103766, 76, '7r1f93t6ddrsa5n8v1nq6qlzm'),
+    ('Brazilian Serie B', 'Brazil', 72.380639034, 65, '5zr0b05eyx25km7z1k03ca9jx'),
+    ('Angolan Girabola', 'Angola', 66.765311755, 118, '6c76ua2pykvzepkmpprq4i8kf'),
+    ('German 3rd Liga', 'Germany', 71.9316838045, 67, 'dkarmrybx9vx10rg7cywumth0'),
+    ('Belarus Premier League', 'Belarus', 69.4698418835, 86, '8y29fg2s85ppcb8uugm5ee8s4'),
+    ('Chile Primera B', 'Chile', 72.7529327155, 61, 'bly7ema5au6j40i0grhl0pnub'),
+    ('Belgian Challenger Pro League', 'Belgium', 70.1686735183, 77, 'af79lqrc0ntom74zq13ccjslo'),
+    ('Super League', 'Uzbekistan', 68.1427037822, 97, '1snn4i06dn6n11mrfc894snzm'),
+    ('Macedonian First League', 'North Macedonia', 68.6835184189, 93, 'dl5v19e4466jn4fuufhlae7jm'),
+    ('Iraqi League', 'Iraq', 68.5920777031, 95, 'duuc1qczfnawwncru1ly6o66'),
+    ('League', 'Jordan', 68.0917730265, 98, '145hkd59i6foieuwr4mwi6wlq'),
+    ('Kosovan Superliga', 'Kosovo', 70.8427909889, 74, 'dwiqifdd70ytjytcs09vzosb3'),
+    ('Colombia Primera B', 'Colombia', 71.1042311883, 71, 'by5nibd18nkt40t0j8a0j5yzx'),
+    ('Qatar Stars League', 'Qatar', 70.0032634265, 79, 'xaouuwuk8qyhv1libkeexwjh'),
+    ('Première Division', 'Mali', 67.8862485622, 103, '9rh1w6v2524luqs6gdkasyxso'),
+    ('Portuguese Segunda Liga', 'Portugal', 73.6677624468, 54, '8sdpk4aerruf515yh76ezo7vi'),
+    ('Premier League', 'Sudan', 62.9581177229, 169, 'ppzvnquzq1gmez5snxzfxkbt'),
+    ('Professional League', 'Oman', 65.0444079799, 145, '1txej2dzohnydl21zc9pgx6hy'),
+    ('Lithuanian Toplyga', 'Lithuania', 67.9565746544, 102, '5cwsxtx37les6m10xj71htkgf'),
+    ('El Salvador Primera Division', 'El Salvador', 67.9565834057, 101, 'ein4fkggto3pdh5msp8huafiq'),
+    ('Spanish Segunda Division RFEF', 'Spain', 69.6844096137, 82, 'cegl2ivkc25blcatxp4jmk1ec'),
+    ('Zambia Super League', 'Zambia', 68.0249000614, 100, 'dexr6wlw3e339z88f1qr74wt6'),
+    ('Ýokary Liga', 'Turkmenistan', 57.5727341452, 238, '85d7d2jwmo1xx2pen4hkoclyn'),
+    ('LPF', 'Panama', 67.7753578468, 104, '2ni5x4ta0fv1zxee9l10rp1bz'),
+    ('Australian A-League Men', 'New Zealand', 71.0954257256, 72, 'xwnjb1az11zffwty3m6vn8y6'),
+    ('Torneo Federal A', 'Argentina', 69.2564023192, 87, 'a08z7wsz0uqx90wsj33g65fcd'),
+    ('Thai League 1', 'Thailand', 66.4163587577, 125, 'iu1vi94p4p28oozl1h9bvplr'),
+    ('Zimbabwe Premier Soccer League', 'Zimbabwe', 67.3526690546, 111, '4azsryi40zahspm5h6d0f0pgl'),
+    ('Liga Pro Serie B', 'Ecuador', 70.893430079, 73, 'bq89wbdvedtov6auzuh6rsv7s'),
+    ('Nigerian Premier League', 'Nigeria', 69.6478036043, 83, 'ac42gi3penartj88fe9l6plpk'),
+    ('Premier League', 'Bahrain', 66.3693502673, 126, '82wo38rqeizxlfjjhfjy4rx7u'),
+    ('Premier League', 'Lebanon', 61.862670618, 183, '3e40pestup9xzagsu2o6c0i8u'),
+    ('Primera Division', 'Nicaragua', 66.2666628191, 128, '8usjlmziv3p2re0r2wwzezki9'),
+    ('Estonian Premium liiga', 'Estonia', 62.7110006252, 171, '4d5d3sf6805n5u6jdoa0hdlog'),
+    ('Liga 3', 'Portugal', 67.2844659102, 113, '4yzidekywejmxxp77gqmdgopg'),
+    ('Indonesia Super League', 'Indonesia', 65.0297968358, 146, '117yqo02rs8dykkxpm274w3bd'),
+    ('Premier League', 'Syria', 65.0657915833, 143, '6g4vcneo8yvvf0f9cy38o3hy2'),
+    ('Premier Division', 'Grenada', 62.9581233712, 168, '9xyp02u8pj4bl962r9jspbedd'),
+    ('Suriname Major League', 'Suriname', 60.6539617017, 204, 'cbl4teapo1c4l1oy6gaqj4sv6'),
+    ('Ligue 1', "Côte d'Ivoire", 67.6936157535, 106, 'a55ij9w4hi8dmp55fi3dp0xzz'),
+    ('Swedish Superettan', 'Sweden', 67.5151062642, 108, '9chuiarcjofld1dkj9kysehmb'),
+    ('dieci Challenge League', 'Switzerland', 69.5723196628, 84, '8v97rcbthsxmzqk4ufxws9mug'),
+    ('English Football League - League Two', 'England', 69.072205521, 90, 'bgen5kjer2ytfp7lo9949t72g'),
+    ('Turkish 1. Lig', 'Türkiye', 68.6278716864, 94, '2o9svokc5s7diish3ycrzk7jm'),
+    ('Uganda Premier League', 'Uganda', 64.5419360734, 152, '1klyfth8tl6lu6ra7k8zmy2n2'),
+    ('Irish Premier League', 'Republic of Ireland', 70.1354546792, 78, '4mbfidy8zum5u0aqjqo0vuqs2'),
+    ('Moldovan Super Liga', 'Moldova', 65.4640619499, 138, '1j4ehtrbry9depwt6oghaq3lu'),
+    ('V.League 1', 'Vietnam', 65.1148683581, 142, 'aho73e5udydy96iun3tkzdzsi'),
+    ('First League', 'Russia', 67.7339225244, 105, 'bpo885893xeevnzypvifeaqru'),
+    ('Liga Puerto Rico', 'Puerto Rico', 60.5086703181, 205, '8lm9iu12f854rhiovkfxkb5vm'),
+    ('Premier League', 'Jamaica', 66.6999811124, 120, '6lrwyoy74oz0t5udrnmuyql6a'),
+    ('Faroe Islands Premier League', 'Faroe Islands', 63.6329705699, 160, 'dr2xk7muj8aqcjdz2b3li1c0k'),
+    ('French Ligue 3', 'France', 69.8326606595, 81, '1qd0wvt30rlswa4g6nu4na660'),
+    ('Ligue 1', 'Burkina Faso', 66.2328491993, 130, 'a3agf15089yvptkvldhuiel86'),
+    ('Brazilian Paulista', 'Brazil', 73.340009227, 56, 'eo8sb5ohs5xw2s96ihfhbvgvy'),
+    ("Division d'Honneur", 'Martinique', 61.357643666, 192, 'dnpfi8c4hzwgtzwqvd9784x9n'),
+    ('Luxembourg Division Nationale', 'Luxembourg', 64.3039022797, 155, '48pg4xminsjxun5x4yp5ng8v'),
+    ('Liga de Expansión MX', 'Mexico', 70.6235040459, 75, 'e1kxdivp5g4cpldgpwvnzl1vv'),
+    ('Chinese Super League', 'China PR', 67.6280472654, 107, '82jkgccg7phfjpd0mltdl3pat'),
+    ('Dutch Eerste Divisie', 'Netherlands', 66.9129817526, 116, '1gwajyt0pk2jm5fx5mu36v114'),
+    ('Liga Mayor', 'Dominican Republic', 65.205108589, 140, '2wfvjdhzl6v3s1pf2s96qvdjx'),
+    ('Ghana Premier League', 'Ghana', 69.4855843383, 85, '4jg7he1n3rb5dniq6hf49xorq'),
+    ('Ligue 1', 'Guinea', 65.5503500188, 136, '34txpgicm59r0bd60berrxhed'),
+    ('Andorran First Division', 'Andorra', 60.42359985, 206, 'ejunkmfhjz9weugd2bqrkgobb'),
+    ('Premier Division', 'Antigua and Barbuda', 62.5428903345, 174, '4ldempy7w5mi1yhxxhexquzkl'),
+    ('Ligue 2', 'Algeria', 65.2324364989, 139, '9hh6n2f84k31zmlcxyvmc1w2y'),
+    ('Gibraltar Premier Division', 'Gibraltar', 53.8101333328, 272, 'dzu6b07r25e3pk2uahxi5mzsz'),
+    ('Division Intermedia', 'Paraguay', 68.4509270713, 96, '6qitd9h242qkvjenaytfdnsf2'),
+    ('Moçambola', 'Mozambique', 64.8594996581, 150, 'zk2f8f4dzjpxb47gdwsvpga8'),
+    ('Liga Leumit', 'Israel', 65.9606964319, 133, 'eu6kl6j2w2qg7dg1dlpzo20fc'),
+    ('Georgian Premier League', 'Georgia', 68.075071678, 99, '477yyajzheg2z8u7uick0e13e'),
+    ('Championnat National', 'Togo', 65.5899023476, 135, '8t1t0tyumnnz6q87rvqqnnaw6'),
+    ('Canadian Premier League', 'Canada', 66.2425203051, 129, '6lkj3o21cr4g7bql6tb3fk222'),
+    ('Maltese League', 'Malta', 66.3538003576, 127, '5taraea6mqjjldg9zxswo825y'),
+    ('Japanese J2 League', 'Japan', 67.4947833456, 109, '5z8v4mj6cjs9ex6hdrpourjzh'),
+    ('Welsh Premier League', 'Wales', 58.7866108977, 225, 'c76z5d6j7dpi1e79tm8fpm39z'),
+    ('Ligue Haïtienne', 'Haiti', 65.0095740347, 147, '33k2hl0zpk6lkn9hgxrolp8ds'),
+    ('Championnat D1', 'Gabon', 62.5269867832, 175, 'cv1kehfzw58bg2vlj3c3ch26x'),
+    ('Division di Honor', 'Aruba', 60.994223732, 201, 'ai1avxe03fp35cep030gkcwjs'),
+    ('I Liga', 'Poland', 68.9977452795, 91, '8dn0w8zh7nbn2i904603eigwf'),
+    ('Korean K-League 2', 'Korea Republic', 65.4909972567, 137, 'b73zounsynk9d3u1p9nvpu7i2'),
+    ('Premier League', 'Botswana', 60.1581638332, 209, '3faz4auaxirmsh26ztmidb001'),
+    ('Premier League', 'Mauritania', 62.2619514373, 179, 'bd105ypde78dpxxxmsyc8ggaf'),
+    ('USL Championship', 'USA', 66.6611911466, 122, 'c1d9p6b2e9zr5tqlzx3ktjplg'),
+    ('Austrian 2. Liga', 'Austria', 66.1190338166, 131, 'a7247po5qs29o3zsfmt222ydu'),
+    ('FNL', 'Czechia', 67.3948811079, 110, 'ddyrh5latwfhesgfh4w401n92'),
+    ('German Regionalliga', 'Germany', 64.5131419918, 153, '3iwftmprsznl6yribr11a8l9m'),
+    ('Liga 2', 'Peru', 66.9019887168, 117, 'dwnygzozltaf27fec17gxayvr'),
+    ('Régional 1', 'French Guiana', 60.7300915655, 203, '4bf3hqyk1elw3f32kvib7c3dp'),
+    ('Italian Serie C', 'Italy', 64.8945964441, 149, '1zp1du9n4rj36p1ss9zbxtqfb'),
+    ('Second Division A', 'Egypt', 66.5106789526, 123, 'dy8zaksw5e9nwrs1p5ss4o1nu'),
+    ('Saudi Arabian First Division League', 'Saudi Arabia', 63.3382953498, 163, 'bfqezwfhot1l3p1cpk4oonh25'),
+    ('Primera Division', 'Guatemala', 65.0639149541, 144, 'aj9gichxp8i0muh2e22600h7a'),
+    ('Elite One', 'Cameroon', 62.260073798, 180, '18izk5zx4t85y7sbpjk3rlr4n'),
+    ('Danish 1. Division', 'Denmark', 66.6707582118, 121, '6ifaeunfdelecgticvxanikzu'),
+    ('Ligue 1', 'Senegal', 67.0625462279, 114, '9u9j3f1oplv8p7wevlko5r8by'),
+    ('Segunda División', 'Chile', 64.7712299334, 151, 'aqyb0y2nlcd33ryq6k5eulr01'),
+    ('Singapore Premier League', 'Singapore', 59.4352677789, 220, '1q4ab2bpg5e8jl1g2udnakrju'),
+    ('Northern Ireland Premiership', 'Northern Ireland', 61.2438771193, 195, '75i269i1ak43magshljadydrh'),
+    ('Spanish Tercera Division RFEF', 'Spain', 61.7714757041, 185, '54c65mhi143utomzvvv3q2avh'),
+    ('Liga de Ascenso', 'Costa Rica', 62.0266950457, 181, '2yyjcbbryf1r10apyzl7c7jvp'),
+    ('NB II', 'Hungary', 66.0987763056, 132, 'beqqnubkv05mamuwvimeum015'),
+    ('National 1', 'France', 63.6442535687, 159, '9rpro4x6j1xhkyijm18gkhmy4'),
+    ('Segunda División', 'Venezuela', 65.0062832295, 148, 'b3khsmo41ntvf4fwzbsuvc1hm'),
+    ('Segunda División', 'Uruguay', 66.4601151602, 124, '6jgwiu2gq3dllmrwt45pfdn2z'),
+    ('Scottish Championship', 'Scotland', 63.9340233459, 158, '8t2o4huu2e48ij23dxnl9w5qx'),
+    ('Kenya Premier League', 'Kenya', 62.818953845, 170, '7wssxdqi4xihseeam8grqa2b8'),
+    ('First NL', 'Croatia', 66.721225892, 119, 'esrunz7rjb0td98mx9e5cedoy'),
+    ('PFL', 'Philippines', 57.5589423374, 239, '8ifnkq96dckjtn9ab9wplpl9l'),
+    ('Segunda Categoria', 'Ecuador', 64.1886081768, 157, 'ddyci52f0zxfwi9qozf2k1fu2'),
+    ('Ettan', 'Sweden', 59.9478027299, 214, 'ac112osli9fvox1epcg4ld3t6'),
+    ('Super League', 'Malawi', 59.9918715211, 213, '3gp6ls97f1m51ohtkua36lj81'),
+    ('TT Premier League', 'Trinidad and Tobago', 56.3087301017, 252, 'b542gms4cavvp8zbkjs35ed76'),
+    ('Campeonato Nacional', 'Cabo Verde', 61.1035205915, 197, 'aok0scytttwue9bybamyj4s51'),
+    ('Dutch Tweede Divisie', 'Netherlands', 61.0715141314, 199, '913mb508il6jzwtlj28fl892h'),
+    ('English National League', 'England', 60.2489726066, 208, 'b5udgm9vakjqz8dcmy5b2g0xt'),
+    ('Azadegan League', 'Iran', 63.2420562861, 165, 'abs7n2ae3oydilk0tgmpnsj89'),
+    ('Pro League', 'Madagascar', 61.6275512574, 188, '5ec1w4iscr1r482ty8t3lhp9m'),
+    ('II Liga', 'Poland', 63.0279356115, 167, '663a54fmymndjeev47qm7d3nf'),
+    ('Liga II', 'Romania', 62.6840446071, 173, 'awvkxs5trlg5e5e5kg4hq8f1'),
+    ('Montenegro First League', 'Montenegro', 64.3883471086, 154, '77yifp2y2tvn80ndo3f0laav8'),
+    ('Premier League', 'Lesotho', 59.4034234046, 221, '7mkusa7mxyp5i41d8ntmojwl0'),
+    ('2. Division', 'Norway', 61.86385778, 182, '3p81ltz6845appgkbgkzxueii'),
+    ('Ligue A', 'Burundi', 60.2694577815, 207, '9akr1h05hescbbtybhii9hgrl'),
+    ('Botola 2', 'Morocco', 65.174312542, 141, '8najqkluatpaxvqws78b9s17c'),
+    ('1. Deild', 'Iceland', 62.2953880542, 178, '3l29w00m506ex93t5bbh9cg2a'),
+    ('Japanese J3 League', 'Japan', 62.6881532207, 172, 'b1rveez5u792gess9w3e7v5le'),
+    ('Turkish 2. Liga', 'Türkiye', 59.7627489172, 218, '2nttcoriwf5co73vmz1vr8frm'),
+    ('Prva Liga', 'Serbia', 62.3364363746, 177, 'd3gexg17t0wn9hpw12ww4poh5'),
+    ('Liga 3', 'Peru', 61.7533530019, 186, '580d5o01l5lqawc8hsdxxnz10'),
+    ('Premier League', 'Hong Kong, China', 57.647966996, 236, '4rls982p5uzil6x30mhyhv9f3'),
+    ('Premier League', 'Eswatini', 59.8671460191, 216, '2tknn83yj1ls73ykdxgcekpiz'),
+    ('Vysshaya Liga', 'Tajikistan', 55.4530308261, 258, '4gv4fxg1q7qxdubycjhbiqsl7'),
+    ('South Africa 1st Division', 'South Africa', 62.4773207119, 176, 'ajxs0e0g6ryg5ol8qvw3evrcz'),
+    ('Sudani Premier League', 'Sudan', 61.1044507763, 196, '2c01jrik7ggtta321pstz8tm4'),
+    ('Belgian Division 1', 'Belgium', 61.2817800858, 194, '4qjmo9aphtgpboin0pldiwzc9'),
+    ('Qatar Stars League 2', 'Qatar', 61.6793966436, 187, '3akazj2cmherl0b0hot94ezb8'),
+    ('Super League 2', 'Greece', 61.5475005491, 189, '4k8p8nmee0yjb7j7177474sx6'),
+    ('Championnat National', 'Benin', 63.2778424092, 164, 'ddbbqccied7l21mo4lr44sbcr'),
+    ('2. SNL', 'Slovenia', 59.1800041756, 222, '5aw6uyw4pz2bpj24t5z8aacim'),
+    ('Serie D', 'Italy', 57.5261713055, 240, '2g6lybov5xk8rlb79ek8imri7'),
+    ('LFA First Division', 'Liberia', 59.660768717, 219, '9568nq9sgf16yx6phx48srr12'),
+    ('1. Liga Promotion', 'Switzerland', 59.8634381474, 217, 'b8rae0ib0frjmwlca429bq19q'),
+    ('Oberliga', 'Germany', 53.4322445657, 276, '2sla6rn7prvvm7miswg39fwqz'),
+    ('Liga Prom', 'Panama', 58.362501993, 228, 'cypecaqr5kw33zumn2tyo4vuq'),
+    ('Brazilian Serie C', 'Brazil', 63.2381183698, 166, 'cfesxhzb83yl8b779uv3revz1'),
+    ('2. liga', 'Slovakia', 60.8885164614, 202, '4qehj8hfxmy6o2ohp4fxinnzo'),
+    ('Nacional B', 'Bolivia', 60.0866034146, 210, '2kottw7mwy3q6jsxj423z87yp'),
+    ('Premier League', 'St. Kitts and Nevis', 57.1437701676, 244, '651b0xvst5pj9piqt9sj49ks7'),
+    ('Indian Super League', 'India', 61.066850519, 200, '3oa9e03e7w9nr8kqwqc3tlqz9'),
+    ('Premier League', 'Ethiopia', 63.3412976785, 162, '6ybvtzejh91761lqe7y1csrqo'),
+    ('BVIFA National League', 'British Virgin Islands', 57.1885858045, 243, '7y5gvvqykm41h8t4traz87yxq'),
+    ('Campeonato de Portugal Prio', 'Portugal', 59.9169548672, 215, 'd88wxnb1q9o8jhw9enklfy5ww'),
+    ('Argentina Primera B (Metropolitana)', 'Argentina', 61.3013832702, 193, '66nxwll8fur0rtp9q7wqaki1l'),
+    ('NB III', 'Hungary', 53.3131292244, 279, '6w05j3xxw76an1jwkzr6a6m03'),
+    ('National 2', 'France', 58.5281458189, 227, 'etl8yxjt7x3cyzduc6x5eg7ti'),
+    ('Ykkösliiga', 'Finland', 60.0206832326, 211, '6ihotpaocgiovlxw18e9r9prx'),
+    ('GFA League', 'Gambia', 61.4081108944, 191, 'alfi8igkewru9ot3mah71mjc1'),
+    ('Torneo Regional Federal Amateur', 'Argentina', 53.0887346601, 281, '5zfudxcld0kr6bspk1jauq3t9'),
+    ('Second League A', 'Russia', 61.0760698759, 198, '8fjt8o9z8pf6wwkng5exwbrx0'),
+    ('3. liga', 'Czechia', 58.1611298711, 232, 'z3w7v4hqa7ssk5p6qkbpg9au'),
+    ('2. Division', 'Cyprus', 61.5007369882, 190, '3za3jptdvgw580jjr9nhhhn6i'),
+    ('Premier League', 'Turks and Caicos Islands', 53.1131623179, 280, '65dvfflsc4olwbhg8is69zrxa'),
+    ('1st Division', 'Albania', 58.9794730623, 223, '5laava24i9c121nm1hooqrubl'),
+    ('Regionalliga', 'Austria', 55.8763422435, 255, 'ekyhmsfi4utkxvmak9pq8se0s'),
+    ('Liga Alef', 'Israel', 58.9771569573, 224, '47ab9wtg48ksd11exck2122js'),
+    ('National League', 'New Zealand', 51.9278449257, 297, '1vyghvhuy6abu4htoemdi79bd'),
+    ('USL League One', 'USA', 60.0150815396, 212, 'jznihqxle06xych9ygwiwnsa'),
+    ('Campeonato Nacional', 'São Tomé e Príncipe', 56.9644741007, 245, '3vw4oev0x9kt3lxsq5ej068ey'),
+    ('K3 League', 'Korea Republic', 57.7586664476, 235, '5dycj9wdhxh3n33qubw18ohlk'),
+    ("Division d'Honneur", 'Guadeloupe', 55.525056943, 257, '3kkj5ejehz23411flej4ilvl9'),
+    ('Premier League', 'Barbados', 52.1384181671, 295, 'bjxqgib2ebgol60tlg5ob43tq'),
+    ('1st League', 'Bosnia and Herzegovina', 56.2191108405, 253, 'bq56xi6kc1626y8hxflp32ir3'),
+    ('Mauritian League', 'Mauritius', 57.8140350583, 234, '4vvwpf5yr8d48w59mkgu7iudv'),
+    ('Division One', 'Ghana', 58.2049011477, 230, '1m4sxndpm5lnnc09qn84cu2vo'),
+    ('Birinci Dasta', 'Azerbaijan', 57.945163704, 233, '1pz0ch210cun5hthsvq0lb7x3'),
+    ('USL League Two', 'USA', 47.8152583934, 339, 'enzlj1as2raqm4ids1zyb07y1'),
+    ('Premier League', 'Cambodia', 50.0240779247, 317, '6s4p9pfxu7j31isquv8o9h4dd'),
+    ('First League', 'Armenia', 51.9308429265, 296, '1be64lgp0chekkyu0iuyta8kc'),
+    ('1. Division', 'Kazakhstan', 52.3413437836, 289, '9xhmptx8yr16klvhfsss6drrw'),
+    ('Yemeni League', 'Yemen', 58.1631099191, 231, 'csf32ulgvgdcs0jytvtsb23ky'),
+    ('Premier League', 'Belize', 50.7422661269, 307, '6gnffmfauvm3mohkusjt96fj4'),
+    ('CIFA Premier League', 'Cayman Islands', 51.2368541851, 303, '7et0m0uh6m3q6taxgxqm88mpo'),
+    ('Ligue 2', 'Tunisia', 57.3214844485, 241, '8jh0jejuxfhrpawnoztz2jlv4'),
+    ('Scottish League One', 'Scotland', 55.4022789422, 260, '6sxm2iln2w45ux498pty9miw8'),
+    ('Ligue 1', 'Tahiti', 44.8987033104, 376, '7k4t5z7iiueq1l5pu1bymud71'),
+    ('National League', 'Myanmar', 50.2646544998, 315, 't2th5fajt23vbdfzhnd6gbbe'),
+    ('NISA', 'USA', 55.2219803685, 261, 'buw76i9cpiorzr92q963n26wa'),
+    ('GFF Elite League', 'Guyana', 51.7347170478, 299, '88t6g9pn0n3z1imkd03gwz37j'),
+    ('Division 1', 'United Arab Emirates', 55.8509693399, 256, 'cv3tuitw3ho3v0opjjxpn83b9'),
+    ('III Liga', 'Poland', 54.7906888549, 264, '4jieyfpyom8d011dgeqj77ojm'),
+    ('NPSL', 'USA', 47.9105476305, 338, 'aw2pkmmbu8d4lggcw85yzrcdm'),
+    ('Serie D', 'Brazil', 54.3253723685, 268, '9nbpdi9q3ywcm4q0j5u0ekwcq'),
+    ('MLS Next Pro', 'USA', 56.6863460088, 246, '5qmjkpvi92vrzdcb2knassjkk'),
+    ('Second League', 'North Macedonia', 53.3228230351, 278, '8te12r7tgvztvid6k5o2n6l9r'),
+    ('Liga Primera Premier', 'Mexico', 57.2178927506, 242, '3z0yko9k4j4bg838giak9lbf8'),
+    ('Pro League', 'Uzbekistan', 54.1550307578, 269, '53bqtby283rqeils2kjnjy3g6'),
+    ('Second League B', 'Ukraine', 52.1950941733, 293, '1q6us4dsfxfecn66m2riyzh78'),
+    ('Irish First Division', 'Republic of Ireland', 56.4910997906, 249, '7cwemnr3vi40znjq451zxkus6'),
+    ('Second League', 'Bulgaria', 57.634223181, 237, '9sr54lwtg5hdlgmj2spz61cli'),
+    ('Curaçao Promé Divishon', 'Curaçao', 55.1039922145, 262, '959v2qa82bknmcc6epvb6dgpu'),
+    ('Persha Liga', 'Ukraine', 58.2654242462, 229, 'c5551zb2twbvyv8sh55bnht09'),
+    ('1 Lyga', 'Lithuania', 52.3773907673, 288, '7qf0jaayyxy3ruamsexv5p1kl'),
+    ('Division 1', 'Djibouti', 54.0118229926, 271, '26gq2z96ehrmb82q3sq9cf0fp'),
+    ('Liga III', 'Romania', 48.3244666732, 331, '4qtsau8rkg0g5wt58wjw19rn1'),
+    ('Autonómicas', 'Spain', 50.0128213648, 318, '4ad9sdnscsipc990sp5l5n1wq'),
+    ('Premier League', 'Sierra Leone', 55.91398468, 254, '3umprqta6ipyann6qjjh07biz'),
+    ('Division 1', 'Kuwait', 55.4245730986, 259, 'ckop4ca4kxencvl9o279p4vdh'),
+    ('2. Division', 'Denmark', 56.6581416765, 247, '8vbck9a4mxjms783lf72779uu'),
+    ('Primera Divisional C', 'Uruguay', 50.627335618, 312, '6utr6bfbh7m3wjcy99s5ic9rr'),
+    ('Srpska Liga', 'Serbia', 53.7097605883, 273, 'ecput4u5i67t8xuzfveulvy8k'),
+    ('3. Division', 'Norway', 51.2523868198, 302, 'a4fgj2rfbpf4ejo1qi624fefo'),
+    ('QSL 3 League', 'Qatar', 58.7387490834, 226, 'ahfwgk5dhik1yxbb6xr1uwro4'),
+    ('1. Division', 'Belarus', 53.3642590901, 277, 'zs18qaehvhg3w1208874zvfa'),
+    ('Championship', 'Australia', 56.3653093484, 251, '41hbf8hlc2hfpw0n9hnn1ow7o'),
+    ('3. liga', 'Slovakia', 52.7143217378, 287, 'cc9zntdbef14p20gt4ekvnjvs'),
+    ('Premier League', 'Kyrgyz Republic', 50.6691289554, 309, 'eve4cbr6ybatmp2qdh0nu7lx9'),
+    ('1st Division', 'Jordan', 54.8866629054, 263, 'capnw9242hzut00ei9rgfco8n'),
+    ('Primeira Divisão', 'Macao', 44.116040371, 387, '8dpljd2ae9a8739ledhj91fl8'),
+    ('Third League', 'Russia', 40.7200795996, 408, '1naivg39wk4egyb3xogzy8jx1'),
+    ('Chinese Football League 1', 'China PR', 53.0727979448, 282, '8r98daokeuzsamu5fmjtblqx5'),
+    ('Division 2', 'Saudi Arabia', 54.7486481219, 265, '2o2cd36zr8xa5rbxikn2v3cju'),
+    ('Division 2', 'Sweden', 50.6075672634, 313, '1owhvvge4wlx7e0e431b4vhqx'),
+    ('Turkish 3. Liga', 'Türkiye', 51.1719145346, 305, '907l7wtxdvugdo9i2249wcmr0'),
+    ('Division 2', 'Belgium', 54.1239590714, 270, '58frfwi1ggvc2y45ux6a0t71b'),
+    ('Erovnuli Liga 2', 'Georgia', 56.4778175371, 250, '9yoqgm185326gn01tql2b1gvf'),
+    ('1. Liga Classic', 'Switzerland', 52.859401532, 286, 'cm3vqed635t5cxc113gkwm5vo'),
+    ('Higher League', 'Ethiopia', 52.9781268695, 284, 'd2xx0aq6s4jxls7nycyp32gb8'),
+    ('Bangladesh Premier League', 'Bangladesh', 46.9395911508, 352, '3c8633feplm71zs185iyado3t'),
+    ('Liga Premier Serie A', 'Mexico', 49.8321869513, 319, '87h32eza4zpxytxwtezfvzeji'),
+    ('Liga Bet', 'Israel', 49.3491917339, 321, '255lni1lapp38q1ce7pdkvkdl'),
+    ('Eccellenza', 'Italy', 50.6552363083, 311, 'eu6p2aeg01japjsy3vxl2czro'),
+    ('Elite Two', 'Cameroon', 53.6507563454, 275, 'c8ynqmmwxpo7jh568jxg3syui'),
+    ('Japan Football League', 'Japan', 52.9274673887, 285, 'dugi7e4nkmsbhtaacqr27fd8z'),
+    ('V.League 2', 'Vietnam', 54.5800082776, 266, '4mpgaqkdfgp3npm30m817krt7'),
+    ('Derde Divisie', 'Netherlands', 51.0646438636, 306, 'cniic1ov3puzi4ij6qdin42zf'),
+    ('1. Liga', 'Latvia', 47.4943369267, 343, '3ri6juw2w6ma0jezszdlv1uqm'),
+    ('Regionale 1', 'Réunion', 48.4211097957, 329, 'ec21s5dmmw0zsmhmzn1wuso9x'),
+    ('Primera Division', 'Cuba', 53.6967320869, 274, '85228ky4ttbvhidcnfzeh417v'),
+    ('Second Division', 'Bahrain', 50.695790947, 308, '2z9rz5s0wn8de1nnrvxzddf2w'),
+    ('Premier League', 'Bermuda', 51.262312842, 301, 'cxjve7cb7vo52bn49j7l4vlil'),
+    ('IV Liga', 'Poland', 44.9851221515, 374, '8b6pm41x365md8ojlb2y47v9w'),
+    ('Somali Premier League', 'Somalia', 49.3376568682, 322, '6ngm2hkpw6o9fuf9vgipde3dn'),
+    ('Thai League 2', 'Thailand', 54.4738462797, 267, 'bt24epydr1s8zc2x5xb0n9noc'),
+    ('Second NL', 'Croatia', 53.0400673018, 283, '4nconewk3ipq2ql9a41h40ff8'),
+    ('National League N / S', 'England', 52.3009354148, 291, 'bockl24qpr7ryjl8b6obukga'),
+    ('Tercera A', 'Chile', 52.3265126838, 290, 'eeyp68fd9iwrv2hr69lode4zz'),
+    ('Brazilian Carioca', 'Brazil', 56.6116772265, 248, 'b0dgf9ig6lyl992efpblsg3o5'),
+    ('4. liga', 'Czechia', 46.8128123105, 354, '9w8ydnoft05zow8l4wu9sxfq1'),
+    ('3. SNL', 'Slovenia', 48.1908758843, 335, 'domsjww1z4ouovaj6qogatnrf'),
+    ('Championship', 'Indonesia', 51.668211479, 300, '4ean4fk01vvwgq1cywi6d3t4s'),
+    ('San Marino Campionato', 'San Marino', 42.9464488817, 395, '2c63lkabcjzoiqavj24madt2d'),
+    ('1. Deild', 'Faroe Islands', 48.4068863634, 330, '341lj4ffzct6jdi87spbg8wr4'),
+    ('Taiwan Football Premier League', 'Chinese Taipei', 49.234177465, 324, 'bcpgmjs508joni6hpme87qz2b'),
+    ('Challenge League', 'Malta', 51.2012777551, 304, '87ztkb9xhjatuvee3i4nmpkym'),
+    ('Dhivehi Premier League', 'Maldives', 44.7606227803, 380, '9bbedsqm0xttwhpayj85otgen'),
+    ('Regional Leagues', 'Japan', 41.2606702579, 406, '5hwvpu5kcvehmftkhf8m6bvje'),
+    ('First Division League', 'Oman', 52.2397168527, 292, 'dh2w1tsp79haiyet9ovq0wk5w'),
+    ('Third League', 'Bulgaria', 44.1386879446, 386, 'cxd19epii9ytygdn9f8ihzhze'),
+    ('Kakkonen', 'Finland', 45.5853823015, 368, 'du6jsenbjql5e8f3yk880ox4g'),
+    ('Ykkönen', 'Finland', 52.1834367144, 294, '7qdv1xae7ikfe8dft3oj29yqc'),
+    ('Third NL', 'Croatia', 45.1089700708, 372, '2cxbyioo1wh4qeq09kjdp3g10'),
+    ('Division 3', 'Belgium', 47.6280025928, 341, 'esxl38qxi3mp7hdznyxw1fx7v'),
+    ('Thai League 3', 'Thailand', 46.4082823966, 361, 'bmmm8kjsbbl7izu0bsl2spyw9'),
+    ('Second League', 'Montenegro', 51.8096568473, 298, 'biac7kvkjh90b0iclv433am4a'),
+    ('Super League', 'Kenya', 49.8209610695, 320, 'cize73kxls2n25jjwb5csecfe'),
+    ('K4 League', 'Korea Republic', 48.8961051239, 327, '2bn7fv6qaeqnlnbztnwyazk9s'),
+    ('Landesliga', 'Austria', 46.3870262561, 362, '3e79p4eyu2prq96x39nt7djro'),
+    ('Ligue 1 Québec', 'Canada', 47.2850484316, 345, '2d4nlocc9asxxco093qt2y7vu'),
+    ('Premier League', 'Mongolia', 42.7917954263, 397, '8s9m5mnys5sljfcss6seb6dca'),
+    ('3. Division', 'Denmark', 48.2720434034, 334, '4vt0ldrcl6thpxpcs8zmpdq1g'),
+    ('2. Liga Interregional', 'Switzerland', 44.7639342607, 379, 'bwbb16bizglu0aqhv3uv7vdil'),
+    ('Super League', 'Brunei Darussalam', 37.8534289698, 418, 'b3uaeojrwdz549l6u6x1epwvy'),
+    ('State Leagues', 'Germany', 41.6892562614, 404, '1beh38q848j7v2pdt68sbkydw'),
+    ('Ontario Premier League', 'Canada', 46.2162841154, 364, '5ntkz5lqu047zxq6kds0q8qju'),
+    ('Gamma Ethniki', 'Greece', 46.5107618348, 356, 'eejymql2i8u0rurwx7a60knkk'),
+    ('2. Deild', 'Iceland', 49.2943418442, 323, '67uya58idol2eq18ljecsru5o'),
+    ('Liga 1', 'Moldova', 48.9126364999, 326, '90129kfnovrjd7v1lkzq7b144'),
+    ('Alberta Premier League', 'Canada', 47.2579596433, 346, '3gb0ae74ikiz9vv6hg4q0rwno'),
+    ('G League', 'Guam', 38.6965493947, 415, '5ejd6eyz6h60nznehnlu5qedi'),
+    ('Super Ligue', 'New Caledonia', 46.9655853615, 351, '6aitj7wkkunkhpa8f1sf6klrh'),
+    ('HKFA 1st Division', 'Hong Kong, China', 44.8304629104, 378, '32vph7vcjqgo1ksj1548di90n'),
+    ('British Columbia Premier League', 'Canada', 47.2490640666, 347, 'dsjp66d8c97bclbw357cex53o'),
+    ('3. Division', 'Cyprus', 47.552742357, 342, '9ywgewtyew2xdha6ihra8wr39'),
+    ("Promotion d'Honneur", 'Luxembourg', 49.0598715134, 325, '4nb99fz6gr6kh4swz9290rx2n'),
+    ('Munster Senior League', 'Republic of Ireland', 44.7466022663, 381, 'cuymsivavx4s1glq58beqjc44'),
+    ('Liga A1', 'Malaysia', 45.3336517834, 370, '3hlqtarrurifmxcu3wqebw1tf'),
+    ('Argentina Primera C (Metropolitana)', 'Argentina', 46.9275436212, 353, '2tyo5z2kcb5eiv8u53ne72yn4'),
+    ('Leinster Senior League', 'Republic of Ireland', 45.6742353327, 367, '3alyl4h2ug42jl1j67yj0owes'),
+    ('National League', 'Nepal', 48.2867561196, 333, '17p94td96tdrcvpxoqfmcaz85'),
+    ('TT Premier League 2', 'Trinidad and Tobago', 44.3208274444, 385, '2ahvmrdzsmds84ppbtmegtdnu'),
+    ('Profesyonelliğe Geçiş Ligi', 'Türkiye', 42.3448975858, 401, 'eg9t4hey3lmbfhcsj5m4qnxbe'),
+    ('4. liga', 'Slovakia', 43.6852973742, 391, '9fwlwux9c3l4ih8wx2qbawqvo'),
+    ('DFA Premier League', 'Dominica', 42.7585799828, 398, '9u982fk6ks1xu5kyje466d7o4'),
+    ('Non League Premier', 'England', 44.9191323139, 375, '78wml3z5wrfxe5iky50tiotgu'),
+    ('Scottish League Two', 'Scotland', 48.5792761287, 328, '6321dlqv4ziuwqte4xpohijtw'),
+    ('Brazilian Gaúcho', 'Brazil', 50.1566158718, 316, 'bv2uk1yawdco66ife2wxrzazm'),
+    ('Northern Ireland Championship', 'Northern Ireland', 46.4174145172, 359, '53tknno09wqihmwxrqcuwq9sa'),
+    ('Liga Nusantara', 'Indonesia', 46.4546232518, 358, '3rgsage2x9nj6c7220m08ll3o'),
+    ('Brazilian Mineiro', 'Brazil', 50.3071036375, 314, 'craznzmzk01hn9gjbj3g3mjah'),
+    ('Goiano 1', 'Brazil', 50.6592789663, 310, '960sty6j8g82423zpmtu7eaee'),
+    ('FAI National League', 'Republic of Ireland', 47.4632050469, 344, 'chif2fue1mqhkyb4zmbiz4fyt'),
+    ('National Football League', 'Fiji', 43.8457439429, 389, 'eho9l3wi70zmnymt4twce7ehz'),
+    ('Esiliiga A', 'Estonia', 45.0137655069, 373, '1jsiuepngd3pdeepzob61b02n'),
+    ('Amazonense 1', 'Brazil', 46.4562961922, 357, 'dlcz2yedcz5h74e96opmb8awx'),
+    ('Vierde Divisie', 'Netherlands', 44.4991760012, 383, 'wss36goxzn5vk5ezvpk4z7wl'),
+    ('Super League', 'Sri Lanka', 45.1514327908, 371, 'f28ryh79dq9xf1n8wj6wo8x6j'),
+    ('Sergipano 1', 'Brazil', 47.7066240133, 340, '4j8uz20iox42s82zs2d6zlswf'),
+    ('Capixaba A', 'Brazil', 45.9340627802, 365, '3rbuh3w1ahh5wbr0b1vjzdwru'),
+    ('S-League', 'Solomon Islands', 35.9030966957, 425, 'ebt3vhoz98paeu1k4cjqi1ul5'),
+    ('Liga 3', 'Georgia', 42.1194159106, 403, '7akyohnbu1mlbn3gt5oovcaly'),
+    ('Amapaense', 'Brazil', 44.8382390397, 377, '996mhhz95lye3ciuvchb06cv9'),
+    ('Piauiense', 'Brazil', 46.2586064377, 363, '8cb4lvjv76e5sd9o2fn2q2nnd'),
+    ('2nd Division', 'Albania', 43.5604104089, 392, '59d9gyqzygoewbix247fnbvpn'),
+    ('Pernambucano 1', 'Brazil', 48.0782030771, 336, '515zp8193llecturbp2mgpv81'),
+    ('Paraibano 1', 'Brazil', 47.1211428693, 350, '47e4kf7on49r1j8tbl4lasp9p'),
+    ('Indian Football League', 'India', 46.5293616915, 355, '4pohvulrkgzx38eoqse6b5cdg'),
+    ('Paraense A1', 'Brazil', 47.172979499, 348, '56kbffapmubfiq7unbzc1re4n'),
+    ('Brasiliense A', 'Brazil', 47.1438675005, 349, '823yw2xbtippuaqmli2fovpgs'),
+    ('Druha Liga', 'Ukraine', 43.1752525059, 394, '24sqrnfysjbuzxsyz3pqbhc96'),
+    ('FAW Championship', 'Wales', 43.7685241932, 390, '5vq1bl8h8dxdr34w0jaanokto'),
+    ('Paranaense 1', 'Brazil', 48.3019356092, 332, '3gjh0wh5rfu4yrnu6gilln9wl'),
+    ('Baiano 1', 'Brazil', 48.0410888758, 337, '4sdxtqddcbnckfbb59m1xdalj'),
+    ('Maranhense 1', 'Brazil', 44.3962182484, 384, '73w1cmn2hulv1zybihv7mua26'),
+    ('Provincial', 'Belgium', 39.5499934316, 410, '3a63db1h3skgftkxqy7ev4f4m'),
+    ('3. Deild', 'Iceland', 42.6036571375, 400, 'djlez26qpwpmgcptlhbxf8tzt'),
+    ('2a Divisió', 'Andorra', 40.93938505, 407, '3srzp139thd2ppo8ediqcasuq'),
+    ('Matogrossense 1', 'Brazil', 45.9143074574, 366, '2udulamnbhyjqv4p4owbghmo8'),
+    ('Liga Premier Serie B', 'Mexico', 44.039807342, 388, 'bhz5sqbkzsfq3eghlq8764nl6'),
+    ('National Soccer League', 'Papua New Guinea', 34.2638962677, 429, '1kmct9gg4dtk0lc59honmosu7'),
+    ('Catarinense 1', 'Brazil', 46.416137533, 360, '4fujcptop9waua3f96go6c93a'),
+    ('Denmark Series', 'Denmark', 39.5246620019, 411, '942hrw15c92ml9o2j88434z49'),
+    ('Chinese Football League 2', 'China PR', 42.6501949199, 399, '3ymqchdzk8tt6lfphf26xfvh0'),
+    ('Liga TDP', 'Mexico', 31.8838941125, 433, 'vu7xa99q5fiywp8wpvyn4owk'),
+    ('Torneo Promocional Amateur', 'Argentina', 40.0598451634, 409, '57cs3ewfi1ql2l6lrm29kf6dw'),
+    ('Capital Territory NPL', 'Australia', 35.0106914193, 427, 'eqz64pn0qsp2y7aq4m9id3fn6'),
+    ('Kolmonen', 'Finland', 36.1595080334, 422, 'uh2efgnjh0yxnyzte8f1da09'),
+    ('Alagoano 1', 'Brazil', 44.6335309363, 382, 'u7lq7crm0r53b0xfmzz5rw5d'),
+    ('Non League Div One', 'England', 36.1455750405, 423, '2o6aygqek4rqvuzbj8nf2rk1u'),
+    ('New South Wales NPL', 'Australia', 41.26070941, 405, '6g8hw3acenrw828la7gwx4mvs'),
+    ('1. Division', 'Luxembourg', 38.0058208903, 417, '41qm8wjhfr4ur2nc0hfiaysuj'),
+    ('Premier League', 'Bhutan', 28.8440431788, 441, '3tvqr9pmxgq7ftlg34m85icmh'),
+    ('Second Division', 'Vietnam', 42.835482542, 396, '6ioduwqo2523fsyczahnv48g0'),
+    ('Acreano', 'Brazil', 43.3607335415, 393, '9bhbv5iu5o9u3dt1h1xvqhbpw'),
+    ('Brazilian Cearense', 'Brazil', 45.4411542239, 369, 'dwteofckcdxa41bxw5rzalt23'),
+    ('Queensland NPL', 'Australia', 37.7438393644, 419, '61fzfjogstjuukzcehighq7mu'),
+    ('Victoria NPL', 'Australia', 39.2780294686, 412, '2mdmx668tyhy4u4z9zszwjv5v'),
+    ('Prairies Premier League', 'Canada', 42.2651230293, 402, '7he6eno2ekbln0v4nz43tsydw'),
+    ('Northern NSW NPL', 'Australia', 37.6806509092, 420, '9u4pm8x0lfmfq3r0pypmrls71'),
+    ('National Amateur League', 'Malta', 38.1283215444, 416, '4ukiv0glt1ezmfisz34szht6v'),
+    ('Highland / Lowland', 'Scotland', 31.769623, 434, '6nm3h3xebzyrle00a2o87iopn'),
+    ('PCSL', 'Canada', 35.1315746651, 426, 'bemm6tvgg2i1ahekeensrjlnm'),
+    ('Eerste Klasse', 'Netherlands', 35.9962207325, 424, '5nc1z8rz3f8uiip1qhdkgdf1x'),
+    ('Chinese Jiangsu Football City League', 'China PR', 39.0974883674, 414, 'ddgh2wsnvnoboc4gu73zjahhw'),
+    ('Western Australia NPL', 'Australia', 37.2721796693, 421, 'ajm86skyzse4ym8g6fpgzncxa'),
+    ('I-League 2', 'India', 39.1524571824, 413, '9h59sfgq97e19r6ldve5xrrrg'),
+    ('Liga 2', 'Moldova', 32.513497498, 431, '7yu5v7m4l2hs3h352lohttyk0'),
+    ('4. Deild', 'Iceland', 33.5268807259, 430, '1cetls6ootnyudl191dsbtrcz'),
+    ('Calcutta Premier Division', 'India', 31.3518139424, 435, '9q1lv8j58bsnrnmj6wf2inf4w'),
+    ('2. Deild', 'Faroe Islands', 32.2429963892, 432, '41u3ad31n4wngqv20yumidgsf'),
+    ('Northern Ireland Premier Intermediate League', 'Northern Ireland', 34.5321523962, 428, '6yhkvr1api401m5pkazxv4v4o'),
+    ('Counties Leagues', 'England', 27.9905029855, 442, '3hxb75f3g7662yjtyf0x1im8k'),
+    ('NSW League One', 'Australia', 29.9949146798, 437, '5f4vmg8dv2d0y8fuw60f0kbca'),
+    ('Esiliiga B', 'Estonia', 30.8876835099, 436, 'dv7yrlxxgsfl7wl2sno3adndq'),
+    ('Lao League', 'Laos', 24.3330775746, 444, 'cup8yhuyraqjany9hynm06cvl'),
+    ('Western Australia State League 1', 'Australia', 29.6659315169, 440, '2xkxwl03668hb7d7y63naupgq'),
+    ('Regional Leagues', 'Scotland', 16.8846515487, 451, '9edf0eouow31wxuyt4wzr4max'),
+    ('Queensland Premier League', 'Australia', 27.1255424056, 443, '9zvu736m8f9jzeyukisgey356'),
+    ('Victoria PL 1', 'Australia', 29.8626180072, 439, '1n9l0ex47bu0762qg574hzjtd'),
+    ('Premier League', 'Seychelles', 29.966896109, 438, '6i2wzu9kuszyysv8lpfpb3q50'),
+    ('NSW League Two', 'Australia', 22.6850914612, 445, 'aed8nciihgj74iq4tv6mrq39w'),
+    ('II Liiga', 'Estonia', 18.2047490395, 450, '7aj9v3zko7lw5cq2cxzwngyyo'),
+    ('Victoria PL 2', 'Australia', 22.4849068924, 446, 'demi2fsrdwddt2314p6j11lyi'),
+    ('Queensland Premier League 2', 'Australia', 21.1079868857, 448, '3a1kagik7bnoofrhr6qqp0dn8'),
+    ('Western Australia State League 1 Reserves', 'Australia', 20.9782201532, 449, 'dxgcsf3azheuf3shs09myyqs4'),
+    ('Gozo First Division', 'Malta', 22.4144106574, 447, 'd9fa6z8gr5geqojrggyxln3ys'),
+    ('FQPL 3 Metro', 'Australia', 14.3024353268, 452, '3jlffacre45qv9p155t1yr7je'),
+    ('Round Cup', 'Cook Islands', 11.3911208559, 453, 'bzlcw1r7cdm47j42dc28qf9wl'),
+    ('Super League', 'Bhutan', 7.346520528, 454, '4own04thi0njdg9n4gzl7foht'),
+)
+
+
+def _league_identity(label: object) -> str:
+    return SEASON_RX.sub("", label.strip()).strip() if isinstance(label, str) else ""
+
+
+def _league_key(label: object) -> str:
+    text = unicodedata.normalize("NFKD", _league_identity(label).casefold())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def normalize_opta_league_meta(out: pd.DataFrame) -> pd.DataFrame:
+    required = {"leagueName", "countryName", "seasonAverageRating"}
+    if not required.issubset(out.columns):
+        return pd.DataFrame()
+    out["seasonAverageRating"] = pd.to_numeric(out["seasonAverageRating"], errors="coerce")
+    out["globalRank"] = pd.to_numeric(out.get("globalRank"), errors="coerce")
+    out = out.loc[np.isfinite(out["seasonAverageRating"])].copy()
+    out["_name_key"] = out["leagueName"].map(_league_key)
+    out["_country_key"] = out["countryName"].map(_league_key).replace(OPTA_COUNTRY_ALIASES)
+    out = out.loc[out["_name_key"].ne("") & out["_country_key"].ne("")]
+    if "leagueId" in out.columns:
+        repeated = out["leagueId"].notna() & out["leagueId"].duplicated()
+        out = out.loc[~repeated]
+    return out
+
+
+def load_opta_league_meta(path_str: str) -> pd.DataFrame:
+    try:
+        records = json.loads(Path(path_str).read_text(encoding="utf-8-sig"))
+        if isinstance(records, list) and all(isinstance(record, dict) for record in records):
+            external = normalize_opta_league_meta(pd.DataFrame(records))
+            if not external.empty:
+                return external
+    except (OSError, ValueError, TypeError):
+        pass
+
+    bundled = normalize_opta_league_meta(pd.DataFrame(
+        OPTA_BUNDLED_LEAGUE_RECORDS, columns=OPTA_BUNDLED_LEAGUE_COLUMNS,
+    ))
+    bundled.attrs["bundled_ratings"] = True
+    return bundled
+
+
+def match_wyscout_league_to_opta(wyscout_league: object, opta: pd.DataFrame) -> dict | None:
+    if opta.empty:
+        return None
+
+    key = _league_key(wyscout_league)
+    prefixes = set(opta["_country_key"]) | OPTA_COUNTRY_ALIASES.keys()
+    prefix = max((p for p in prefixes if key.startswith(p + " ")), key=len, default="")
+    if not prefix:
+        return None
+
+    country = OPTA_COUNTRY_ALIASES.get(prefix, prefix)
+    competition = key[len(prefix) + 1:]
+    canonical_key = f"{country} {competition}"
+    countries = (country, *OPTA_LEAGUE_ADDITIONAL_COUNTRIES.get(canonical_key, ()))
+    candidates = opta.loc[opta["_country_key"].isin(countries)]
+
+    aliases = OPTA_LEAGUE_ALIASES.get(canonical_key)
+    name_keys = [_league_key(name) for name in aliases] if aliases else [canonical_key, competition]
+    for name_key in name_keys:
+        matches = candidates.loc[candidates["_name_key"].eq(name_key)]
+        if len(matches) > 1:
+            return None
+        if len(matches) == 1:
+            match = matches.iloc[0]
+            return {
+                "opta_name": match["leagueName"],
+                "rating": float(match["seasonAverageRating"]),
+                "rank": match["globalRank"],
+                "confidence": 1.0,
+            }
+    return None
+
+
+def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) -> pd.DataFrame:
+    try:
+        file_stat = Path(path_str).stat()
+        file_version = (file_stat.st_mtime_ns, file_stat.st_size)
+    except OSError:
+        file_version = None
+    return _cached_league_strength_lookup(league_labels, path_str, file_version)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _cached_league_strength_lookup(
+    league_labels: Tuple[str, ...], path_str: str, file_version: tuple[int, int] | None,
+) -> pd.DataFrame:
+    opta = load_opta_league_meta(path_str)
+    rows = []
+    matches_by_key = {}
+    for league in league_labels:
+        key = _league_key(league)
+        if key not in matches_by_key:
+            matches_by_key[key] = match_wyscout_league_to_opta(league, opta)
+        match = matches_by_key[key]
+        if match is not None:
+            rows.append({"League": league, **match})
+    lookup = pd.DataFrame(rows)
+    lookup.attrs.update(opta.attrs)
+    return lookup
+
+
+def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
+    requested = requested_profile_metrics(role)
+    resolved, _ = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return score_df.assign(_projection_role_score=np.nan), pd.Series(dtype=float)
+    depth_weights = requested_profile_weights(role)
+    requested_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved_weight_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0.0) + requested_weight_map.get(req, 0.0)
+    weights_pct = np.array([resolved_weight_map.get(m, 0.0) for m in resolved], dtype=float)
+    weights = normalize_weights(weights_pct)
+    scored, _, _, _ = make_profile_score_vectorized(
+        score_df, benchmark_df, resolved, weights, "_projection_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    benchmark_scored, _, _, _ = make_profile_score_vectorized(
+        benchmark_df, benchmark_df, resolved, weights, "_projection_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    return scored, pd.to_numeric(benchmark_scored["_projection_role_score"], errors="coerce").dropna()
+
+
+
+
+def role_score_for_population_depth(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, depth: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
+    """Score a built-in role at an explicit profile depth without changing global profile state."""
+    requested, depth_weights = profile_definition(role, depth)
+    resolved, _ = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return score_df.assign(_shadow_role_score=np.nan), pd.Series(dtype=float)
+    requested_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved_weight_map = {}
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0.0) + requested_weight_map.get(req, 0.0)
+    weights_pct = np.array([resolved_weight_map.get(m, 0.0) for m in resolved], dtype=float)
+    weights = normalize_weights(weights_pct)
+    scored, _, _, _ = make_profile_score_vectorized(
+        score_df, benchmark_df, resolved, weights, "_shadow_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    benchmark_scored, _, _, _ = make_profile_score_vectorized(
+        benchmark_df, benchmark_df, resolved, weights, "_shadow_role_score",
+        coverage_threshold=coverage_threshold,
+    )
+    return scored, pd.to_numeric(benchmark_scored["_shadow_role_score"], errors="coerce").dropna()
+
+def build_projected_target_profile(
+    player_row: pd.Series,
+    target_benchmark: pd.DataFrame,
+    role_name: str,
+    rating_delta: float,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Project the player's role metrics against the actual target-league position population.
+
+    V1 uses the player's unchanged raw Wyscout values, standardizes each metric against
+    the target-league compatible-position population, then applies the empirically
+    calibrated league-strength penalty to the direction-aware z-score. The adjusted
+    z-score is converted to a 0-100 normal percentile for radar presentation.
+    """
+    requested = single_player_profile_for_depth(role_name)
+    records, missing = [], []
+    adjustment = LEAGUE_TRANSLATION_BETA * float(rating_delta)
+    for group, requested_metric in requested:
+        resolved, miss = resolve_metrics_aliases([requested_metric], target_benchmark.columns.tolist())
+        if not resolved:
+            missing.extend(miss or [requested_metric])
+            continue
+        metric = resolved[0]
+        value = pd.to_numeric(pd.Series([player_row.get(metric, np.nan)]), errors="coerce").iloc[0]
+        if pd.isna(value):
+            continue
+        lower_better = metric in LOWER_IS_BETTER
+        target_z = directional_z_against_population(target_benchmark[metric], value, lower_is_better=lower_better)
+        if pd.isna(target_z):
+            continue
+        projected_z = float(target_z) - adjustment
+        # Normal-CDF conversion avoids pretending that the translated raw value itself
+        # was observed in the target league while retaining an intuitive percentile scale.
+        projected_pct = 50.0 * (1.0 + math.erf(projected_z / math.sqrt(2.0)))
+        records.append({
+            "KPI Group": group, "Metric": metric, "Raw Value": float(value),
+            "Percentile": float(np.clip(projected_pct, 0.0, 100.0)),
+            "Z-score": projected_z,
+        })
+    return pd.DataFrame(records), sorted(set(missing))
+
+
+def league_projection_radar(
+    current_profile: pd.DataFrame,
+    projected_profile: pd.DataFrame,
+    player_name: str,
+    current_label: str,
+    target_label: str,
+    *,
+    club_comparison: str | None = None,
+) -> go.Figure:
+    """Single-Player-style scouting wheel overlaying current and projected percentiles."""
+    if current_profile.empty or projected_profile.empty:
+        return go.Figure()
+
+    cur = current_profile[["KPI Group", "Metric", "Raw Value", "Percentile", "Z-score"]].copy()
+    pro = projected_profile[["Metric", "Percentile", "Z-score"]].rename(
+        columns={"Percentile": "Projected Percentile", "Z-score": "Projected Z-score"}
+    )
+    pro["Player Raw Value"] = projected_profile["Raw Value"]
+    p = cur.merge(pro, on="Metric", how="inner").reset_index(drop=True)
+    if p.empty:
+        return go.Figure()
+
+    groups = p["KPI Group"].drop_duplicates().tolist()
+    palette = ["#3478B8", "#8E5AB5", "#16A6B6", "#E58A2B", "#244A73", "#D4A72C", "#C44E8B", "#687684"]
+    group_colors = {g: palette[i % len(palette)] for i, g in enumerate(groups)}
+
+    display_aliases = {
+        "Save rate, %": "Save Rate %", "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓", "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90", "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90", "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %", "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %", "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %", "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90", "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90", "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90", "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90", "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions", "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90", "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles", "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90", "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓", "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %", "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90", "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90", "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90", "xA per 90": "xA /90", "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90", "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90", "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90", "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90", "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90", "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %", "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90", "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+    labels = [display_aliases.get(m, m) for m in p["Metric"]]
+    p["Display Metric"] = labels
+
+    n = len(p)
+    group_seq = p["KPI Group"].tolist()
+    gap_units = 0.90
+    boundaries = sum(1 for i in range(1, n) if group_seq[i] != group_seq[i - 1])
+    unit = 360.0 / (n + boundaries * gap_units)
+    theta, cursor = [], 0.0
+    for i in range(n):
+        if i > 0 and group_seq[i] != group_seq[i - 1]:
+            cursor += gap_units * unit
+        theta.append(cursor)
+        cursor += unit
+    theta = np.array(theta, dtype=float)
+    width = unit * 0.90
+
+    band_inner, band_outer = 79.0, 89.0
+    fig = go.Figure()
+    for group in groups:
+        idx = p.index[p["KPI Group"] == group].tolist()
+        fig.add_trace(go.Barpolar(
+            r=[band_outer-band_inner]*len(idx), base=[band_inner]*len(idx),
+            theta=[float(theta[i]) for i in idx], width=[width]*len(idx),
+            marker_color=group_colors[group], marker_line_color="white", marker_line_width=1.5,
+            opacity=0.90, name=group, hoverinfo="skip", legendgroup="kpi",
+        ))
+
+    perf_inner, perf_outer = 20.0, 74.0
+    perf_span = perf_outer - perf_inner
+    cur_pct = np.clip(p["Percentile"].to_numpy(dtype=float), 0, 100)
+    pro_pct = np.clip(p["Projected Percentile"].to_numpy(dtype=float), 0, 100)
+    cur_r = perf_inner + cur_pct/100.0*perf_span
+    pro_r = perf_inner + pro_pct/100.0*perf_span
+
+    ring_theta = np.linspace(0, 360, 361)
+    for tick in [0,25,50,75,100]:
+        rv = perf_inner + tick/100.0*perf_span
+        if tick == 50:
+            col, lw = "rgba(45,55,65,0.55)", 2.6
+        elif tick in (25,75):
+            col, lw = "rgba(95,105,115,0.14)", 1.15
+        else:
+            col, lw = "rgba(120,130,140,0.10)", 1.0
+        fig.add_trace(go.Scatterpolar(r=[rv]*len(ring_theta), theta=ring_theta, mode="lines",
+                                      line=dict(color=col,width=lw), hoverinfo="skip", showlegend=False))
+
+    # Close each profile around the wheel while preserving the KPI-boundary gaps.
+    closed_theta = list(theta) + [float(theta[0])]
+    current_color = "#303A44"
+    projected_color = "#E56B3F"
+    cur_custom = np.column_stack([p["Raw Value"], p["Percentile"], p["Z-score"], p["Display Metric"], p["KPI Group"]])
+    pro_custom = np.column_stack([p["Player Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
+    cur_custom_closed = np.vstack([cur_custom, cur_custom[0]])
+    pro_custom_closed = np.vstack([pro_custom, pro_custom[0]])
+
+    has_comparison = np.isfinite(cur_pct).any()
+    if has_comparison:
+        comparison_hover = club_comparison.capitalize() if club_comparison else "Current"
+        fig.add_trace(go.Scatterpolar(
+            r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
+            line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
+            name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
+            hovertemplate=f"<b>%{{customdata[3]}}</b><br>{comparison_hover}: %{{customdata[1]:.0f}}th percentile<br>Raw value: %{{customdata[0]:.2f}}<extra></extra>",
+        ))
+    fig.add_trace(go.Scatterpolar(
+        r=list(pro_r)+[pro_r[0]], theta=closed_theta, mode="lines+markers",
+        line=dict(color=projected_color,width=3.8,dash="dot"), marker=dict(size=10,color=projected_color,line=dict(color="white",width=1.7)),
+        name=f"{target_label} (Projected)", legendgroup="profiles", showlegend=False, customdata=pro_custom_closed,
+        hovertemplate="<b>%{customdata[3]}</b><br>Projected: %{customdata[1]:.0f}th percentile<br>Current raw value: %{customdata[0]:.2f}<extra></extra>",
+    ))
+
+    # Outer tiles show the comparison and projected percentiles.
+    tile_text = []
+    for comparison_pct, projected_pct in zip(cur_pct, pro_pct):
+        projected_text = f"{projected_pct:.0f}"
+        if has_comparison:
+            comparison_text = f"{comparison_pct:.0f}" if np.isfinite(comparison_pct) else "–"
+            projected_text = f"{comparison_text}→{projected_text}"
+        tile_text.append(f"<b>{projected_text}</b>")
+    fig.add_trace(go.Scatterpolar(r=[84.0]*n, theta=theta, mode="text", text=tile_text,
+                                  textfont=dict(size=11,color="white"), hoverinfo="skip", showlegend=False))
+
+    # Compact profile legend below the subtitle, separate from the KPI-category legend.
+    if has_comparison:
+        fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
+                           text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
+                           showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
+    fig.add_annotation(x=0.61, y=1.045, xref="paper", yref="paper",
+                       text=f"<span style='color:{projected_color}'>┈┈●</span> {target_label} (Projected)",
+                       showarrow=False, xanchor="left", font=dict(size=11, color="#303A44"))
+
+    tile_caption = f"{club_comparison or 'current'} → projected" if has_comparison else "projected"
+    fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
+                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>{tile_caption.capitalize()}</span>",
+                       showarrow=False,align="center",font=dict(size=16,color="#17202A"),
+                       bgcolor="rgba(255,255,255,0.94)",bordercolor="rgba(120,130,140,0.22)",borderwidth=1,borderpad=11)
+    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text=f"Percentile: 0–100 · outer tiles = {tile_caption}",
+                       showarrow=False,xanchor="left",yanchor="bottom",font=dict(size=10,color="#6B7785"))
+
+    subtitle = target_label if club_comparison else f"{current_label} → {target_label}"
+    fig.update_layout(
+        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{subtitle}</sup>",
+                   x=0.5,xanchor="center",y=0.985,font=dict(size=20,color="#17202A")),
+        template="plotly_white",height=920,margin=dict(l=180,r=180,t=150,b=125),paper_bgcolor="white",plot_bgcolor="white",
+        legend=dict(orientation="v", yanchor="top", y=1.015, xanchor="left", x=0.08, title_text="KPI groups", font=dict(size=10), bgcolor="rgba(255,255,255,0.72)"),
+        polar=dict(bgcolor="white",radialaxis=dict(range=[0,99],visible=False),
+                   angularaxis=dict(tickmode="array",tickvals=theta,ticktext=labels,direction="clockwise",rotation=90,
+                                    gridcolor="rgba(255,255,255,0)",tickfont=dict(size=16,color="#303A44"),showline=False)),
+        barmode="overlay",
+    )
+    return fig
+
+# =========================
+# Team Projection
+# =========================
+SEASON_TEAM = "Team within selected timeframe"
+AUDIT_PATH = Path(__file__).with_name("wyscout_opta_club_audit.csv")
+SNAPSHOT_PATH = Path(__file__).with_name("opta_mens_club_rankings_2026-11-20.csv")
+MIN_CLUB_MEDIAN_PLAYERS = 3
+# Initial club adjustment uses the same per-point weight as league adjustment.
+CLUB_TRANSLATION_BETA = 0.020
+
+AUDIT_COLUMNS = [
+    "wyscout_league", "wyscout_team", "match_status", "opta_team_id",
+    "opta_competition_at_snapshot", "opta_competition_country",
+    "opta_snapshot_date", "opta_rating_at_snapshot", "competition_relationship",
+]
+SNAPSHOT_COLUMNS = [
+    "snapshot_date", "opta_team_id", "competition_country", "competition", "opta_rating",
+]
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_club_audit(path: Path, modified_ns: int) -> pd.DataFrame:
+    audit = pd.read_csv(path, usecols=AUDIT_COLUMNS, dtype={"opta_team_id": "string"})
+    return audit.set_index(["wyscout_league", "wyscout_team"], verify_integrity=True)
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_competition_means(path: Path, modified_ns: int) -> pd.Series:
+    snapshot = pd.read_csv(path, usecols=SNAPSHOT_COLUMNS)
+    snapshot = snapshot.drop_duplicates(["snapshot_date", "opta_team_id"])
+    snapshot["opta_rating"] = pd.to_numeric(snapshot["opta_rating"], errors="coerce")
+    return snapshot.groupby(["snapshot_date", "competition_country", "competition"])["opta_rating"].mean()
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_club_league_deltas(
+    audit_path: Path, audit_version: int, snapshot_path: Path, snapshot_version: int,
+) -> pd.Series:
+    audit = read_club_audit(audit_path, audit_version)
+    averages = read_competition_means(snapshot_path, snapshot_version)
+    season_start = audit.index.get_level_values("wyscout_league").str.extract(SEASON_RX, expand=True)[0]
+    snapshot_year = audit["opta_snapshot_date"].astype("string").str[:4]
+    # Use the snapshot for the matching season group and competition only.
+    qualified = audit.loc[
+        audit["match_status"].eq("matched")
+        & audit["competition_relationship"].eq("same_competition")
+        & snapshot_year.eq(season_start.to_numpy())
+    ]
+    mean_keys = pd.MultiIndex.from_frame(qualified[[
+        "opta_snapshot_date", "opta_competition_country", "opta_competition_at_snapshot",
+    ]])
+    club_ratings = pd.to_numeric(qualified["opta_rating_at_snapshot"], errors="coerce")
+    return club_ratings - averages.reindex(mean_keys).to_numpy()
+
+
+def club_audit_record(audit: pd.DataFrame, league: str, team: str) -> pd.Series | None:
+    key = (league, team)
+    if key in audit.index:
+        return audit.loc[key]
+    return None
+
+
+def club_options(target_pool: pd.DataFrame, league: str, audit: pd.DataFrame) -> tuple[str, dict]:
+    """Group audited aliases by ID within a league-season, keeping unrated names selectable."""
+    team_column = SEASON_TEAM
+    if team_column not in target_pool or target_pool[team_column].dropna().empty:
+        team_column = "Team"
+    options = {}
+    for name in sorted(target_pool[team_column].dropna().unique(), key=str.casefold):
+        if not name.strip():
+            continue
+        row = club_audit_record(audit, league, name) if team_column == SEASON_TEAM else None
+        if row is not None and row["match_status"] == "matched" and pd.notna(row["opta_team_id"]):
+            key = ("id", row["opta_team_id"])
+        else:
+            key = ("name", name)
+        options.setdefault(key, []).append(name)
+    return team_column, options
+
+
+def club_strength_row(
+    side: str,
+    club_name: str,
+    audit_row: pd.Series | None,
+    averages: pd.Series,
+    has_season_team: bool,
+) -> dict:
+    row = {
+        "Side": side, "Club": club_name, "Opta club rating": np.nan,
+        "Snapshot competition": "", "Competition mean": np.nan,
+        "vs. competition mean": np.nan, "Snapshot date": "", "Rating status": "",
+    }
+    if not has_season_team:
+        row["Rating status"] = "Season team unavailable"
+    elif audit_row is None:
+        row["Rating status"] = "Outside verified audit"
+    else:
+        status = audit_row["match_status"]
+        row["Snapshot date"] = audit_row["opta_snapshot_date"]
+        row["Rating status"] = {
+            "matched": "Verified",
+            "youth_team_unrated_in_snapshot": "Youth team unrated in snapshot",
+            "club_unavailable_in_snapshot": "Club absent from snapshot",
+            "ambiguous_opta_id": "Opta ID unresolved",
+        }.get(status, "Rating unavailable")
+        if status == "matched":
+            rating = pd.to_numeric(audit_row["opta_rating_at_snapshot"], errors="coerce")
+            competition = audit_row["opta_competition_at_snapshot"]
+            snapshot_key = (row["Snapshot date"], audit_row["opta_competition_country"], competition)
+            mean = averages.get(snapshot_key, np.nan)
+            row.update({
+                "Opta club rating": rating,
+                "Snapshot competition": competition,
+                "Competition mean": mean,
+                "vs. competition mean": rating - mean,
+            })
+            relation = audit_row["competition_relationship"]
+            if relation == "different_competition_at_snapshot":
+                row["Rating status"] = "Verified in a different competition at snapshot date"
+            elif relation == "japan_transitional_competition":
+                row["Rating status"] = "Verified in regular J.League"
+    return row
+
+
+def target_club_comparison_profile(
+    projected_profile: pd.DataFrame,
+    club_players: pd.DataFrame,
+    target_benchmark: pd.DataFrame,
+) -> pd.DataFrame:
+    """Summarize eligible club players in raw units, then apply the league scale."""
+    profile = projected_profile[["KPI Group", "Metric"]].copy()
+    profile["Raw Value"] = np.nan
+    profile["Percentile"] = np.nan
+    profile["Z-score"] = np.nan
+    sample_size = len(club_players)
+    if sample_size == 0:
+        return profile
+
+    min_observations = min(sample_size, MIN_CLUB_MEDIAN_PLAYERS)
+    for index, metric in profile["Metric"].items():
+        values = pd.to_numeric(club_players[metric], errors="coerce")
+        values = values.loc[np.isfinite(values)]
+        if len(values) < min_observations:
+            continue
+        # For one or two players the median is exactly their individual value
+        # or the arithmetic mean of the pair, respectively.
+        reference_value = float(values.median())
+        z = directional_z_against_population(
+            target_benchmark[metric], reference_value, lower_is_better=metric in LOWER_IS_BETTER,
+        )
+        percentile = 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
+        profile.loc[index, ["Raw Value", "Percentile", "Z-score"]] = [reference_value, percentile, z]
+    return profile
+
+
+def render_team_projection(
+    candidates: pd.DataFrame,
+    season_pool: pd.DataFrame,
+    minutes: int,
+    coverage_threshold: float,
+    min_benchmark_n: int,
+) -> None:
+    st.header("Team Projection")
+    st.caption("Compare a player's projected role performance with the target club's players in compatible positions.")
+
+    try:
+        audit = read_club_audit(AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns)
+    except (OSError, ValueError) as error:
+        audit = pd.DataFrame()
+        st.warning(f"Verified club ratings could not be loaded ({type(error).__name__}). Squad comparison is available.")
+    try:
+        averages = read_competition_means(SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns)
+    except (OSError, ValueError):
+        averages = pd.Series(dtype=float)
+        st.warning("Opta competition averages could not be loaded.")
+
+    player_labels = candidates["Player"].astype(str).str.cat(
+        candidates.get(SEASON_TEAM, candidates["Team"]).fillna(candidates["Team"]).astype(str),
+        sep=" — ",
+    ).str.cat(candidates["League"].astype(str), sep=" | ")
+    player_labels = player_labels.mask(
+        player_labels.duplicated(keep=False), player_labels + " [" + player_labels.index.astype(str) + "]",
+    )
+    player_options = {label: index for index, label in player_labels.items()}
+    left, right = st.columns([1.4, 1])
+    with left:
+        player_label = st.selectbox("Player", list(player_options), key="team_proj_player")
+    player_index = player_options[player_label]
+    player = candidates.loc[player_index]
+    source_league = str(player["League"])
+    source_team = player.get(SEASON_TEAM)
+    source_has_team = isinstance(source_team, str) and bool(source_team.strip())
+    source_name = source_team if source_has_team else str(player["Team"])
+    position = str(player["Main Position"])
+    roles = [role for role, positions in PROFILE_POSITION_ELIGIBILITY.items() if position in positions]
+    if not roles:
+        st.info(f"No projection role is available for Main Position {position}.")
+        return
+    preferred_role = st.session_state.get("sidebar_selected_profile")
+    preferred_index = roles.index(preferred_role) if preferred_role in roles else 0
+    with right:
+        role = st.selectbox(
+            "Role", roles, index=preferred_index,
+            key=safe_widget_key("team_proj_role", position, preferred_role or ""),
+        )
+    st.caption(f"{role} · {active_depth_for_role(role)}")
+
+    target_leagues = sorted(season_pool["League"].dropna().unique())
+    league_col, club_col = st.columns(2)
+    with league_col:
+        target_league = st.selectbox(
+            "Target league", target_leagues, index=target_leagues.index(source_league), key="team_proj_league",
+        )
+    target_pool = season_pool.loc[season_pool["League"].eq(target_league)]
+    team_column, clubs = club_options(target_pool, target_league, audit)
+    if not clubs:
+        st.info("The selected competition has no club names in the upload.")
+        return
+    club_options_by_label = {" / ".join(names): names for names in clubs.values()}
+    with club_col:
+        club_name = st.selectbox(
+            "Target club", list(club_options_by_label), key=f"team_proj_club::{target_league}",
+        )
+    club_names = club_options_by_label[club_name]
+    has_audited_target_team = team_column == SEASON_TEAM
+    source_audit = club_audit_record(audit, source_league, source_name) if source_has_team else None
+    target_audit = club_audit_record(audit, target_league, club_names[0]) if has_audited_target_team else None
+
+    positions = PROFILE_POSITION_ELIGIBILITY[role]
+    benchmark = season_pool.loc[season_pool["Main Position"].isin(positions)]
+    if "Minutes played" in benchmark:
+        benchmark = benchmark.loc[benchmark["Minutes played"] >= minutes]
+    target_benchmark = benchmark.loc[benchmark["League"].eq(target_league)]
+    source_benchmark = target_benchmark if source_league == target_league else benchmark.loc[benchmark["League"].eq(source_league)]
+
+    scored_player, _ = role_score_for_population(
+        player.to_frame().T, source_benchmark, role, coverage_threshold,
+    )
+    scored_target, target_distribution = role_score_for_population(
+        target_benchmark, target_benchmark, role, coverage_threshold,
+    )
+    score_col = "_projection_role_score"
+    source_score = scored_player[score_col].iloc[0]
+    squad = scored_target.loc[scored_target[team_column].isin(club_names) & (scored_target.index != player_index)]
+    scored_squad = squad.loc[squad[score_col].notna()]
+
+    rating_delta = np.nan
+    if source_league == target_league:
+        rating_delta = 0.0
+    else:
+        strength = build_league_strength_lookup(
+            tuple(sorted((source_league, target_league))), str(OPTA_LEAGUE_META_PATH),
+        )
+        if not strength.empty:
+            ratings = strength.set_index("League")["rating"]
+            rating_delta = ratings.get(target_league, np.nan) - ratings.get(source_league, np.nan)
+        if pd.isna(rating_delta):
+            st.info("A league rating is unavailable. The target squad's observed scores are shown below.")
+
+    projected_score = source_score - LEAGUE_TRANSLATION_BETA * rating_delta
+    projected_pct = percentile_rank_against_population(target_distribution, projected_score)
+    source_metric, projection_metric, percentile_metric, sample_metric = st.columns(4)
+    source_metric.metric("Current role score", f"{source_score:+.2f}" if pd.notna(source_score) else "—")
+    projection_metric.metric(
+        "Projected role score", f"{projected_score:+.2f}" if pd.notna(projected_score) else "—",
+        delta=f"{projected_score - source_score:+.2f}" if pd.notna(projected_score) else None,
+        help="The change uses the same league translation as League Projection.",
+    )
+    percentile_metric.metric("Projected league percentile", f"{projected_pct:.0f}" if pd.notna(projected_pct) else "—")
+    sample_metric.metric("Target club players scored", f"{len(scored_squad):,}")
+    st.caption(f"Target league benchmark: {len(target_distribution):,} scored players in compatible positions with at least {minutes:,} minutes.")
+    if len(target_distribution) < min_benchmark_n:
+        st.warning("The target league benchmark is below the sidebar's minimum sample.")
+    if pd.isna(source_score):
+        st.info("A current role score is unavailable. Check the source league benchmark and profile coverage.")
+
+    if pd.notna(projected_score) and not target_distribution.empty:
+        projected_profile, _ = build_projected_target_profile(player, target_benchmark, role, rating_delta)
+        if not projected_profile.empty:
+            comparison_profile = target_club_comparison_profile(projected_profile, scored_squad, target_benchmark)
+            if len(scored_squad) >= MIN_CLUB_MEDIAN_PLAYERS:
+                comparison_kind = "club median"
+                comparison_label = f"{club_name} median"
+                radar_caption = "The club median uses at least three recorded values per metric."
+            elif len(scored_squad) == 2:
+                comparison_kind = "club average"
+                comparison_label = f"{club_name} average (2 players)"
+                radar_caption = "Small sample · Each average uses both club players' recorded values."
+            elif len(scored_squad) == 1:
+                comparison_kind = "target club player"
+                comparison_label = str(scored_squad["Player"].iloc[0])
+                radar_caption = f"One eligible club player · {comparison_label}'s observed profile."
+            else:
+                comparison_kind = "club reference"
+                comparison_label = club_name
+                radar_caption = "No eligible club players with a role score. Showing the projected player profile."
+            if not scored_squad.empty and comparison_profile["Percentile"].isna().all():
+                radar_caption = "The club sample lacks sufficient data on the plotted metrics. Showing the projected player profile."
+            fig = league_projection_radar(
+                comparison_profile, projected_profile, str(player["Player"]), comparison_label,
+                target_league, club_comparison=comparison_kind,
+            )
+            st.subheader("Projected player vs. target club")
+            st.plotly_chart(fig, width="stretch")
+            st.caption(f"{radar_caption} The radar uses target-league metric percentiles.")
+
+    st.subheader(f"{club_name} · players in compatible positions")
+    if not has_audited_target_team:
+        st.caption("This upload uses the Team field for the squad because season-team labels are unavailable.")
+    if squad.empty:
+        st.info("No target-club players meet the position and minutes filters.")
+    else:
+        table = squad.rename(columns={score_col: "Role score", f"{score_col} Coverage %": "Coverage (%)"})
+        table["League percentile"] = percentile_ranks_against_population_vectorized(target_distribution, table["Role score"])
+        display_columns = ["Player", "Main Position", "Minutes played", "Role score", "League percentile", "Coverage (%)"]
+        table = table.sort_values("Role score", ascending=False)
+        st.dataframe(
+            table[[column for column in display_columns if column in table]], width="stretch", hide_index=True,
+            column_config={
+                "Role score": st.column_config.NumberColumn(format="%+.2f"),
+                "League percentile": st.column_config.NumberColumn(format="%.0f"),
+                "Coverage (%)": st.column_config.NumberColumn(format="%.0f"),
+            },
+        )
+
+    st.subheader("Opta club strength")
+    club_context = pd.DataFrame([
+        club_strength_row("Source", source_name, source_audit, averages, source_has_team),
+        club_strength_row("Target", club_name, target_audit, averages, has_audited_target_team),
+    ])
+    relative_ratings = club_context["vs. competition mean"]
+    snapshot_dates = club_context["Snapshot date"]
+    if np.isfinite(relative_ratings).all() and snapshot_dates.nunique() == 1:
+        club_gap = relative_ratings.iloc[1] - relative_ratings.iloc[0]
+        st.metric(
+            "Relative club-strength gap", f"{club_gap:+.2f} Opta pts",
+            help="Target club's rating above or below its competition average minus the same measure for the source club. The gap is calculated before rounding.",
+        )
+    st.dataframe(
+        club_context, width="stretch", hide_index=True,
+        column_config={
+            "Opta club rating": st.column_config.NumberColumn(format="%.1f"),
+            "Competition mean": st.column_config.NumberColumn(format="%.2f"),
+            "vs. competition mean": st.column_config.NumberColumn(format="%+.2f"),
+        },
+    )
+    st.caption("Opta ratings and averages describe the listed snapshot date. The projected score uses league strength only.")
+
+
+# =========================
+# Role Fit v1
+# =========================
+ROLE_FIT_POSITION_MAP: Dict[str, List[str]] = {
+    "GK": ["Classic Goalkeeper", "Sweeper Keeper", "Build-Up Keeper"],
+    "CB": ["Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB", "Wide CB (in 3)"],
+    "DM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "CM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "AM": ["Deep-Lying Playmaker", "Box-to-Box Midfielder", "Playmaker #10"],
+    "LB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "RB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "LWB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "RWB": ["Full-Back", "Wing-Back", "Inverted Full-Back"],
+    "LW": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "RW": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "LWF": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "RWF": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+    "CF": ["Target Man #9", "Poacher", "Pressing Forward", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+    "ST": ["Target Man #9", "Poacher", "Pressing Forward", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+}
+
+
+def normalize_main_position_for_role_fit(value: object) -> str:
+    """Normalize Wyscout-style position labels to a Role Fit family."""
+    s = str(value or "").strip().upper()
+    if not s:
+        return ""
+    # Most specific wide/keeper/forward labels first.
+    aliases = [
+        ("GOALKEEPER", "GK"), ("GK", "GK"),
+        ("RWB", "RWB"), ("LWB", "LWB"),
+        ("RIGHT WINGBACK", "RWB"), ("LEFT WINGBACK", "LWB"),
+        ("RIGHT BACK", "RB"), ("LEFT BACK", "LB"),
+        ("RB", "RB"), ("LB", "LB"),
+        ("CENTRE BACK", "CB"), ("CENTER BACK", "CB"), ("CB", "CB"),
+        ("DEFENSIVE MID", "DM"), ("DMF", "DM"), ("CDM", "DM"), ("DM", "DM"),
+        ("ATTACKING MID", "AM"), ("AMF", "AM"), ("CAM", "AM"), ("AM", "AM"),
+        ("CENTRAL MID", "CM"), ("CMF", "CM"), ("CM", "CM"),
+        ("RIGHT WINGER", "RW"), ("LEFT WINGER", "LW"),
+        ("RWF", "RWF"), ("LWF", "LWF"), ("RW", "RW"), ("LW", "LW"),
+        ("CENTRE FORWARD", "CF"), ("CENTER FORWARD", "CF"), ("CF", "CF"),
+        ("STRIKER", "ST"), ("ST", "ST"),
+    ]
+    for token, family in aliases:
+        if token in s:
+            return family
+    return s
+
+
+def compatible_roles_for_position(value: object) -> List[str]:
+    return ROLE_FIT_POSITION_MAP.get(normalize_main_position_for_role_fit(value), [])
+
+
+def role_fit_for_player(
+    player_row: pd.Series,
+    role_name: str,
+    benchmark_df: pd.DataFrame,
+    coverage_threshold: float,
+) -> Dict[str, object]:
+    """Evaluate one player under one canonical built-in role."""
+    requested = requested_profile_metrics(role_name)
+    depth_weights = requested_profile_weights(role_name)
+    depth_weight_map = {m: float(w) for m, w in zip(requested, depth_weights)}
+    resolved, missing = resolve_metrics_aliases(requested, benchmark_df.columns.tolist())
+    if not resolved:
+        return {
+            "Role": role_name, "Role Score": np.nan, "Role Percentile": np.nan,
+            "Coverage %": 0.0, "Benchmark N": len(benchmark_df), "KPI Scores": {},
+            "Resolved Metrics": [], "Missing Metrics": missing,
+        }
+
+    requested_to_resolved: Dict[str, str] = {}
+    resolved_weights: List[float] = []
+    for req in requested:
+        rr, _ = resolve_metrics_aliases([req], benchmark_df.columns.tolist())
+        if rr:
+            requested_to_resolved[req] = rr[0]
+            resolved_weights.append(float(depth_weight_map.get(req, 0.0)))
+
+    resolved = [requested_to_resolved[r] for r in requested if r in requested_to_resolved]
+    # Deduplicate while retaining canonical order.
+    resolved = list(dict.fromkeys(resolved))
+    weight_by_resolved = {}
+    for req, col in requested_to_resolved.items():
+        weight_by_resolved[col] = weight_by_resolved.get(col, 0.0) + float(depth_weight_map.get(req, 0.0))
+    weights = np.array([weight_by_resolved[m] for m in resolved], dtype=float)
+
+    B = benchmark_df[resolved]
+    package = build_benchmark_scoring_package(
+        B,
+        tuple(resolved),
+        tuple(float(weight_by_resolved[m]) for m in resolved),
+        float(coverage_threshold),
+    )
+    usable = list(package["usable"])
+    if not usable:
+        return {
+            "Role": role_name, "Role Score": np.nan, "Role Percentile": np.nan,
+            "Coverage %": 0.0, "Benchmark N": len(benchmark_df), "KPI Scores": {},
+            "Resolved Metrics": resolved, "Missing Metrics": missing,
+        }
+
+    W = package["weights"]
+    means = package["means"]
+    stds = package["stds"]
+    Zb = package["benchmark_z"]
+    score_b = package["benchmark_scores"]
+
+    player_vals = pd.Series(
+        {m: pd.to_numeric(pd.Series([player_row.get(m, np.nan)]), errors="coerce").iloc[0] for m in usable},
+        dtype=float,
+    )
+    z = (player_vals - means) / stds
+    flip = [m for m in usable if m in LOWER_IS_BETTER]
+    if flip:
+        z[flip] = -z[flip]
+
+    available_weight = float(W[z.notna()].sum())
+    coverage = available_weight * 100.0
+    score = float((z.fillna(0.0) * W).sum() / available_weight) if available_weight > 0 else np.nan
+    if available_weight < coverage_threshold:
+        score = np.nan
+
+    role_pct = percentile_rank_against_population(
+        score_b, score, lower_is_better=False
+    ) if pd.notna(score) else np.nan
+
+    # KPI decomposition for this player.
+    kpi_scores: Dict[str, float] = {}
+    for kpi, metric_weights in PROFILE_CONFIG[role_name].items():
+        cols = []
+        kws = []
+        for req, default_w in metric_weights.items():
+            col = requested_to_resolved.get(req)
+            if col in usable and req in depth_weight_map:
+                cols.append(col)
+                kws.append(float(depth_weight_map.get(req, default_w)))
+        if not cols:
+            continue
+        kz = z[cols]
+        kw = pd.Series(kws, index=cols, dtype=float)
+        kavail = float(kw[kz.notna()].sum())
+        if kavail > 0:
+            kpi_scores[kpi] = float((kz.fillna(0.0) * kw).sum() / kavail)
+
+    return {
+        "Role": role_name,
+        "Role Score": score,
+        "Role Percentile": role_pct,
+        "Coverage %": coverage,
+        "Benchmark N": int(score_b.notna().sum()),
+        "KPI Scores": kpi_scores,
+        "Resolved Metrics": usable,
+        "Missing Metrics": missing,
+        "Player Z": z,
+        "Benchmark Z": Zb,
+        "Benchmark Raw": B,
+    }
+
+
+def single_metric_display_label(metric: str) -> str:
+    """Compact display label used by Role Fit detail wheels."""
+    aliases = {
+        "Save rate, %": "Save Rate %",
+        "Prevented goals per 90": "Goals Prevented /90",
+        "Conceded goals per 90": "Goals Conceded /90 ↓",
+        "Shots against per 90": "Shots Faced /90",
+        "xG against per 90": "xGA /90",
+        "Exits per 90": "Exits /90",
+        "Aerial duels per 90.1": "Aerial Duels /90",
+        "Aerial duels per 90": "Aerial Duels /90",
+        "Aerial duels won, %": "Aerial Duel Win %",
+        "Passes per 90": "Passes /90",
+        "Accurate passes, %": "Pass Accuracy %",
+        "Long passes per 90": "Long Passes /90",
+        "Accurate long passes, %": "Long Pass Accuracy %",
+        "Back passes received as GK per 90": "GK Back Passes /90",
+        "Forward passes per 90": "Forward Passes /90",
+        "Accurate forward passes, %": "Forward Pass Accuracy %",
+        "Progressive passes per 90": "Progressive Passes /90",
+        "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+        "Passes to final third per 90": "Final Third Passes /90",
+        "Received passes per 90": "Passes Received /90",
+        "Progressive runs per 90": "Progressive Runs /90",
+        "Interceptions per 90": "Interceptions /90",
+        "PAdj Interceptions": "PAdj Interceptions",
+        "Successful defensive actions per 90": "Defensive Actions /90",
+        "Defensive duels per 90": "Defensive Duels /90",
+        "Defensive duels won, %": "Defensive Duel Win %",
+        "PAdj Sliding tackles": "PAdj Sliding Tackles",
+        "Sliding tackles per 90": "Sliding Tackles /90",
+        "Shots blocked per 90": "Shots Blocked /90",
+        "Fouls per 90": "Fouls /90 ↓",
+        "Yellow cards per 90": "Yellow Cards /90 ↓",
+        "Dribbles per 90": "Dribbles /90",
+        "Successful dribbles, %": "Dribble Success %",
+        "Accelerations per 90": "Accelerations /90",
+        "Crosses per 90": "Crosses /90",
+        "Accurate crosses, %": "Cross Accuracy %",
+        "Crosses to goalie box per 90": "Box Crosses /90",
+        "Passes to penalty area per 90": "Penalty Area Passes /90",
+        "Shot assists per 90": "Shot Assists /90",
+        "xA per 90": "xA /90",
+        "xG per 90": "xG /90",
+        "Shots per 90": "Shots /90",
+        "Touches in box per 90": "Box Touches /90",
+        "Non-penalty goals per 90": "Non-Penalty Goals /90",
+        "Successful attacking actions per 90": "Attacking Actions /90",
+        "Smart passes per 90": "Smart Passes /90",
+        "Key passes per 90": "Key Passes /90",
+        "Deep completions per 90": "Deep Completions /90",
+        "Through passes per 90": "Through Passes /90",
+        "Offensive duels per 90": "Offensive Duels /90",
+        "Offensive duels won, %": "Offensive Duel Win %",
+        "Goal conversion, %": "Goal Conversion %",
+        "Shots on target, %": "Shots on Target %",
+        "Head goals per 90": "Headed Goals /90",
+        "Received long passes per 90": "Long Passes Received /90",
+        "Fouls suffered per 90": "Fouls Won /90",
+    }
+    return aliases.get(metric, metric)
+
+
+def role_fit_detail_wheel(
+    player_name: str,
+    role_name: str,
+    fit_result: Dict[str, object],
+    player_row: pd.Series,
+    display_scale: str,
+) -> go.Figure:
+    """
+    Role Fit detail uses the canonical Single Player wheel renderer.
+
+    This keeps metric order, KPI grouping, category colours, angular gaps,
+    reference rings, performance colours, typography, centre panel and hover
+    behaviour identical across Single Player and Role Fit.
+    """
+    metrics = list(fit_result.get("Resolved Metrics", []))
+    if not metrics:
+        return go.Figure()
+
+    benchmark_raw = fit_result.get("Benchmark Raw", pd.DataFrame())
+    player_z = fit_result.get("Player Z", pd.Series(dtype=float))
+
+    # Resolve the canonical role KPI order against the actual usable metrics.
+    resolved_to_kpi: Dict[str, str] = {}
+    canonical_order: List[str] = []
+    for kpi, requested_metric in single_player_profile_for_depth(role_name):
+        rr, _ = resolve_metrics_aliases([requested_metric], list(player_row.index))
+        if not rr:
+            continue
+        metric = rr[0]
+        if metric in metrics and metric not in canonical_order:
+            canonical_order.append(metric)
+            resolved_to_kpi[metric] = kpi
+
+    # Retain any usable metric that was not represented above, while keeping
+    # canonical profile metrics first.
+    for metric in metrics:
+        if metric not in canonical_order:
+            canonical_order.append(metric)
+            resolved_to_kpi.setdefault(metric, wheel_kpi_group(metric))
+
+    rows = []
+    for metric in canonical_order:
+        raw_value = pd.to_numeric(
+            pd.Series([player_row.get(metric, np.nan)]), errors="coerce"
+        ).iloc[0]
+        z_value = pd.to_numeric(
+            pd.Series([player_z.get(metric, np.nan)]), errors="coerce"
+        ).iloc[0]
+
+        pct_value = np.nan
+        if isinstance(benchmark_raw, pd.DataFrame) and metric in benchmark_raw.columns:
+            pct_value = percentile_rank_against_population(
+                benchmark_raw[metric],
+                raw_value,
+                lower_is_better=(metric in LOWER_IS_BETTER),
+            )
+
+        rows.append({
+            "KPI Group": wheel_kpi_group(metric, resolved_to_kpi.get(metric)),
+            "Metric": metric,
+            "Raw Value": raw_value,
+            "Percentile": pct_value,
+            "Z-score": z_value,
+        })
+
+    profile_df = pd.DataFrame(rows)
+    if profile_df.empty:
+        return go.Figure()
+
+    # Match the Single Player subtitle structure while retaining Role Fit context.
+    subtitle = f"{role_name} | Role Fit benchmark"
+    return single_player_wheel(
+        profile_df=profile_df,
+        player_name=player_name,
+        subtitle=subtitle,
+        scale_mode=display_scale,
+    )
+
+
+# =========================
+# Upload
+# =========================
+st.sidebar.header("Upload")
+# =========================
+# Workspace navigation
+# =========================
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Team Projection", "Similar Players", "Shadow Team", "Player Report", "Recruitment Market Finder"]
+app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
+st.sidebar.markdown("---")
+
+uploaded = st.sidebar.file_uploader("Upload your Football Data CSV", type=["csv"])
+
+if uploaded is None:
+    st.info("Please upload your football data CSV (e.g., Wyscout export).")
+    st.stop()
+
+file_bytes = uploaded.getvalue()
+
+# Stability guard: fail cleanly before large allocations can destabilize a
+# constrained Streamlit deployment.
+MAX_UPLOAD_MB = 200
+_upload_mb = len(file_bytes) / (1024 * 1024)
+if not file_bytes:
+    st.error("The uploaded CSV file is empty.")
+    st.stop()
+if _upload_mb > MAX_UPLOAD_MB:
+    st.error(
+        f"The uploaded CSV is {_upload_mb:.1f} MB. "
+        f"For stability, this app accepts files up to {MAX_UPLOAD_MB} MB."
+    )
+    st.stop()
+
+try:
+    df_raw = load_csv(file_bytes, uploaded.name)
+except pd.errors.EmptyDataError:
+    st.error("The uploaded CSV file is empty.")
+    st.stop()
+except pd.errors.ParserError:
+    st.error("Could not parse the CSV file. Please ensure it is a valid CSV.")
+    st.stop()
+except Exception as e:
+    st.error(f"Failed to read CSV: {e}")
+    st.stop()
+
+missing = [c for c in REQUIRED_COLS if c not in df_raw.columns]
+if missing:
+    st.error(f"Missing critical column(s): {', '.join(missing)}.")
+    st.stop()
+
+try:
+    df_all = preprocess(df_raw)
+except Exception as e:
+    st.error(
+        "The CSV was read, but preprocessing failed. "
+        "Check that the Wyscout export has consistent columns and a valid League field."
+    )
+    with st.expander("Technical details"):
+        st.code(str(e))
+    st.stop()
+
+if df_all.empty:
+    st.error("The uploaded CSV contains no usable player rows after preprocessing.")
+    st.stop()
+
+# =========================
+# Sidebar filters
+# =========================
+st.sidebar.header("Filters")
+
+# Season — prefer 2026 on a fresh upload. If 2026 is not present, fall back to
+# the latest available season group so the app never opens on an empty season.
+season_groups = sorted([x for x in df_all["Season group"].dropna().unique().tolist()])
+season_default = [2026] if 2026 in season_groups else ([season_groups[-1]] if season_groups else [])
+selected_groups = st.sidebar.multiselect(
+    "Season group (start year)",
+    season_groups,
+    default=season_default,
+)
+
+use_exact_label = st.sidebar.checkbox("Also filter by exact Season label", value=False)
+selected_labels = None
+if use_exact_label:
+    season_labels = sorted(df_all["Season label"].dropna().unique().tolist())
+    selected_labels = st.sidebar.multiselect("Season label(s)", season_labels, default=season_labels)
+
+season_mask = (
+    df_all["Season group"].isin(selected_groups)
+    if selected_groups
+    else pd.Series(False, index=df_all.index)
+)
+if use_exact_label and selected_labels:
+    season_mask = season_mask & df_all["Season label"].isin(selected_labels)
+
+df_season = df_all.loc[season_mask]
+
+if app_page == "Recruitment Market Finder":
+    import hashlib
+    try:
+        from recruitment_market_workspace import render_recruitment_market
+        render_recruitment_market(
+        df_season, PROFILES, PROFILE_POSITION_ELIGIBILITY,
+        role_score_for_population_depth, benchmark_population_for_role,
+        build_league_strength_lookup, str(OPTA_LEAGUE_META_PATH),
+        read_club_league_deltas, AUDIT_PATH, SNAPSHOT_PATH, SEASON_TEAM,
+        LEAGUE_TRANSLATION_BETA, CLUB_TRANSLATION_BETA,
+        dataset_key=(hashlib.sha256(file_bytes).hexdigest(), hashlib.sha256(df_season.index.to_numpy().tobytes()).hexdigest()),
+        )
+    except Exception as exc:
+        st.error("Recruitment workspace failed to load.")
+        st.exception(exc)
+    st.stop()
+
+
+# League — deliberately blank by default. The normal workflow is to choose a
+# small group of leagues manually; ALL remains available as an explicit choice.
+leagues = sorted(df_season["League"].dropna().unique().tolist())
+selected_leagues, _ = multiselect_all(
+    "League(s)",
+    leagues,
+    default_all=False,
+    help="Choose the leagues you want to analyse. Select ALL manually when needed.",
+)
+
+if not selected_leagues:
+    st.sidebar.info("Select at least one league to continue.")
+    st.info("Select at least one league in the sidebar to continue.")
+    st.stop()
+
+df_league = df_season.loc[df_season["League"].isin(selected_leagues)]
+if df_league.empty:
+    st.warning("No players found for selected seasons/leagues.")
+    st.stop()
+
+# Nationality / passport eligibility filters.
+# Passport is the primary recruitment eligibility signal available in the Wyscout export.
+# These presets describe passport/nationality only; they do NOT claim GBE/work-permit eligibility.
+def _nationality_tokens(value):
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    # Wyscout exports can contain one or several countries. Support common separators
+    # without splitting country names that contain spaces.
+    return [x.strip() for x in re.split(r"[,;/|]+", text) if x.strip()]
+
+def _country_mask(series, wanted):
+    wanted_cf = {str(x).strip().casefold() for x in wanted if str(x).strip()}
+    if not wanted_cf:
+        return pd.Series(True, index=series.index)
+    return series.apply(lambda v: bool({x.casefold() for x in _nationality_tokens(v)} & wanted_cf))
+
+def _available_country_tokens(series):
+    vals = set()
+    for v in series.dropna():
+        vals.update(_nationality_tokens(v))
+    return sorted(vals, key=lambda x: x.casefold())
+
+UK_PASSPORT_ALIASES = {
+    "England", "Scotland", "Wales", "Northern Ireland",
+    "United Kingdom", "Great Britain", "UK", "British",
+}
+EU_EEA_COUNTRIES = {
+    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic", "Czechia",
+    "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland",
+    "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Poland",
+    "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden",
+    "Iceland", "Liechtenstein", "Norway",
+}
+
+with st.sidebar.expander("Nationality / Passport", expanded=False):
+    nationality_preset = st.selectbox(
+        "Nationality preset",
+        ["None", "UK Passport", "EU / EEA Passport", "Custom"],
+        index=0,
+        key="nationality_preset",
+        help=(
+            "Passport filters use Wyscout Passport country. UK Passport is not the same as UK GBE/work-permit eligibility."
+        ),
+    )
+
+    passport_options = _available_country_tokens(df_league["Passport country"]) if "Passport country" in df_league.columns else []
+    birth_options = _available_country_tokens(df_league["Birth country"]) if "Birth country" in df_league.columns else []
+
+    selected_passports = []
+    selected_birth_countries = []
+    if nationality_preset == "Custom":
+        selected_passports = st.multiselect(
+            "Passport country", passport_options, default=[], key="passport_country_filter",
+            help="Multiple selections use OR logic. Players with any selected passport are included.",
+        )
+        selected_birth_countries = st.multiselect(
+            "Birth country", birth_options, default=[], key="birth_country_filter",
+            help="Optional. Multiple selections use OR logic.",
+        )
+    elif nationality_preset == "UK Passport":
+        st.caption("Includes British/UK passport labels such as England, Scotland, Wales and Northern Ireland when present in Wyscout.")
+    elif nationality_preset == "EU / EEA Passport":
+        st.caption("Includes EU member states plus Iceland, Liechtenstein and Norway. Switzerland is not included.")
+
+_nat_mask = pd.Series(True, index=df_league.index)
+if nationality_preset == "UK Passport" and "Passport country" in df_league.columns:
+    _nat_mask &= _country_mask(df_league["Passport country"], UK_PASSPORT_ALIASES)
+elif nationality_preset == "EU / EEA Passport" and "Passport country" in df_league.columns:
+    _nat_mask &= _country_mask(df_league["Passport country"], EU_EEA_COUNTRIES)
+elif nationality_preset == "Custom":
+    if selected_passports and "Passport country" in df_league.columns:
+        _nat_mask &= _country_mask(df_league["Passport country"], selected_passports)
+    if selected_birth_countries and "Birth country" in df_league.columns:
+        _nat_mask &= _country_mask(df_league["Birth country"], selected_birth_countries)
+
+df_league = df_league.loc[_nat_mask].copy()
+if df_league.empty:
+    st.warning("No players match the selected nationality/passport filters.")
+    st.stop()
+
+# Team / Position — after nationality filtering, options reflect the eligible recruitment pool.
+teams = sorted(df_league["Team"].dropna().unique().tolist())
+positions = sorted(df_league["Main Position"].dropna().unique().tolist())
+selected_teams, _ = multiselect_all("Team(s)", teams, default_all=True)
+# A stable widget key allows Apply profile to set role-eligible Main Positions.
+# Apply any queued profile-driven selection BEFORE the widget is instantiated.
+_position_widget_options = [ALL_TOKEN] + positions
+
+_pending_positions = st.session_state.pop("_pending_main_position_filter", None)
+if _pending_positions is not None:
+    _pending_clean = [p for p in _pending_positions if p in positions]
+    st.session_state["main_position_filter"] = _pending_clean or [ALL_TOKEN]
+elif "main_position_filter" in st.session_state:
+    # Remove stale values if season/league changes make positions unavailable.
+    _clean_positions = [
+        p for p in st.session_state["main_position_filter"]
+        if p in _position_widget_options
+    ]
+    st.session_state["main_position_filter"] = _clean_positions or [ALL_TOKEN]
+
+selected_positions, _ = multiselect_all(
+    "Main Position(s)",
+    positions,
+    default_all=True,
+    key="main_position_filter",
+)
+
+# Age — quick scouting presets plus the existing manual range slider.
+age_series = df_league["Age"]
+_age_valid = age_series.dropna()
+if _age_valid.empty:
+    age_min, age_max = 0, 100
+else:
+    age_min = int(_age_valid.min())
+    age_max = int(_age_valid.max())
+if age_max < age_min:
+    age_min, age_max = 0, 100
+
+age_preset = st.sidebar.radio(
+    "Age preset",
+    ["All", "U21", "U23", "U25"],
+    index=0,
+    horizontal=True,
+    key="age_preset",
+)
+
+age_caps = {"U21": 21, "U23": 23, "U25": 25}
+preset_age_max = min(age_caps.get(age_preset, age_max), age_max)
+preset_age_max = max(age_min, preset_age_max)
+
+# Reset the manual range when the preset changes; otherwise retain manual slider edits.
+if st.session_state.get("_last_age_preset") != age_preset:
+    st.session_state["age_range"] = (age_min, preset_age_max)
+    st.session_state["_last_age_preset"] = age_preset
+
+# Keep session-state range valid if league/season changes alter available ages.
+current_age_range = st.session_state.get("age_range", (age_min, preset_age_max))
+valid_age_low = max(age_min, min(int(current_age_range[0]), age_max))
+valid_age_high = max(valid_age_low, min(int(current_age_range[1]), age_max))
+st.session_state["age_range"] = (valid_age_low, valid_age_high)
+
+age_range = st.sidebar.slider(
+    "Age range",
+    age_min,
+    age_max,
+    key="age_range",
+) if age_max >= age_min else (0, 0)
+
+# Minutes — quick presets plus the existing slider. Default remains 500.
+min_minutes = 0
+if "Minutes played" in df_league.columns:
+    mm = df_league["Minutes played"]
+    _mm_max = mm.max(skipna=True)
+    min_minutes_max = int(_mm_max) if pd.notna(_mm_max) else 0
+
+    minute_preset = st.sidebar.radio(
+        "Minutes preset",
+        [0, 300, 500, 900, 1500],
+        index=2,
+        horizontal=True,
+        key="minutes_preset",
+        format_func=lambda x: f"{x}",
+    )
+
+    preset_minutes = min(int(minute_preset), max(0, min_minutes_max))
+    if st.session_state.get("_last_minutes_preset") != minute_preset:
+        st.session_state["min_minutes_slider"] = preset_minutes
+        st.session_state["_last_minutes_preset"] = minute_preset
+
+    current_minutes = int(st.session_state.get("min_minutes_slider", preset_minutes))
+    st.session_state["min_minutes_slider"] = max(0, min(current_minutes, max(0, min_minutes_max)))
+
+    min_minutes = st.sidebar.slider(
+        "Minimum minutes this season",
+        0,
+        max(0, min_minutes_max),
+        key="min_minutes_slider",
+    )
+
+# Plot-only option moved out of the primary scouting filters.
+with st.sidebar.expander("Advanced / Plot settings", expanded=False):
+    remove_outliers = st.checkbox(
+        "Remove outliers (|Z| > 3) — for plots only",
+        value=False,
+        key="remove_plot_outliers",
+    )
+
+mask = (
+    df_league["Team"].isin(selected_teams)
+    & df_league["Main Position"].isin(selected_positions)
+    & df_league["Age"].between(age_range[0], age_range[1])
+)
+if "Minutes played" in df_league.columns:
+    mask = mask & (df_league["Minutes played"] >= min_minutes)
+
+filtered_base = df_league.loc[mask]
+st.sidebar.markdown(f"**Players matching filters: {len(filtered_base)}**")
+if nationality_preset != "None":
+    st.sidebar.caption(f"Nationality filter: {nationality_preset}")
+if filtered_base.empty:
+    st.warning("No players match the selected filters.")
+    st.stop()
+
+numeric_cols_base = get_numeric_columns(filtered_base)
+
+
+# =========================
+# Benchmark population
+# =========================
+st.sidebar.header("Benchmark population")
+benchmark_mode = st.sidebar.radio(
+    "Benchmark basis",
+    ["Role position", "Selected positions", "All positions"],
+    index=0,
+    help=(
+        "Benchmarking is independent from team and age search filters. "
+        "Role position is recommended for built-in profiles."
+    ),
+)
+min_benchmark_n = st.sidebar.number_input(
+    "Minimum benchmark sample",
+    min_value=10,
+    max_value=100,
+    value=20,
+    step=5,
+    help="The app warns when the role benchmark falls below this sample size.",
+)
+coverage_threshold_pct = st.sidebar.slider(
+    "Minimum Profile Score coverage",
+    min_value=50,
+    max_value=100,
+    value=70,
+    step=5,
+    help="Scores below this percentage of available profile weight are suppressed rather than treating missing data as average.",
+)
+
+benchmark_source_global = df_league
+if "Minutes played" in benchmark_source_global.columns:
+    benchmark_source_global = benchmark_source_global.loc[
+        benchmark_source_global["Minutes played"] >= min_minutes
+    ]
+
+if benchmark_source_global.empty:
+    st.warning(
+        "The current league/season/minutes selection leaves no benchmark population. "
+        "Lower the minutes threshold or broaden the selected leagues."
+    )
+    st.stop()
+
+# =========================
+# Profile builder
+# =========================
+with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
+    st.header("Player profiles (z-score)")
+    if BUILTIN_PROFILE_FRAMEWORK_ISSUES:
+        st.error("Built-in profile configuration error: " + " | ".join(BUILTIN_PROFILE_FRAMEWORK_ISSUES))
+
+    if st.button("Clear active profile"):
+        st.session_state["active_profile"] = None
+        st.rerun()
+
+    mode = st.radio("Profile mode", ["Built-in", "Custom"], index=0, horizontal=True)
+
+    if mode == "Built-in":
+        profile_name = st.selectbox("Choose profile", list(PROFILES.keys()))
+        # One source of truth for profile-dependent workspaces. Selecting a built-in
+        # role in the sidebar immediately becomes the preferred workspace role; the
+        # Apply button still controls the weighted Players-table score/filter setup.
+        st.session_state["sidebar_selected_profile"] = profile_name
+
+        depth = st.segmented_control(
+            "Profile Depth",
+            PROFILE_DEPTH_OPTIONS,
+            default=st.session_state.get("profile_depth_global", "Complete 15"),
+            selection_mode="single",
+            help="Core 5 finds specialists; Balanced 10 is the recruitment screen; Complete 15 evaluates the full role; Custom lets you choose metrics and weights manually.",
+            key="profile_depth_selector",
+        ) or "Complete 15"
+        st.session_state["profile_depth_global"] = depth
+
+        depth_help = {
+            "Core 5": "Specialist identification — five defining characteristics of the role.",
+            "Balanced 10": "Recruitment screening — role identity plus broader functional requirements.",
+            "Complete 15": "Comprehensive assessment — the complete existing role model.",
+            "Custom": "Manual built-in-role override — choose any available metrics and weights.",
+        }
+        st.caption(depth_help[depth])
+
+        if depth != "Custom":
+            requested_metrics, preset_weights = profile_definition(profile_name, depth)
+            resolved_metrics, missing_names = resolve_metrics_aliases(requested_metrics, filtered_base.columns.tolist())
+            requested_weight_map = {m: int(w) for m, w in zip(requested_metrics, preset_weights)}
+            resolved_weight_map = {}
+            for req in requested_metrics:
+                rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
+                if rr:
+                    resolved_weight_map[rr[0]] = resolved_weight_map.get(rr[0], 0) + requested_weight_map[req]
+            weights_pct = [int(resolved_weight_map.get(m, 0)) for m in resolved_metrics]
+            # Missing metrics do not invalidate a preset. Renormalize available preset
+            # weight so the selected depth remains a 100% model for this dataset.
+            if weights_pct and sum(weights_pct) != 100:
+                raw = np.asarray(weights_pct, dtype=float)
+                raw = raw / raw.sum() * 100.0 if raw.sum() > 0 else np.ones(len(raw)) * (100.0 / len(raw))
+                ints = np.floor(raw).astype(int)
+                for i in np.argsort(-(raw - ints))[:100 - ints.sum()]:
+                    ints[i] += 1
+                weights_pct = ints.tolist()
+
+            st.markdown(f"**Active definition · {profile_name} · {depth}**")
+            definition_df = pd.DataFrame({"Metric": resolved_metrics, "Weight %": weights_pct})
+            st.dataframe(definition_df, hide_index=True, width="stretch", height=min(390, 38 + 35 * max(1, len(definition_df))))
+            if missing_names:
+                st.caption("Unavailable metrics omitted and available weights renormalized: " + ", ".join(missing_names))
+
+            if st.button("Apply profile", key=f"apply::{profile_name}::{depth}", disabled=not resolved_metrics, type="primary"):
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {profile_name} [{depth}]",
+                    "profile_name": profile_name,
+                    "depth": depth,
+                    "requested_metrics": requested_metrics[:],
+                    "metrics": resolved_metrics[:],
+                    "weights_pct": [int(x) for x in weights_pct],
+                }
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
+                available_eligible_positions = [p for p in eligible_positions if p in positions]
+                if available_eligible_positions:
+                    st.session_state["_pending_main_position_filter"] = available_eligible_positions
+                st.session_state["_pending_workspace_profile_sync"] = profile_name
+                st.rerun()
+        else:
+            # Seed Custom from whichever preset the user chooses, then allow full
+            # metric selection. This remains a built-in role override, not a new role.
+            seed_depth = st.selectbox("Load Custom from", ["Core 5", "Balanced 10", "Complete 15"], index=1, key=f"custom_seed::{profile_name}")
+            seed_metrics, seed_weights = profile_definition(profile_name, seed_depth)
+            seed_resolved, _ = resolve_metrics_aliases(seed_metrics, filtered_base.columns.tolist())
+            seed_map = {}
+            for req, w in zip(seed_metrics, seed_weights):
+                rr, _ = resolve_metrics_aliases([req], filtered_base.columns.tolist())
+                if rr:
+                    seed_map[rr[0]] = seed_map.get(rr[0], 0) + int(w)
+
+            custom_metrics_key = f"builtin_custom_metrics::{profile_name}"
+            if custom_metrics_key not in st.session_state:
+                st.session_state[custom_metrics_key] = seed_resolved
+            custom_metrics = st.multiselect(
+                "Choose metrics manually",
+                options=numeric_cols_base,
+                key=custom_metrics_key,
+                help="Choose any numerical Wyscout metrics for this built-in role.",
+            )
+
+            def _reload_builtin_custom_preset():
+                st.session_state[custom_metrics_key] = seed_resolved
+                for _m in seed_resolved:
+                    st.session_state[safe_widget_key("builtin_custom_w", profile_name, _m)] = int(seed_map.get(_m, max(1, 100 // max(1, len(seed_resolved)))))
+
+            st.button(
+                "Reload selected preset",
+                key=f"reload_custom::{profile_name}",
+                on_click=_reload_builtin_custom_preset,
+            )
+
+            custom_weights = []
+            if custom_metrics:
+                equal_default = max(1, int(100 / len(custom_metrics)))
+                for m in custom_metrics:
+                    key = safe_widget_key("builtin_custom_w", profile_name, m)
+                    if key not in st.session_state:
+                        st.session_state[key] = int(seed_map.get(m, equal_default))
+                    custom_weights.append(int(st.number_input(f"{m} weight %", min_value=0, max_value=100, step=1, key=key)))
+
+            total_custom = int(sum(custom_weights))
+            c_norm, c_total = st.columns([1, 1])
+            with c_total:
+                st.metric("Total custom weight", f"{total_custom}%")
+            def _normalize_builtin_custom_weights():
+                raw = np.asarray(custom_weights, dtype=float)
+                if raw.sum() <= 0:
+                    raw = np.ones(len(custom_metrics), dtype=float)
+                scaled = raw / raw.sum() * 100.0
+                ints = np.floor(scaled).astype(int)
+                for _i in np.argsort(-(scaled - ints))[:100 - ints.sum()]:
+                    ints[_i] += 1
+                for _m, _w in zip(custom_metrics, ints.tolist()):
+                    st.session_state[safe_widget_key("builtin_custom_w", profile_name, _m)] = int(_w)
+
+            with c_norm:
+                st.button(
+                    "Normalize weights to 100%",
+                    key=f"normalize_builtin_custom::{profile_name}",
+                    disabled=not custom_metrics,
+                    on_click=_normalize_builtin_custom_weights,
+                )
+            if custom_metrics and total_custom != 100:
+                st.warning("Custom weights must total exactly 100%. Use Normalize weights to 100% if needed.")
+
+            if st.button("Apply custom depth", key=f"apply_builtin_custom::{profile_name}", disabled=(not custom_metrics or total_custom != 100), type="primary"):
+                st.session_state["active_profile"] = {
+                    "calc_col": f"Score: {profile_name} [Custom {len(custom_metrics)}]",
+                    "profile_name": profile_name,
+                    "depth": "Custom",
+                    "requested_metrics": custom_metrics[:],
+                    "metrics": custom_metrics[:],
+                    "weights_pct": [int(x) for x in custom_weights],
+                }
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY.get(profile_name, [])
+                available_eligible_positions = [p for p in eligible_positions if p in positions]
+                if available_eligible_positions:
+                    st.session_state["_pending_main_position_filter"] = available_eligible_positions
+                st.session_state["_pending_workspace_profile_sync"] = profile_name
+                st.rerun()
+
+    else:
+        custom_name = st.text_input("Profile name", value="Custom Profile").strip() or "Custom Profile"
+        custom_metrics = st.multiselect(
+            "Pick metrics to include",
+            options=numeric_cols_base,
+            default=numeric_cols_base[:5],
+        )
+        weights_pct = []
+        if custom_metrics:
+            default_pct = max(1, int(100 / len(custom_metrics)))
+            for m in custom_metrics:
+                weights_pct.append(
+                    int(st.slider(
+                        m, 0, 100, default_pct, 1,
+                        key=safe_widget_key("w_custom", custom_name, m),
+                    ))
+                )
+        custom_total = int(sum(weights_pct))
+        st.metric("Total profile weight", f"{custom_total}%")
+        if custom_metrics and custom_total != 100:
+            st.warning("Weights must total exactly 100% before the profile can be applied.")
+
+        if st.button(
+            "Apply custom profile",
+            disabled=(not custom_metrics or custom_total != 100),
+            type="primary",
+        ):
+            st.session_state["active_profile"] = {
+                "calc_col": f"Score: {custom_name}",
+                "profile_name": None,
+                "metrics": custom_metrics[:],
+                "weights_pct": [int(x) for x in weights_pct],
+            }
+            st.rerun()
+
+
+# =========================
+# Apply active profile on EVERY rerun (fixes disappearing score)
+# =========================
+active = st.session_state.get("active_profile")
+active_role = active.get("profile_name") if active else None
+calc_col_name: str | None = None
+profile_metrics_in_use: List[str] = []
+active_benchmark_df = benchmark_source_global
+active_kpi_cols: List[str] = []
+depth_score_cols: List[str] = []
+specialist_delta_col: str | None = None
+
+if active and active.get("metrics"):
+    calc_col_name = str(active.get("calc_col", "Score"))
+    profile_metrics_in_use = list(active.get("metrics", []))
+    weights_pct_arr = np.array(active.get("weights_pct", []), dtype=float)
+
+    if len(weights_pct_arr) != len(profile_metrics_in_use) or len(profile_metrics_in_use) == 0:
+        weights = np.ones(len(profile_metrics_in_use), dtype=float) / max(1, len(profile_metrics_in_use))
+    else:
+        weights = weights_pct_arr / 100.0
+
+    active_benchmark_df = benchmark_population_for_role(
+        benchmark_source_global,
+        active_role,
+        benchmark_mode,
+        selected_positions,
+    )
+
+    if len(active_benchmark_df) < int(min_benchmark_n):
+        st.warning(
+            f"Benchmark sample is small ({len(active_benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
+            "Scores and percentiles may be unstable. Consider broadening the benchmark."
+        )
+
+    filtered, usable_metrics, skipped_sparse, score_z = make_profile_score_vectorized(
+        filtered_base,
+        active_benchmark_df,
+        profile_metrics_in_use,
+        weights,
+        calc_col_name,
+        coverage_threshold=float(coverage_threshold_pct) / 100.0,
+    )
+
+    coverage_col = f"{calc_col_name} Coverage %"
+
+    # KPI sub-scores for built-in profiles.
+    if active_role in PROFILE_CONFIG and not score_z.empty:
+        requested_to_resolved = {}
+        for requested_metric in requested_profile_metrics(active_role):
+            rr, _ = resolve_metrics_aliases([requested_metric], filtered.columns.tolist())
+            if rr:
+                requested_to_resolved[requested_metric] = rr[0]
+        custom_weight_map = {
+            m: float(w) for m, w in zip(profile_metrics_in_use, weights_pct_arr)
+        }
+        kpi_df = role_kpi_subscores(
+            score_z,
+            active_role,
+            requested_to_resolved,
+            custom_weights_pct=custom_weight_map,
+        )
+        for c in kpi_df.columns:
+            filtered[c] = kpi_df[c]
+            active_kpi_cols.append(c)
+
+    # ---------------------------------------------------------
+    # Profile Depth Comparison
+    # ---------------------------------------------------------
+    # For every active built-in role, calculate the three canonical nested
+    # depth scores against the SAME benchmark population. The currently
+    # selected depth remains the active Profile Score; these parallel scores
+    # are diagnostic columns used to expose specialists that a broad model
+    # may smooth out. Custom mode still receives the canonical 5/10/15
+    # comparison for its parent built-in role.
+    depth_score_cols = []
+    specialist_delta_col = None
+    if active_role in PROFILES:
+        for _depth_name in ["Core 5", "Balanced 10", "Complete 15"]:
+            _requested, _preset_weights = profile_definition(active_role, _depth_name)
+            _resolved, _ = resolve_metrics_aliases(_requested, filtered_base.columns.tolist())
+            _req_weight_map = {m: float(w) for m, w in zip(_requested, _preset_weights)}
+            _resolved_weight_map = {}
+            for _req in _requested:
+                _rr, _missing = resolve_metrics_aliases([_req], filtered_base.columns.tolist())
+                if _rr:
+                    _resolved_weight_map[_rr[0]] = _resolved_weight_map.get(_rr[0], 0.0) + _req_weight_map[_req]
+
+            _weights = np.asarray([_resolved_weight_map.get(m, 0.0) for m in _resolved], dtype=float)
+            if len(_weights) and _weights.sum() > 0:
+                _weights = _weights / _weights.sum()
+
+            _depth_col = f"Score: {active_role} [{_depth_name}]"
+            depth_score_cols.append(_depth_col)
+
+            # Reuse the already-calculated active score when it is exactly the
+            # same canonical preset. Custom always gets an independent canonical
+            # comparison because its metric definition may differ.
+            if not (_depth_col == calc_col_name and active.get("depth") == _depth_name):
+                _depth_scored, _, _, _ = make_profile_score_vectorized(
+                    filtered_base,
+                    active_benchmark_df,
+                    _resolved,
+                    _weights,
+                    _depth_col,
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                filtered[_depth_col] = _depth_scored[_depth_col]
+                _depth_cov = f"{_depth_col} Coverage %"
+                if _depth_cov in _depth_scored.columns:
+                    filtered[_depth_cov] = _depth_scored[_depth_cov]
+
+        _core_col = f"Score: {active_role} [Core 5]"
+        _complete_col = f"Score: {active_role} [Complete 15]"
+        if _core_col in filtered.columns and _complete_col in filtered.columns:
+            specialist_delta_col = "Specialist Delta"
+            filtered[specialist_delta_col] = (
+                pd.to_numeric(filtered[_core_col], errors="coerce")
+                - pd.to_numeric(filtered[_complete_col], errors="coerce")
+            ).round(2)
+
+    if skipped_sparse:
+        st.caption("⚠️ Skipped sparse benchmark metrics (≥95% zeros/NaNs): " + ", ".join(skipped_sparse))
+
+    st.caption(
+        f"Profile depth: {active.get('depth', 'Complete 15')} · Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+        f"N={len(active_benchmark_df):,} · score coverage threshold={coverage_threshold_pct}%"
+    )
+else:
+    filtered = filtered_base
+
+# Calculated Metrics v1.
+# Step 3: enrich only the Players workspace. Compare / Single Player / Multi Player /
+# Role Fit / League Projection do not use Calc: columns, so they should not pay the cost of building the
+# 14 positional composites and 3 efficiency metrics on every widget rerun.
+CALCULATED_OUTPUT_COLUMNS = CALCULATED_INDEX_NAMES + EFFICIENCY_METRICS
+calc_metric_cols = []
+current_families = []
+expected_family_indices = []
+populated_family_indices = []
+
+if app_page == "Players":
+    # Benchmark remains independent from team/age filters and follows the selected
+    # season/league/minutes universe. Step 2 caching still applies inside this call.
+    filtered = add_calculated_indices(filtered, benchmark_source_global)
+
+    # Calculated outputs are numeric by construction. Avoid reparsing every
+    # calculated column on each rerun.
+    calc_metric_cols = [
+        c for c in CALCULATED_OUTPUT_COLUMNS
+        if c in filtered.columns and pd.api.types.is_numeric_dtype(filtered[c])
+    ]
+
+    # Runtime contract for Calculated Metrics v1.1, displayed only in Players.
+    current_families = sorted({
+        f for f in filtered["Main Position"].map(calculated_position_family).dropna().tolist()
+    }) if "Main Position" in filtered.columns else []
+    expected_family_indices = [
+        name for name, cfg in CALCULATED_METRICS.items()
+        if any(f in cfg["families"] for f in current_families)
+    ]
+    populated_family_indices = [
+        c for c in expected_family_indices
+        if c in filtered.columns and filtered[c].notna().any()
+    ]
+
+# Build the final numeric pool after any page-specific enrichment.
+# On non-Players workspaces this is intentionally just the raw/profile-score pool.
+raw_numeric_cols = list(get_numeric_columns(filtered))
+numeric_cols = list(dict.fromkeys(raw_numeric_cols + calc_metric_cols))
+
+# Two headline calculated indicators shown by default for each canonical profile.
+# Presentation only: role scores, weights, benchmarks and KPI calculations are unchanged.
+PROFILE_TABLE_CALC_DEFAULTS = {
+    "Classic Goalkeeper": ["Calc: GK Shot Stopping", "Calc: GK Area Control"],
+    "Sweeper Keeper": ["Calc: GK Area Control", "Calc: GK Distribution"],
+    "Build-Up Keeper": ["Calc: GK Distribution", "Calc: GK Shot Stopping"],
+    "Ball-Playing CB": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Combative CB / Stopper": ["Calc: Duel Dominance", "Calc: Defensive Activity"],
+    "Libero / Middle Pin CB": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Wide CB (in 3)": ["Calc: Carrying Progression", "Calc: Duel Dominance"],
+    "Defensive Midfielder #6": ["Calc: Defensive Activity", "Calc: Passing Progression"],
+    "Deep-Lying Playmaker": ["Calc: Passing Progression", "Calc: Chance Creation"],
+    "Box-to-Box Midfielder": ["Calc: Carrying Progression", "Calc: Defensive Activity"],
+    "Playmaker #10": ["Calc: Chance Creation", "Calc: Carrying Progression"],
+    "Full-Back": ["Calc: Defensive Activity", "Calc: Wide Delivery"],
+    "Wing-Back": ["Calc: Carrying Progression", "Calc: Wide Delivery"],
+    "Inverted Full-Back": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+    "Classic Winger": ["Calc: 1v1 Threat", "Calc: Wide Delivery"],
+    "Inverted Winger": ["Calc: 1v1 Threat", "Calc: Box Threat"],
+    "Target Man #9": ["Calc: Aerial Impact", "Calc: Link Play"],
+    "Poacher": ["Calc: Finishing", "Calc: Box Threat"],
+    "Pressing Forward": ["Calc: Defensive Activity", "Calc: Box Threat"],
+    "Creative Forward / False 9": ["Calc: Chance Creation", "Calc: Link Play"],
+    "Wide Forward / Inside 9": ["Calc: Box Threat", "Calc: 1v1 Threat"],
+}
+
+# Synchronize built-in role selectors after Apply profile, before those widgets
+# are instantiated. This avoids Streamlit's post-instantiation session-state error.
+_pending_workspace_profile = st.session_state.pop("_pending_workspace_profile_sync", None)
+if _pending_workspace_profile in PROFILES:
+    if _pending_workspace_profile in SINGLE_PLAYER_PROFILES:
+        st.session_state["single_profile_role"] = _pending_workspace_profile
+    st.session_state["multi_radar_profile"] = _pending_workspace_profile
+    # Role Fit has a detail selector whose options depend on the selected player.
+    # Store the preferred role separately and apply it only when compatible.
+    st.session_state["_preferred_role_fit_detail"] = _pending_workspace_profile
+
+# =========================
+# Main workspaces — exactly one renders
+# =========================
+if app_page == "Players":
+    # =========================
+    # Top-N table
+    # =========================
+    st.subheader("Filtered Player Data")
+
+    _status_ok = len(calc_metric_cols) == len(CALCULATED_OUTPUT_COLUMNS)
+    _status_icon = "✅" if _status_ok else "❌"
+    st.caption(
+        f"{_status_icon} Calculated Metrics Engine v1.1 · "
+        f"{len(calc_metric_cols)}/{len(CALCULATED_OUTPUT_COLUMNS)} outputs attached · "
+        f"families in current selection: {', '.join(current_families) if current_families else 'none'} · "
+        f"relevant composites populated: {len(populated_family_indices)}/{len(expected_family_indices)}"
+    )
+    if not _status_ok:
+        missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
+        st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
+
+    # Scores use independent league and within-league club terms.
+    adjusted_score_col = None
+    reference_league = None
+    reference_rating = None
+    league_rating_col = "Opta League Rating"
+    player_leagues = tuple(sorted(filtered["League"].dropna().astype(str).unique()))
+    league_strength_players = build_league_strength_lookup(player_leagues, str(OPTA_LEAGUE_META_PATH))
+    has_league_ratings = not league_strength_players.empty
+    if has_league_ratings and league_strength_players.attrs.get("bundled_ratings"):
+        st.caption("Using the Opta league ratings bundled with this app.")
+
+    has_profile_score = calc_col_name in filtered.columns
+    club_deltas = pd.Series(np.nan, index=filtered.index, dtype=float)
+    if has_profile_score and SEASON_TEAM in filtered.columns:
+        try:
+            club_lookup = read_club_league_deltas(
+                AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns, SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns,
+            )
+            club_keys = pd.MultiIndex.from_frame(filtered[["League", SEASON_TEAM]])
+            club_deltas = pd.Series(club_lookup.reindex(club_keys).to_numpy(), index=filtered.index)
+        except (OSError, ValueError):
+            pass
+    has_club_ratings = club_deltas.notna().any()
+
+    can_adjust_leagues = has_league_ratings and has_profile_score
+    league_control, club_control, rating_control = st.columns(3)
+    league_adjustment_on = league_control.toggle(
+        "Apply league adjustment",
+        value=False,
+        key="players_apply_league_adjustment",
+        disabled=not can_adjust_leagues,
+        help=(
+            "Adds a League-Adjusted Score based on each player's league rating and the reference league you choose. "
+            "The table sorts by this score by default."
+        ),
+    ) and can_adjust_leagues
+    club_adjustment_on = club_control.toggle(
+        "Apply club adjustment",
+        value=False,
+        key="players_apply_club_adjustment",
+        disabled=not has_club_ratings,
+        help="Adjusts for the club's Opta rating relative to its own league average, using a provisional weight of 0.020 per point.",
+    ) and has_club_ratings
+    if not has_profile_score:
+        league_control.caption("Apply a role profile in the sidebar to enable score adjustment.")
+    elif not has_club_ratings:
+        club_control.caption("No verified club ratings for these players and seasons.")
+    show_league_rating = rating_control.toggle(
+        "Show Opta league rating",
+        value=False,
+        key="players_show_opta_league_rating",
+        disabled=not has_league_ratings,
+        help="Adds the Opta league rating beside League in the table and includes it in the CSV download.",
+    ) and has_league_ratings
+    if not has_league_ratings:
+        st.caption("Opta league ratings are unavailable for the currently filtered leagues.")
+
+    if show_league_rating or league_adjustment_on:
+        strength_by_league = league_strength_players.set_index("League")
+        league_labels = filtered["League"].astype("string")
+        filtered[league_rating_col] = league_labels.map(strength_by_league["rating"])
+        unmapped_leagues = sorted(set(player_leagues) - set(strength_by_league.index))
+        if unmapped_leagues:
+            st.caption("Opta league ratings are unavailable for " + ", ".join(unmapped_leagues) + ".")
+
+    score_terms = {}
+    if league_adjustment_on:
+        mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+        reference_league = st.selectbox(
+            "Reference league for adjusted scores",
+            options=mapped_leagues,
+            index=0,
+            key="players_league_adjustment_reference",
+            help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
+        )
+        reference_rating = float(strength_by_league.loc[reference_league, "rating"])
+        filtered["Opta Global Rank"] = league_labels.map(strength_by_league["rank"])
+        score_terms["League Adjustment"] = LEAGUE_TRANSLATION_BETA * (filtered[league_rating_col] - reference_rating)
+        for _c in [league_rating_col, "Opta Global Rank"]:
+            if _c not in numeric_cols:
+                numeric_cols.append(_c)
+        st.caption(
+            f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
+            f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
+        )
+
+    if club_adjustment_on:
+        score_terms["Club Adjustment"] = CLUB_TRANSLATION_BETA * club_deltas
+        st.caption(
+            "Club adjustment uses the November 20, 2026 Opta snapshot and a provisional "
+            "weight of 0.020 score points per Opta point above or below the club's league average."
+        )
+    if score_terms:
+        active_adjustments = [name.removesuffix(" Adjustment") for name in score_terms]
+        adjusted_score_col = f"{' + '.join(active_adjustments)}-Adjusted Score"
+        profile_score = pd.to_numeric(filtered[calc_col_name], errors="coerce")
+        adjustments = pd.DataFrame(score_terms, index=filtered.index)
+        filtered[adjusted_score_col] = profile_score + adjustments.sum(axis=1, min_count=len(score_terms))
+        for name, values in score_terms.items():
+            filtered[name] = values.where(profile_score.notna())
+        for name in [adjusted_score_col, *score_terms]:
+            if name not in numeric_cols:
+                numeric_cols.append(name)
+        if len(score_terms) == 2:
+            st.caption("Combined score = Profile Score + League Adjustment + Club Adjustment.")
+        if adjustments.isna().any(axis=1).any():
+            st.caption("Adjusted scores are blank where a rating required by the active adjustments is unavailable.")
+
+    # Position-aware default table columns.
+    _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
+
+    # Default order: identity/context -> Age -> Minutes -> active role Score ->
+    # position-relevant headline metrics -> other defaults -> KPI sub-scores.
+    ID_COLS = [
+        "Season label",
+        "Player",
+        "Team",
+        "League",
+        "Main Position",
+        "Age",
+        "Minutes played",
+    ]
+
+    exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
+    # Toggle-controlled columns stay visible without changing the column selection.
+    exclude_cols.update({league_rating_col, "Opta Global Rank", "League Adjustment", "Club Adjustment"})
+    if adjusted_score_col:
+        exclude_cols.add(adjusted_score_col)
+    display_options = [c for c in filtered.columns if c not in exclude_cols]
+
+    default_cols = [c for c in ID_COLS if c in filtered.columns]
+
+    # Put the active weighted role Z-score immediately after Minutes played.
+    # Coverage remains available in the selector but is not shown by default.
+    if calc_col_name and calc_col_name in filtered.columns:
+        default_cols.append(calc_col_name)
+
+        # Keep only the currently selected profile-depth score in the default table.
+        # Core 5, Balanced 10, Complete 15 and Specialist Delta are still calculated
+        # and remain available in the Columns to display selector for manual addition.
+
+    if _gk_only_selection:
+        # GK-specific raw indicators replace attacking output columns in the default view.
+        default_cols.extend([c for c in ["Save rate, %", "Prevented goals per 90"] if c in filtered.columns])
+    else:
+        default_cols.extend([c for c in ["Goals", "Assists", "xG", "xA"] if c in filtered.columns])
+
+    # Exactly two calculated indicators relevant to the active profile.
+    # Use the currently applied built-in profile stored in session state.
+    # Custom profiles have profile_name=None and therefore simply receive no
+    # automatic calculated-metric table defaults.
+    active_profile_name = active.get("profile_name") if isinstance(active, dict) else None
+    profile_calc_defaults = PROFILE_TABLE_CALC_DEFAULTS.get(active_profile_name, [])
+    default_cols.extend([
+        c for c in profile_calc_defaults
+        if c in filtered.columns and filtered[c].notna().any()
+    ])
+
+    if calc_col_name and calc_col_name in filtered.columns:
+        default_cols.extend([c for c in active_kpi_cols if c in filtered.columns])
+
+    # Defensive dedupe while preserving the deliberate display order above.
+    default_cols = list(dict.fromkeys(default_cols))
+
+    selected_display_cols = list(st.multiselect("Columns to display", options=display_options, default=default_cols))
+    if show_league_rating:
+        league_position = selected_display_cols.index("League") + 1 if "League" in selected_display_cols else len(selected_display_cols)
+        selected_display_cols.insert(league_position, league_rating_col)
+    if adjusted_score_col:
+        score_position = selected_display_cols.index(calc_col_name) + 1 if calc_col_name in selected_display_cols else len(selected_display_cols)
+        selected_display_cols.insert(score_position, adjusted_score_col)
+
+    # The active profile score is the primary scouting ranking. Calculated
+    # indicators remain available but no longer override the role score default.
+    # When score adjustment is active, rank by the adjusted score automatically.
+    # Otherwise preserve the existing raw profile-score default.
+    _primary_rank_col = adjusted_score_col or calc_col_name
+    rank_candidates = [_primary_rank_col] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
+    rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
+    default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
+
+    if not selected_display_cols:
+        st.info("Please select at least one column to display.")
+    elif default_rank is None:
+        st.warning("No numerical columns available to sort Top-N.")
+    else:
+        rank_by = st.selectbox(
+            "Sort Top-N rows by",
+            options=numeric_cols,
+            index=numeric_cols.index(default_rank) if default_rank in numeric_cols else 0,
+        )
+        row_limit = st.slider(f"Number of rows to show (Top-N by {rank_by})", 1, 30, 15)
+
+        table_df = filtered.sort_values(by=rank_by, ascending=False).head(row_limit)[selected_display_cols].copy()
+        for c in table_df.select_dtypes(include="number").columns:
+            table_df[c] = pd.to_numeric(table_df[c], errors="coerce").round(2)
+
+        # Compact, one-frame scouting table.
+        # Keep source dataframe names unchanged; only display labels/widths are shortened.
+        table_column_config = {}
+
+        compact_labels = {
+            "Season label": "Season",
+            "Main Position": "Pos",
+            "Minutes played": "Min",
+            "Save rate, %": "Save %",
+            "Prevented goals per 90": "Prev G/90",
+            "KPI: Shot Stopping": "Shot Stop",
+            "KPI: Area Control": "Area Ctrl",
+            "KPI: Distribution": "Distrib.",
+            "KPI: Build-Up": "Build-Up",
+            "Calc: GK Shot Stopping": "GK Shot Stop",
+            "Calc: GK Area Control": "GK Area Ctrl",
+            "Calc: GK Distribution": "GK Distrib.",
+            "Calc: Defensive Activity": "Def. Activity",
+            "Calc: Duel Dominance": "Duel Dom.",
+            "Calc: Aerial Impact": "Aerial Impact",
+            "Calc: Passing Progression": "Pass Prog.",
+            "Calc: Carrying Progression": "Carry Prog.",
+            "Calc: Wide Delivery": "Wide Delivery",
+            "Calc: 1v1 Threat": "1v1 Threat",
+            "Calc: Chance Creation": "Chance Create",
+            "Calc: Box Threat": "Box Threat",
+            "Calc: Finishing": "Finishing",
+            "Calc: Link Play": "Link Play",
+            "Opta Global Rank": "Opta Rank",
+            "League-Adjusted Score": "League-Adjusted Score",
+            "League Adjustment": "Adjustment",
+        }
+
+        for c in table_df.columns:
+            c_low = str(c).lower()
+            display_label = compact_labels.get(c, c)
+
+            # Depth comparison scores keep their real dataframe names internally,
+            # but use explicit headers so Core/Balanced/Complete are immediately readable.
+            if c.startswith("Score:"):
+                if c.endswith("[Core 5]"):
+                    display_label = "Core 5"
+                elif c.endswith("[Balanced 10]"):
+                    display_label = "Balanced 10"
+                elif c.endswith("[Complete 15]"):
+                    display_label = "Complete 15"
+                else:
+                    display_label = "Profile Score"
+            elif c == "Specialist Delta":
+                display_label = "Specialist Δ"
+
+            if c == "Season label":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=65)
+            elif c == "Player":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=105)
+            elif c == "Team":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=115)
+            elif c == "League":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=180)
+            elif c == "Main Position":
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=50)
+            elif c == "Age":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=45, format="%d")
+            elif c in {"Minutes played", "Matches played", "Goals", "Assists"}:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=60, format="%d")
+            elif c.startswith("Score:"):
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
+            elif c == "Specialist Delta":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%+.2f")
+            elif c == league_rating_col:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=112, format="%.2f")
+            elif c == adjusted_score_col:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=165, format="%.2f")
+            elif c == "Opta Global Rank":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%d")
+            elif c == "Save rate, %":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
+            elif c == "Prevented goals per 90":
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%.2f")
+            elif c.startswith("KPI:"):
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=78, format="%.2f")
+            elif c.startswith("Calc:"):
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=85, format="%.2f")
+            elif "%" in str(c) or c_low.endswith("rate"):
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
+            elif pd.api.types.is_numeric_dtype(table_df[c]):
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=65, format="%.2f")
+            else:
+                table_column_config[c] = st.column_config.TextColumn(display_label, width=90)
+
+        st.dataframe(
+            table_df,
+            width="stretch",
+            hide_index=True,
+            column_config=table_column_config,
+        )
+
+    # CSV download
+    csv_buf = StringIO()
+    dl_cols = selected_display_cols if selected_display_cols else default_cols
+    filtered[dl_cols].to_csv(csv_buf, index=False)
+    st.download_button(
+        "⬇️ Download filtered data (CSV)",
+        data=csv_buf.getvalue(),
+        file_name="filtered_players.csv",
+        mime="text/csv",
+    )
+
+    with st.expander("Calculated Metrics Methodology", expanded=False):
+        _available_calc = [c for c in CALCULATED_OUTPUT_COLUMNS if c in filtered.columns]
+        _populated_calc = [c for c in _available_calc if filtered[c].notna().any()]
+        st.caption(f"Calculated outputs in current dataset: {len(_available_calc)} · populated for current filtered players: {len(_populated_calc)}")
+        st.markdown("**Composite Indices** are positional-family benchmark percentiles (0–100). Components are standardized as direction-aware z-scores before weighting; 70% component-weight coverage is required.")
+        for name, cfg in CALCULATED_METRICS.items():
+            parts = " · ".join(f"{metric} {weight}%" for metric, weight in cfg["components"].items())
+            st.markdown(f"**{name}** — {', '.join(cfg['families'])}  \n{parts}")
+        st.markdown("**Efficiency Metrics** are direct calculations: Calc: Shot Quality (xG/Shot) = xG/90 ÷ Shots/90; Calc: Finishing Above xG /90 = NPG/90 − xG/90; Calc: Chance Quality (xA/Key Pass) = xA/90 ÷ Key Passes/90.")
+
+    # =========================
+    # Scatter plot
+    # =========================
+    st.subheader("Player Performance Visualization")
+
+    plot_metrics = [c for c in numeric_cols if c not in {"Age", "Market value"}]
+    plot_metrics = list(dict.fromkeys(plot_metrics + calc_metric_cols))
+    if calc_metric_cols:
+        st.caption(f"Scatter calculated metrics available: {len(calc_metric_cols)} (type `Calc:` in X/Y to filter them)")
+
+    if not plot_metrics:
+        st.warning("No numerical metrics available for plotting.")
+    else:
+        # X = the role's defining characteristic; Y = overall role fit.
+        # Wide CB intentionally retains Carrying Progression: stepping out with
+        # the ball is a useful discriminator from BPC / Libero profiles.
+        PROFILE_SCATTER_X_DEFAULT = {
+            "Classic Goalkeeper": "Calc: GK Shot Stopping",
+            "Sweeper Keeper": "Calc: GK Area Control",
+            "Build-Up Keeper": "Calc: GK Distribution",
+            "Ball-Playing CB": "Calc: Passing Progression",
+            "Combative CB / Stopper": "Calc: Defensive Activity",
+            "Libero / Middle Pin CB": "Calc: Passing Progression",
+            "Wide CB (in 3)": "Calc: Carrying Progression",
+            "Defensive Midfielder #6": "Calc: Defensive Activity",
+            "Deep-Lying Playmaker": "Calc: Passing Progression",
+            "Box-to-Box Midfielder": "Calc: Carrying Progression",
+            "Playmaker #10": "Calc: Chance Creation",
+            "Full-Back": "Calc: Wide Delivery",          # Step 27 change
+            "Wing-Back": "Calc: Carrying Progression",  # Step 27 change
+            "Inverted Full-Back": "Calc: Passing Progression",
+            "Classic Winger": "Calc: Wide Delivery",
+            "Inverted Winger": "Calc: Box Threat",
+            "Target Man #9": "Calc: Aerial Impact",
+            "Poacher": "Calc: Finishing",
+            "Pressing Forward": "Calc: Defensive Activity",
+            "Creative Forward / False 9": "Calc: Chance Creation",
+            "Wide Forward / Inside 9": "Calc: Box Threat",
+        }
+
+        # Useful secondary X metrics are surfaced immediately after the default;
+        # all remaining numeric metrics stay available for full flexibility.
+        PROFILE_SCATTER_X_ALTERNATIVES = {
+            "Classic Goalkeeper": ["Calc: GK Area Control", "Calc: GK Distribution"],
+            "Sweeper Keeper": ["Calc: GK Distribution", "Calc: GK Shot Stopping"],
+            "Build-Up Keeper": ["Calc: GK Shot Stopping", "Calc: GK Area Control"],
+            "Ball-Playing CB": ["Calc: Duel Dominance", "Calc: Defensive Activity"],
+            "Combative CB / Stopper": ["Calc: Duel Dominance", "Calc: Aerial Impact"],
+            "Libero / Middle Pin CB": ["Calc: Defensive Activity", "Calc: Duel Dominance"],
+            "Wide CB (in 3)": ["Calc: Passing Progression", "Calc: Duel Dominance"],
+            "Defensive Midfielder #6": ["Calc: Duel Dominance", "Calc: Passing Progression"],
+            "Deep-Lying Playmaker": ["Calc: Defensive Activity", "Calc: Chance Creation"],
+            "Box-to-Box Midfielder": ["Calc: Defensive Activity", "Calc: Passing Progression"],
+            "Playmaker #10": ["Calc: 1v1 Threat", "Calc: Box Threat"],
+            "Full-Back": ["Calc: Passing Progression", "Calc: Defensive Activity"],
+            "Wing-Back": ["Calc: Wide Delivery", "Calc: 1v1 Threat"],
+            "Inverted Full-Back": ["Calc: Defensive Activity", "Calc: Carrying Progression"],
+            "Classic Winger": ["Calc: 1v1 Threat", "Calc: Chance Creation"],
+            "Inverted Winger": ["Calc: 1v1 Threat", "Calc: Finishing"],
+            "Target Man #9": ["Calc: Link Play", "Calc: Box Threat"],
+            "Poacher": ["Calc: Box Threat", "Calc: Shot Quality (xG/Shot)"],
+            "Pressing Forward": ["Calc: Box Threat", "Calc: Link Play"],
+            "Creative Forward / False 9": ["Calc: Link Play", "Calc: Passing Progression"],
+            "Wide Forward / Inside 9": ["Calc: 1v1 Threat", "Calc: Finishing"],
+        }
+
+        _profile_x = PROFILE_SCATTER_X_DEFAULT.get(active_role) if active else None
+        _preferred = []
+        if _profile_x in plot_metrics and filtered[_profile_x].notna().any():
+            _preferred.append(_profile_x)
+        for _m in PROFILE_SCATTER_X_ALTERNATIVES.get(active_role, []):
+            if _m in plot_metrics and filtered[_m].notna().any() and _m not in _preferred:
+                _preferred.append(_m)
+        x_options = _preferred + [m for m in plot_metrics if m not in _preferred]
+
+        if _preferred:
+            x_default = _preferred[0]
+        elif _gk_only_selection and "Calc: GK Shot Stopping" in plot_metrics:
+            x_default = "Calc: GK Shot Stopping"
+        elif "Goals per 90" in plot_metrics:
+            x_default = "Goals per 90"
+        else:
+            x_default = plot_metrics[0]
+
+        # Optional percentile representation of the active Profile Score.
+        role_pct_col = None
+        if active and calc_col_name and calc_col_name in filtered.columns:
+            role_pct_col = f"Role Percentile: {active_role or 'Custom Profile'}"
+            try:
+                _bench_scored, _, _, _ = make_profile_score_vectorized(
+                    active_benchmark_df,
+                    active_benchmark_df,
+                    profile_metrics_in_use,
+                    weights,
+                    "__scatter_benchmark_score__",
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                _bench_scores = pd.to_numeric(_bench_scored["__scatter_benchmark_score__"], errors="coerce").dropna().to_numpy(dtype=float)
+                _bench_scores.sort()
+                _player_scores = pd.to_numeric(filtered[calc_col_name], errors="coerce").to_numpy(dtype=float)
+                if len(_bench_scores):
+                    _pct = np.searchsorted(_bench_scores, _player_scores, side="right") / len(_bench_scores) * 100.0
+                    _pct[~np.isfinite(_player_scores)] = np.nan
+                    filtered[role_pct_col] = np.round(_pct, 1)
+                else:
+                    filtered[role_pct_col] = np.nan
+            except Exception:
+                filtered[role_pct_col] = np.nan
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            x_axis = st.selectbox("X-axis · defining characteristic", x_options, index=x_options.index(x_default))
+        with c2:
+            if active and calc_col_name in filtered.columns and role_pct_col in filtered.columns:
+                y_representation = st.selectbox(
+                    "Y-axis · overall role fit",
+                    ["Profile Score", "Role Percentile"],
+                    index=0,
+                    help="Profile Score is the direction-aware weighted z-score. Role Percentile shows the same score as a 0–100 percentile against the role benchmark.",
+                )
+                y_axis = role_pct_col if y_representation == "Role Percentile" else calc_col_name
+            else:
+                y_representation = "Metric"
+                _fallback_y = calc_col_name if calc_col_name in plot_metrics else ("Assists per 90" if "Assists per 90" in plot_metrics else plot_metrics[min(1, len(plot_metrics)-1)])
+                y_axis = st.selectbox("Y-axis", plot_metrics, index=plot_metrics.index(_fallback_y))
+        with c3:
+            _color_options = [o for o in ["Season label", "Main Position", "Team", "League", "Foot", "None"] if o == "None" or o in filtered.columns]
+            _color_default = _color_options.index("Team") if "Team" in _color_options else 0
+            color_by = st.selectbox("Color by", options=_color_options, index=_color_default)
+
+        _size_options = [o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns]
+        size_by = st.selectbox("Size by", options=_size_options, index=_size_options.index("None"))
+
+        # Keep Y as the scatter default and offer the active adjusted ranking.
+        rank_options = ["Overall role fit", "X-axis characteristic"]
+        if role_pct_col and role_pct_col in filtered.columns:
+            rank_options.append("Role Percentile")
+        if adjusted_score_col:
+            rank_options.append(adjusted_score_col)
+        rank_choice = st.radio("Rank Top-N players by", rank_options, index=0, horizontal=True)
+        if rank_choice == "X-axis characteristic":
+            sort_metric = x_axis
+        elif rank_choice == "Role Percentile":
+            sort_metric = role_pct_col
+        elif rank_choice == adjusted_score_col:
+            sort_metric = adjusted_score_col
+        else:
+            sort_metric = y_axis
+
+        plot_limit = st.slider(f"Number of players to plot (Top-N by {sort_metric})", 1, min(30, len(filtered)), min(10, len(filtered)))
+        plot_df = filtered.sort_values(by=sort_metric, ascending=False, na_position="last").head(plot_limit).copy()
+
+        if remove_outliers:
+            for ax in [x_axis, y_axis]:
+                s = pd.to_numeric(plot_df[ax], errors="coerce")
+                sd = float(s.std(ddof=0) or 0.0)
+                if sd > 0:
+                    z = (s - float(s.mean())) / sd
+                    plot_df = plot_df.loc[z.abs() <= 3]
+
+        plot_df[x_axis] = pd.to_numeric(plot_df[x_axis], errors="coerce").round(2)
+        plot_df[y_axis] = pd.to_numeric(plot_df[y_axis], errors="coerce").round(2)
+        show_labels = st.checkbox("Show player labels on chart", value=True)
+
+        # Recruitment hover fields: context first, then the two chart dimensions.
+        hover_data = {}
+        for _h in ["Team", "Age", "Main Position", "League", "Minutes played"]:
+            if _h in plot_df.columns:
+                hover_data[_h] = True
+        if calc_col_name and calc_col_name in plot_df.columns and calc_col_name != y_axis:
+            hover_data[calc_col_name] = ":.2f"
+        if role_pct_col and role_pct_col in plot_df.columns and role_pct_col != y_axis:
+            hover_data[role_pct_col] = ":.1f"
+        if adjusted_score_col:
+            hover_data[adjusted_score_col] = ":.2f"
+
+        fig = px.scatter(
+            plot_df,
+            x=x_axis,
+            y=y_axis,
+            hover_name="Player" if "Player" in plot_df.columns else None,
+            hover_data=hover_data,
+            color=None if color_by == "None" else color_by,
+            size=None if size_by == "None" else size_by,
+            text=plot_df["Player"] if show_labels and "Player" in plot_df.columns else None,
+            title=f"{active_role or 'Player profile'} · {y_axis} vs. {x_axis}",
+            template="plotly_white",
+            height=650,
+        )
+        fig.update_traces(
+            marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
+            textposition="top center",
+            textfont=dict(size=16, color="black"),
+            cliponaxis=False,
+        )
+        fig.update_layout(
+            font=dict(size=14), title_font=dict(size=20), legend=dict(font=dict(size=12)),
+            xaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=16), tickfont=dict(size=12)),
+        )
+
+        # Meaningful, stable quadrant lines rather than filter-dependent medians.
+        # Calculated composites are 0–100 benchmark percentiles => X=50.
+        # Profile Score is standardized => Y=0. Role Percentile => Y=50.
+        x_ref = 50.0 if str(x_axis).startswith("Calc:") and x_axis in CALCULATED_INDEX_NAMES else None
+        y_ref = 50.0 if y_axis == role_pct_col else (0.0 if y_axis == calc_col_name else None)
+        if x_ref is not None:
+            fig.add_vline(x=x_ref, line_width=1.3, line_dash="dash", line_color="gray", opacity=0.65)
+        if y_ref is not None:
+            fig.add_hline(y=y_ref, line_width=1.3, line_dash="dash", line_color="gray", opacity=0.65)
+
+        # Label quadrants only when both axes have a meaningful benchmark boundary.
+        if x_ref is not None and y_ref is not None and len(plot_df):
+            xv = pd.to_numeric(plot_df[x_axis], errors="coerce").dropna()
+            yv = pd.to_numeric(plot_df[y_axis], errors="coerce").dropna()
+            if not xv.empty and not yv.empty:
+                xmin, xmax = float(xv.min()), float(xv.max())
+                ymin, ymax = float(yv.min()), float(yv.max())
+                xpad = max((xmax - xmin) * 0.06, 1.0)
+                ypad = max((ymax - ymin) * 0.06, 0.08 if y_axis == calc_col_name else 1.0)
+                # Ensure the benchmark lines are visible even if Top-N falls on one side.
+                fig.update_xaxes(range=[min(xmin - xpad, x_ref - xpad), max(xmax + xpad, x_ref + xpad)])
+                fig.update_yaxes(range=[min(ymin - ypad, y_ref - ypad), max(ymax + ypad, y_ref + ypad)])
+                fig.add_annotation(x=0.985, y=0.985, xref="paper", yref="paper", text="Priority Targets", showarrow=False, xanchor="right", yanchor="top", font=dict(size=12))
+                fig.add_annotation(x=0.015, y=0.985, xref="paper", yref="paper", text="Strong Fit / Weaker Speciality", showarrow=False, xanchor="left", yanchor="top", font=dict(size=12))
+                fig.add_annotation(x=0.985, y=0.015, xref="paper", yref="paper", text="Specialist / Incomplete Profile", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12))
+                fig.add_annotation(x=0.015, y=0.015, xref="paper", yref="paper", text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom", font=dict(size=12))
+
+        # Apply score adjustments to Y only.
+        # Overlay is intentionally available only when raw Profile Score is Y.
+        if (
+            adjusted_score_col
+            and y_axis == calc_col_name
+            and plot_df[adjusted_score_col].notna().any()
+        ):
+            import plotly.graph_objects as go
+            original_color_by = None if color_by == "None" else color_by
+            color_lookup = {}
+            for tr in fig.data:
+                if getattr(tr, "mode", None) and "markers" in tr.mode:
+                    color_lookup[str(tr.name)] = getattr(tr.marker, "color", None)
+            fallback_color = "#636EFA"
+
+            for _, r in plot_df.dropna(subset=[x_axis, y_axis, adjusted_score_col]).iterrows():
+                category = str(r[original_color_by]) if original_color_by else ""
+                base_color = color_lookup.get(category, fallback_color)
+                fig.add_trace(go.Scatter(
+                    x=[r[x_axis], r[x_axis]], y=[r[y_axis], r[adjusted_score_col]], mode="lines",
+                    line=dict(color=base_color, width=1.5), opacity=0.28,
+                    hoverinfo="skip", showlegend=False,
+                ))
+
+            grouped = plot_df.groupby(original_color_by, dropna=False, sort=False) if original_color_by else [("Adjusted", plot_df)]
+            for category, g in grouped:
+                g = g.dropna(subset=[x_axis, adjusted_score_col])
+                if g.empty:
+                    continue
+                category_key = str(category) if original_color_by else ""
+                base_color = color_lookup.get(category_key, fallback_color)
+                custom_fields = [
+                    g["Player"].astype(str) if "Player" in g.columns else pd.Series([""] * len(g), index=g.index),
+                    pd.to_numeric(g[y_axis], errors="coerce"),
+                    pd.to_numeric(g[adjusted_score_col], errors="coerce"),
+                    g["League"].astype(str),
+                ]
+                hover_template = (
+                    "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
+                    "Original Profile Score: %{customdata[1]:.2f}<br>"
+                    f"{adjusted_score_col}: %{{customdata[2]:.2f}}<br>"
+                    "League: %{customdata[3]}<br>"
+                )
+                if league_adjustment_on:
+                    custom_fields.append(g[league_rating_col])
+                    hover_template += f"Opta League Rating: %{{customdata[{len(custom_fields) - 1}]:.2f}}<br>"
+                    hover_template += f"Reference: {reference_league} ({reference_rating:.2f})<br>"
+                for name in score_terms:
+                    custom_fields.append(g[name])
+                    hover_template += f"{name}: %{{customdata[{len(custom_fields) - 1}]:+.2f}}<br>"
+                fig.add_trace(go.Scatter(
+                    x=g[x_axis], y=g[adjusted_score_col], mode="markers",
+                    name="Adjusted" if not original_color_by else f"{category} · adjusted",
+                    legendgroup=f"adjusted_{category_key}", showlegend=False,
+                    marker=dict(size=16, color=base_color, opacity=0.35, line=dict(width=1.5, color=base_color)),
+                    customdata=np.column_stack(custom_fields),
+                    hovertemplate=hover_template + "<extra></extra>",
+                ))
+            fig.update_layout(title=f"{active_role or 'Profile'} · original and adjusted role fit vs. {x_axis}")
+        elif adjusted_score_col and y_axis != calc_col_name:
+            st.caption("Select Profile Score on the Y-axis to see the score adjustment overlay.")
+
+        st.caption("Scatter logic: → stronger defining characteristic · ↑ stronger overall role fit. Benchmark lines: calculated composite = 50th percentile; Profile Score = 0; Role Percentile = 50.")
+        st.plotly_chart(fig, width="stretch")
+
+
+elif app_page in ("Single Player", "Multi Player"):
+    # =========================
+    # Player profile / comparison visualizations
+    # =========================
+    st.subheader(
+        "Single-Player Profile"
+        if app_page == "Single Player"
+        else "Multi-Player Comparison"
+    )
+
+    comparison_mode = (
+        "Single-Player Profile"
+        if app_page == "Single Player"
+        else "Multi-Player Radar"
+    )
+
+    if comparison_mode == "Multi-Player Radar":
+        player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+        compare_players = st.multiselect(
+            "Players to compare (max 5 recommended)",
+            options=player_options,
+            default=[],
+            key="multi_compare_players",
+        )
+
+        # Keep the multi-player comparison tied to the same canonical role framework
+        # as the weighted Profile Score and single-player radar.
+        active_builtin_profile = None
+        if active and active.get("profile_name") in PROFILES:
+            active_builtin_profile = active.get("profile_name")
+
+        radar_metric_mode = st.radio(
+            "Radar metric mode",
+            ["Profile metrics", "Custom metrics"],
+            horizontal=True,
+            key="multi_radar_metric_mode",
+        )
+
+        comp_metric_choices = get_numeric_columns(filtered)
+        selected_radar_profile = None
+        radar_kpi_lookup: Dict[str, str] = {}
+
+        if radar_metric_mode == "Profile metrics":
+            # Multi Player uses the same live built-in role selected in the sidebar.
+            # There is deliberately no independent comparison-profile widget: one
+            # sidebar role/depth state drives Players, Single Player and Multi Player.
+            selected_radar_profile = st.session_state.get("sidebar_selected_profile") or active_builtin_profile
+            if selected_radar_profile not in PROFILES:
+                selected_radar_profile = next(iter(PROFILES))
+
+            st.markdown("**Comparison profile**")
+            st.info(selected_radar_profile)
+
+            requested_compare_metrics = requested_profile_metrics(selected_radar_profile)
+            comp_metrics, missing_compare_metrics = resolve_metrics_aliases(
+                requested_compare_metrics,
+                filtered.columns.tolist(),
+            )
+            radar_kpi_lookup = {
+                metric: wheel_kpi_group(metric, kpi)
+                for kpi, metric in single_player_profile_for_depth(selected_radar_profile)
+            }
+
+            st.caption(
+                f"{selected_radar_profile} · {active_depth_for_role(selected_radar_profile)}: {len(comp_metrics)} profile metrics available. "
+                "The radar uses direction-aware z-scores against the current filtered player population."
+            )
+            if missing_compare_metrics:
+                st.warning("Missing profile metrics: " + ", ".join(missing_compare_metrics))
+        else:
+            default_custom_metrics = [m for m in profile_metrics_in_use if m in comp_metric_choices]
+            if not default_custom_metrics:
+                default_custom_metrics = comp_metric_choices[: min(6, len(comp_metric_choices))]
+            comp_metrics = st.multiselect(
+                "Custom metrics for comparison table & radar",
+                options=comp_metric_choices,
+                default=default_custom_metrics,
+                key="multi_compare_custom_metrics",
+            )
+
+        if compare_players and "Player" in filtered.columns and comp_metrics:
+            comp_rows = filtered.loc[filtered["Player"].isin(compare_players)].copy()
+
+            # If a player has more than one row after filtering, keep the row with most minutes.
+            if "Minutes played" in comp_rows.columns:
+                comp_rows["_cmp_minutes"] = pd.to_numeric(comp_rows["Minutes played"], errors="coerce").fillna(0)
+                comp_rows = comp_rows.sort_values("_cmp_minutes", ascending=False).drop_duplicates("Player")
+                comp_rows = comp_rows.drop(columns="_cmp_minutes")
+            else:
+                comp_rows = comp_rows.drop_duplicates("Player")
+
+            comp_df = comp_rows.set_index("Player")
+            available_players = [p for p in compare_players if p in comp_df.index]
+
+            # Raw-value comparison table.
+            show_table = comp_df[comp_metrics].copy()
+            for c in show_table.columns:
+                show_table[c] = pd.to_numeric(show_table[c], errors="coerce").round(2)
+
+            # Use the same explicit benchmark logic as Profile Score / Single Player.
+            multi_role = selected_radar_profile if radar_metric_mode == "Profile metrics" else None
+            multi_benchmark_df = benchmark_population_for_role(
+                benchmark_source_global,
+                multi_role,
+                benchmark_mode,
+                selected_positions,
+            )
+            if len(multi_benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Multi-player benchmark sample is small ({len(multi_benchmark_df)} players; "
+                    f"recommended minimum {int(min_benchmark_n)})."
+                )
+            baseX = multi_benchmark_df[comp_metrics].apply(pd.to_numeric, errors="coerce")
+            means = baseX.mean(axis=0)
+            stds = baseX.std(axis=0, ddof=0).replace(0, np.nan)
+
+            z_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                row = show_table.loc[player, comp_metrics]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                row = row.apply(pd.to_numeric, errors="coerce")
+                z = ((row - means) / stds).fillna(0.0)
+                for m in comp_metrics:
+                    if m in LOWER_IS_BETTER:
+                        z[m] = -z[m]
+                z_table.loc[player, comp_metrics] = z.values
+
+            # Direction-aware percentiles against exactly the same benchmark population.
+            percentile_table = pd.DataFrame(index=show_table.index, columns=comp_metrics, dtype=float)
+            for player in available_players:
+                for metric in comp_metrics:
+                    value = pd.to_numeric(pd.Series([show_table.loc[player, metric]]), errors="coerce").iloc[0]
+                    percentile_table.loc[player, metric] = percentile_rank_against_population(
+                        baseX[metric],
+                        value,
+                        lower_is_better=(metric in LOWER_IS_BETTER),
+                    )
+
+            # For built-in role comparisons, show the default weighted role score
+            # using exactly the same 15 metrics as the radar.
+            profile_score_row = None
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                default_weight_map = DEFAULT_WEIGHTS[selected_radar_profile]
+                resolved_weight_map: Dict[str, float] = {}
+                for requested_metric, pct in default_weight_map.items():
+                    resolved, _missing = resolve_metrics_aliases(
+                        [requested_metric],
+                        filtered.columns.tolist(),
+                    )
+                    if resolved and resolved[0] in comp_metrics:
+                        resolved_weight_map[resolved[0]] = float(pct)
+
+                total_pct = sum(resolved_weight_map.values())
+                if total_pct > 0:
+                    profile_score_row = {}
+                    for player in available_players:
+                        z = pd.to_numeric(z_table.loc[player, comp_metrics], errors="coerce").fillna(0.0)
+                        score = 0.0
+                        for metric, pct in resolved_weight_map.items():
+                            score += float(z.get(metric, 0.0)) * (pct / total_pct)
+                        profile_score_row[player] = round(score, 2)
+
+            # Friendly labels while keeping raw Wyscout columns internally.
+            radar_display_aliases = {
+                "Save rate, %": "Save Rate %",
+                "Prevented goals per 90": "Goals Prevented /90",
+                "Conceded goals per 90": "Goals Conceded /90",
+                "Shots against per 90": "Shots Faced /90",
+                "xG against per 90": "xGA /90",
+                "Exits per 90": "Exits /90",
+                "Aerial duels per 90.1": "Aerial Duels /90",
+                "Aerial duels per 90": "Aerial Duels /90",
+                "Aerial duels won, %": "Aerial Duel Win %",
+                "Passes per 90": "Passes /90",
+                "Accurate passes, %": "Pass Accuracy %",
+                "Long passes per 90": "Long Passes /90",
+                "Accurate long passes, %": "Long Pass Accuracy %",
+                "Back passes received as GK per 90": "GK Back Passes /90",
+                "Forward passes per 90": "Forward Passes /90",
+                "Accurate forward passes, %": "Forward Pass Accuracy %",
+                "Progressive passes per 90": "Progressive Passes /90",
+                "Accurate progressive passes, %": "Progressive Pass Accuracy %",
+                "Passes to final third per 90": "Final Third Passes /90",
+                "Received passes per 90": "Passes Received /90",
+                "Progressive runs per 90": "Progressive Runs /90",
+                "Interceptions per 90": "Interceptions /90",
+                "PAdj Interceptions": "PAdj Interceptions",
+                "Successful defensive actions per 90": "Defensive Actions /90",
+                "Defensive duels per 90": "Defensive Duels /90",
+                "Defensive duels won, %": "Defensive Duel Win %",
+                "PAdj Sliding tackles": "PAdj Sliding Tackles",
+                "Sliding tackles per 90": "Sliding Tackles /90",
+                "Shots blocked per 90": "Shots Blocked /90",
+                "Fouls per 90": "Fouls /90",
+                "Yellow cards per 90": "Yellow Cards /90",
+                "Dribbles per 90": "Dribbles /90",
+                "Successful dribbles, %": "Dribble Success %",
+                "Accelerations per 90": "Accelerations /90",
+                "Crosses per 90": "Crosses /90",
+                "Accurate crosses, %": "Cross Accuracy %",
+                "Crosses to goalie box per 90": "Box Crosses /90",
+                "Passes to penalty area per 90": "Penalty Area Passes /90",
+                "Shot assists per 90": "Shot Assists /90",
+                "xA per 90": "xA /90",
+                "xG per 90": "xG /90",
+                "Shots per 90": "Shots /90",
+                "Touches in box per 90": "Box Touches /90",
+                "Non-penalty goals per 90": "Non-Penalty Goals /90",
+                "Successful attacking actions per 90": "Attacking Actions /90",
+                "Smart passes per 90": "Smart Passes /90",
+                "Key passes per 90": "Key Passes /90",
+                "Deep completions per 90": "Deep Completions /90",
+                "Through passes per 90": "Through Passes /90",
+                "Offensive duels per 90": "Offensive Duels /90",
+                "Offensive duels won, %": "Offensive Duel Win %",
+                "Goal conversion, %": "Goal Conversion %",
+                "Shots on target, %": "Shots on Target %",
+                "Head goals per 90": "Headed Goals /90",
+                "Received long passes per 90": "Long Passes Received /90",
+                "Fouls suffered per 90": "Fouls Won /90",
+            }
+
+            table_for_display = show_table.copy()
+            table_for_display.index.name = None
+            table_for_display = table_for_display.rename(columns=radar_display_aliases).T
+
+            if profile_score_row is not None:
+                score_df = pd.DataFrame(
+                    {player: [profile_score_row.get(player, np.nan)] for player in available_players},
+                    index=[f"Profile Score: {selected_radar_profile}"],
+                )
+                table_for_display = pd.concat([score_df, table_for_display], axis=0)
+
+            st.dataframe(table_for_display, width="stretch")
+
+            comparison_scale = st.radio(
+                "Comparison scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="multi_compare_scale",
+                help="Switches only the comparison visual. Profile Score remains the weighted direction-aware z-score composite.",
+            )
+            st.caption(
+                f"Profile depth: {active.get('depth', 'Complete 15')} · Benchmark: {benchmark_mode} · selected leagues · {min_minutes}+ min · "
+                f"N={len(multi_benchmark_df):,}"
+            )
+
+            # Multi-player role wheel: same architecture as the single-player profile.
+            if radar_metric_mode == "Profile metrics" and selected_radar_profile:
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name=selected_radar_profile,
+                    metrics=comp_metrics,
+                    kpi_lookup=radar_kpi_lookup,
+                )
+            else:
+                # Custom mode has no canonical KPI groups, so use one neutral group.
+                custom_kpi_lookup = {m: "Custom Metrics" for m in comp_metrics}
+                fig_radar = multi_player_profile_wheel(
+                    raw_table=show_table,
+                    z_table=z_table,
+                    percentile_table=percentile_table,
+                    display_scale=comparison_scale,
+                    players=available_players,
+                    profile_name="Custom Metrics",
+                    metrics=comp_metrics,
+                    kpi_lookup=custom_kpi_lookup,
+                )
+
+            st.plotly_chart(fig_radar, width="stretch")
+
+            st.caption(
+                "Multi-player comparison uses the same fixed-radius scouting-wheel architecture as the single-player profile: "
+                "the same 15 metrics, KPI bands, metric order and KPI gaps. Percentile (0–100) is the default scout-facing view; "
+                "direction-aware Z-score (−2 to +2) remains available as an advanced view. Both use the same benchmark population. Hover always shows raw value, percentile and z-score. "
+                "Profile Score weighting remains a direction-aware weighted z-score composite and is separate from wheel geometry."
+            )
+
+            csv_export = show_table.copy()
+            if profile_score_row is not None:
+                csv_export.insert(
+                    0,
+                    f"Profile Score: {selected_radar_profile}",
+                    pd.Series(profile_score_row),
+                )
+            csv_buf2 = StringIO()
+            csv_export.to_csv(csv_buf2)
+            st.download_button(
+                "⬇️ Download comparison (CSV)",
+                data=csv_buf2.getvalue(),
+                file_name="player_comparison.csv",
+                mime="text/csv",
+            )
+
+        elif compare_players and not comp_metrics:
+            st.info("No valid comparison metrics are available for the selected profile.")
+        else:
+            st.info("Select players above to compare their stats and see the role radar.")
+
+    else:
+        st.markdown("#### Single-Player Role Profile")
+        if SINGLE_PLAYER_METRIC_POLICY_ISSUES:
+            st.warning(
+                "Single-player profile metric policy issue: "
+                + "; ".join(SINGLE_PLAYER_METRIC_POLICY_ISSUES)
+            )
+        _single_depth_label = st.session_state.get("profile_depth_global", "Complete 15")
+        st.caption(
+            f"{_single_depth_label} role metrics grouped into contiguous KPI families. Volume metrics are per 90; efficiency metrics are percentages; PAdj metrics remain possession-adjusted. "
+            "The wheel follows the same active profile depth as the sidebar and remains unweighted; percentiles and z-scores are direction-aware."
+        )
+
+        single_player_options = sorted(filtered["Player"].dropna().unique().tolist()) if "Player" in filtered.columns else []
+
+        if not single_player_options:
+            st.info("No players are available for the current filters.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                single_player = st.selectbox(
+                    "Player",
+                    options=single_player_options,
+                    key="single_profile_player",
+                )
+            with c2:
+                # Single Player inherits the role selected in the sidebar. No second
+                # manual role selection is required. Prefer the live sidebar choice,
+                # then the applied profile, then the first canonical role.
+                _active_for_single = st.session_state.get("active_profile") or {}
+                single_role = st.session_state.get("sidebar_selected_profile") or _active_for_single.get("profile_name")
+                if single_role not in SINGLE_PLAYER_PROFILES:
+                    single_role = next(iter(SINGLE_PLAYER_PROFILES))
+                st.markdown("**Role / profile**")
+                st.info(single_role)
+
+            player_rows = filtered.loc[filtered["Player"] == single_player].copy()
+            if "Minutes played" in player_rows.columns:
+                player_rows["_single_minutes"] = pd.to_numeric(player_rows["Minutes played"], errors="coerce").fillna(0)
+                player_rows = player_rows.sort_values("_single_minutes", ascending=False)
+            player_row = player_rows.iloc[0]
+
+            scale_mode = st.radio(
+                "Performance scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="single_profile_scale",
+                help="Percentile is the default scout-facing view (0–100). Z-score remains available as an advanced analytical view.",
+            )
+
+            single_benchmark_choice = st.radio(
+                "Single-player benchmark",
+                ["Use global benchmark", "Same Main Position"],
+                horizontal=True,
+                key="single_benchmark_mode",
+            )
+
+            if single_benchmark_choice == "Same Main Position" and "Main Position" in benchmark_source_global.columns:
+                player_pos = player_row.get("Main Position")
+                benchmark_df = benchmark_source_global.loc[
+                    benchmark_source_global["Main Position"] == player_pos
+                ].copy()
+                benchmark_desc = f"{player_pos} · selected leagues · {min_minutes}+ min"
+            else:
+                benchmark_df = benchmark_population_for_role(
+                    benchmark_source_global,
+                    single_role,
+                    benchmark_mode,
+                    selected_positions,
+                )
+                benchmark_desc = f"{benchmark_mode} · selected leagues · {min_minutes}+ min"
+
+            # Optional multi-league normalization. This keeps the raw Wyscout
+            # values intact and translates each metric's standardized performance
+            # to one selected reference competition using beta = 0.020.
+            single_adjustment_on = False
+            single_reference_league = None
+            single_reference_rating = None
+            single_strength_lookup = pd.DataFrame()
+
+            _benchmark_leagues = (
+                sorted(benchmark_df["League"].dropna().astype(str).unique().tolist())
+                if "League" in benchmark_df.columns else []
+            )
+            if len(_benchmark_leagues) >= 2:
+                single_strength_lookup = build_league_strength_lookup(
+                    tuple(_benchmark_leagues),
+                    str(OPTA_LEAGUE_META_PATH),
+                )
+                mapped_single_leagues = (
+                    single_strength_lookup["League"].dropna().astype(str).tolist()
+                    if not single_strength_lookup.empty else []
+                )
+                if len(mapped_single_leagues) >= 2:
+                    single_adjustment_on = st.toggle(
+                        "Apply league adjustment to benchmark",
+                        value=False,
+                        key="single_profile_league_adjustment",
+                        help=(
+                            "Translates players from the selected leagues to one reference competition "
+                            "before calculating the Single Player percentile wheel. Raw Wyscout values do not change."
+                        ),
+                    )
+                    if single_adjustment_on:
+                        # Prefer the selected player's own competition when it is mapped.
+                        _player_league = str(player_row.get("League", ""))
+                        _default_ref = mapped_single_leagues.index(_player_league) if _player_league in mapped_single_leagues else 0
+                        single_reference_league = st.selectbox(
+                            "Reference league for Single Player benchmark",
+                            options=mapped_single_leagues,
+                            index=_default_ref,
+                            key="single_profile_reference_league",
+                        )
+                        _ref_row = single_strength_lookup.loc[
+                            single_strength_lookup["League"].eq(single_reference_league)
+                        ].iloc[0]
+                        single_reference_rating = float(_ref_row["rating"])
+                        st.caption(
+                            f"League-adjusted benchmark · reference: {single_reference_league} "
+                            f"(Opta {single_reference_rating:.2f}) · β={LEAGUE_TRANSLATION_BETA:.3f}."
+                        )
+
+            if len(benchmark_df) < int(min_benchmark_n):
+                st.warning(
+                    f"Benchmark sample is small ({len(benchmark_df)} players; recommended minimum {int(min_benchmark_n)}). "
+                    "Consider broadening the benchmark."
+                )
+
+            if single_adjustment_on and single_reference_rating is not None:
+                profile_df, missing_single_metrics = build_single_player_profile_league_adjusted(
+                    player_row=player_row,
+                    benchmark_df=benchmark_df,
+                    role_name=single_role,
+                    league_strength_lookup=single_strength_lookup,
+                    reference_rating=single_reference_rating,
+                )
+                benchmark_desc = (
+                    f"league-adjusted → {single_reference_league} · "
+                    f"{len(_benchmark_leagues)} selected leagues · {min_minutes}+ min"
+                )
+            else:
+                profile_df, missing_single_metrics = build_single_player_profile(
+                    player_row=player_row,
+                    benchmark_df=benchmark_df,
+                    role_name=single_role,
+                )
+
+            team = str(player_row.get("Team", "")).strip()
+            league = str(player_row.get("League", "")).strip()
+            season = str(player_row.get("Season label", "")).strip()
+            player_position = str(player_row.get("Main Position", "")).strip()
+
+            header_bits = [x for x in [team, player_position] if x and x.lower() != "nan"]
+
+            info1, info2, info3 = st.columns(3)
+            info1.metric("Benchmark players", f"{len(benchmark_df):,}")
+            info2.metric("Metrics displayed", f"{len(profile_df)}")
+            info3.metric("Role", single_role)
+
+            if missing_single_metrics:
+                st.caption(
+                    "Unavailable in this dataset and skipped: "
+                    + ", ".join(missing_single_metrics)
+                )
+
+            if profile_df.empty:
+                st.warning("None of the selected role metrics contain usable values for this player/benchmark.")
+            else:
+                subtitle_parts = [single_role, benchmark_desc]
+                if season and season.lower() != "none" and season.lower() != "nan":
+                    subtitle_parts.append(f"Season {season}")
+                subtitle = " | ".join(subtitle_parts)
+
+                fig_single = single_player_wheel(
+                    profile_df=profile_df.reset_index(drop=True),
+                    player_name=single_player,
+                    subtitle=subtitle,
+                    scale_mode=scale_mode,
+                )
+                st.plotly_chart(fig_single, width="stretch")
+
+                profile_table = profile_df.copy()
+                profile_table["Raw Value"] = profile_table["Raw Value"].round(2)
+                profile_table["Percentile"] = profile_table["Percentile"].round(0).astype(int)
+                profile_table["Z-score"] = profile_table["Z-score"].round(2)
+                st.dataframe(profile_table, width="stretch", hide_index=True)
+
+                csv_single = StringIO()
+                profile_table.to_csv(csv_single, index=False)
+                st.download_button(
+                    "⬇️ Download single-player profile (CSV)",
+                    data=csv_single.getvalue(),
+                    file_name=f"{safe_widget_key(single_player, single_role)}_percentile_profile.csv",
+                    mime="text/csv",
+                )
+
+
+
+elif app_page == "Role Fit":
+    # =========================
+    # ROLE FIT v1
+    # =========================
+    st.markdown("---")
+    st.header("🧭 Role Fit")
+    st.caption(
+        "Evaluate one player across position-compatible canonical roles. "
+        "Each role is scored against its own role-relevant benchmark using the same weights, "
+        "coverage rules and direction-aware methodology as Profile Score."
+    )
+
+    role_fit_pool = filtered_base
+    if not role_fit_pool.empty and "Player" in role_fit_pool.columns:
+        rf_c1, rf_c2 = st.columns([2, 1])
+        with rf_c1:
+            role_fit_player = st.selectbox(
+                "Player",
+                sorted(role_fit_pool["Player"].dropna().astype(str).unique().tolist()),
+                key="role_fit_player",
+            )
+
+        player_candidates = role_fit_pool.loc[role_fit_pool["Player"].astype(str) == str(role_fit_player)].copy()
+        # If duplicate player rows survive filters, use the row with the most minutes.
+        if "Minutes played" in player_candidates.columns:
+            player_candidates["_rf_minutes"] = pd.to_numeric(player_candidates["Minutes played"], errors="coerce").fillna(0)
+            player_candidates = player_candidates.sort_values("_rf_minutes", ascending=False)
+        rf_player_row = player_candidates.iloc[0]
+
+        main_pos = rf_player_row.get("Main Position", "")
+        compatible_roles = compatible_roles_for_position(main_pos)
+
+        with rf_c2:
+            st.metric("Main Position", str(main_pos) if pd.notna(main_pos) else "—")
+
+        info_cols = st.columns(4)
+        info_cols[0].metric("Team", str(rf_player_row.get("Team", "—")))
+        age_val = pd.to_numeric(pd.Series([rf_player_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+        info_cols[1].metric("Age", f"{age_val:.0f}" if pd.notna(age_val) else "—")
+        min_val = pd.to_numeric(pd.Series([rf_player_row.get("Minutes played", np.nan)]), errors="coerce").iloc[0]
+        info_cols[2].metric("Minutes", f"{min_val:,.0f}" if pd.notna(min_val) else "—")
+        info_cols[3].metric("Compatible roles", str(len(compatible_roles)))
+
+        if not compatible_roles:
+            st.info(
+                f"No automatic Role Fit mapping is defined for Main Position '{main_pos}'. "
+                "Use the existing Single-Player Profile to evaluate a role manually."
+            )
+        else:
+            fit_results = []
+            fit_detail: Dict[str, Dict[str, object]] = {}
+
+            for role in compatible_roles:
+                role_benchmark = benchmark_population_for_role(
+                    benchmark_source_global,
+                    role,
+                    "Role position",  # Role Fit intentionally normalizes every role to its own family.
+                    selected_positions,
+                )
+                result = role_fit_for_player(
+                    rf_player_row,
+                    role,
+                    role_benchmark,
+                    coverage_threshold=float(coverage_threshold_pct) / 100.0,
+                )
+                fit_detail[role] = result
+                fit_results.append({
+                    "Role": role,
+                    "Role Score": result["Role Score"],
+                    "Role Percentile": result["Role Percentile"],
+                    "Coverage %": result["Coverage %"],
+                    "Benchmark N": result["Benchmark N"],
+                })
+
+            fit_df = pd.DataFrame(fit_results)
+            fit_df = fit_df.sort_values(
+                ["Role Percentile", "Role Score"],
+                ascending=[False, False],
+                na_position="last",
+            ).reset_index(drop=True)
+
+            st.subheader("Role Fit overview")
+            st.caption(
+                "Role Percentile is the player's weighted Role Score percentile inside that role's own benchmark. "
+                "It is the cleaner cross-role reference; raw Role Scores are still shown for transparency."
+            )
+
+            # Horizontal percentile chart with the same four performance bands
+            # used by the Single Player wheel.
+            chart_df = fit_df.dropna(subset=["Role Percentile"]).copy()
+            if not chart_df.empty:
+                chart_df = chart_df.sort_values("Role Percentile", ascending=True)
+                chart_df["Performance Band"] = pd.cut(
+                    pd.to_numeric(chart_df["Role Percentile"], errors="coerce"),
+                    bins=[-np.inf, 25, 50, 75, np.inf],
+                    labels=["<25", "25–49", "50–74", "75+"],
+                    right=False,
+                )
+
+                role_band_colors = {
+                    "<25": "#8B1E1E",
+                    "25–49": "#E57373",
+                    "50–74": "#81C784",
+                    "75+": "#1B5E20",
+                }
+
+                role_fig = px.bar(
+                    chart_df,
+                    x="Role Percentile",
+                    y="Role",
+                    orientation="h",
+                    text="Role Percentile",
+                    color="Performance Band",
+                    color_discrete_map=role_band_colors,
+                    category_orders={"Performance Band": ["<25", "25–49", "50–74", "75+"]},
+                    hover_data={
+                        "Role Score": ":.2f",
+                        "Coverage %": ":.0f",
+                        "Benchmark N": True,
+                        "Role Percentile": ":.0f",
+                        "Performance Band": False,
+                    },
+                    range_x=[0, 100],
+                    title="Role percentile by compatible profile",
+                )
+                role_fig.update_traces(
+                    texttemplate="%{text:.0f}",
+                    textposition="outside",
+                    cliponaxis=False,
+                )
+                role_fig.update_layout(
+                    height=max(330, 75 * len(chart_df)),
+                    xaxis_title="Role Percentile",
+                    yaxis_title="",
+                    showlegend=False,
+                    margin=dict(l=20, r=45, t=55, b=35),
+                )
+                st.plotly_chart(role_fig, width="stretch")
+
+            # Ranked audit table. Role Percentile is the primary cross-role
+            # comparison; raw weighted z-score remains visible for transparency.
+            display_fit = fit_df.copy()
+            display_fit["Role Percentile"] = pd.to_numeric(
+                display_fit["Role Percentile"], errors="coerce"
+            )
+            display_fit = display_fit.sort_values(
+                ["Role Percentile", "Role Score"],
+                ascending=[False, False],
+                na_position="last",
+            ).reset_index(drop=True)
+            display_fit.insert(0, "Rank", np.arange(1, len(display_fit) + 1))
+
+            for c in ["Role Score", "Role Percentile", "Coverage %"]:
+                display_fit[c] = pd.to_numeric(display_fit[c], errors="coerce").round(
+                    2 if c == "Role Score" else 0
+                )
+            if "Benchmark N" in display_fit.columns:
+                display_fit["Benchmark N"] = pd.to_numeric(
+                    display_fit["Benchmark N"], errors="coerce"
+                ).round(0).astype("Int64")
+
+            display_fit = display_fit[
+                ["Rank", "Role", "Role Percentile", "Role Score", "Coverage %", "Benchmark N"]
+            ]
+
+            st.dataframe(
+                display_fit,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Rank": st.column_config.NumberColumn("Rank", format="%d", width=55),
+                    "Role": st.column_config.TextColumn("Role", width="medium"),
+                    "Role Percentile": st.column_config.NumberColumn(
+                        "Role Percentile", format="%.0f", width="small"
+                    ),
+                    "Role Score": st.column_config.NumberColumn(
+                        "Role Score", format="%.2f", width="small"
+                    ),
+                    "Coverage %": st.column_config.NumberColumn(
+                        "Coverage %", format="%.0f", width="small"
+                    ),
+                    "Benchmark N": st.column_config.NumberColumn(
+                        "Benchmark N", format="%d", width="small"
+                    ),
+                },
+            )
+
+            low_n_roles = fit_df.loc[fit_df["Benchmark N"] < int(min_benchmark_n), "Role"].tolist()
+            if low_n_roles:
+                st.warning(
+                    "Small benchmark sample for: " + ", ".join(low_n_roles) +
+                    f". Recommended minimum is {int(min_benchmark_n)}."
+                )
+
+            selectable_roles = (
+                fit_df.assign(
+                    _role_pct_sort=pd.to_numeric(fit_df["Role Percentile"], errors="coerce")
+                )
+                .sort_values("_role_pct_sort", ascending=False, na_position="last")["Role"]
+                .tolist()
+            )
+
+            preferred_role_fit = st.session_state.pop("_preferred_role_fit_detail", None)
+            if preferred_role_fit in selectable_roles:
+                st.session_state["role_fit_detail_role"] = preferred_role_fit
+            elif (
+                "role_fit_detail_role" in st.session_state
+                and st.session_state["role_fit_detail_role"] not in selectable_roles
+            ):
+                # Prevent stale role values when the selected player's compatible
+                # role set changes.
+                del st.session_state["role_fit_detail_role"]
+
+            detail_role = st.selectbox(
+                "Role detail",
+                selectable_roles,
+                key="role_fit_detail_role",
+            )
+            detail = fit_detail[detail_role]
+
+            st.subheader(detail_role)
+            dcols = st.columns(4)
+            dscore = detail["Role Score"]
+            dpct = detail["Role Percentile"]
+            dcov = detail["Coverage %"]
+            dn = detail["Benchmark N"]
+            dcols[0].metric("Role Score", f"{dscore:+.2f}" if pd.notna(dscore) else "—")
+            dcols[1].metric("Role Percentile", f"{dpct:.0f}" if pd.notna(dpct) else "—")
+            dcols[2].metric("Coverage", f"{dcov:.0f}%")
+            dcols[3].metric("Benchmark N", f"{int(dn):,}")
+
+            kpi_scores = detail.get("KPI Scores", {})
+            if kpi_scores:
+                st.markdown("#### KPI decomposition")
+                kpi_cols = st.columns(min(4, len(kpi_scores)))
+                for i, (kpi, score) in enumerate(kpi_scores.items()):
+                    kpi_cols[i % len(kpi_cols)].metric(kpi, f"{score:+.2f}")
+
+            rf_scale = st.radio(
+                "Role detail scale",
+                ["Percentile", "Z-score"],
+                horizontal=True,
+                key="role_fit_scale",
+            )
+            wheel = role_fit_detail_wheel(
+                str(role_fit_player),
+                detail_role,
+                detail,
+                rf_player_row,
+                rf_scale,
+            )
+            st.plotly_chart(wheel, width="stretch")
+
+            st.markdown("#### Underlying role metrics")
+            metric_rows = []
+            for kpi, requested_metric in single_player_profile_for_depth(detail_role):
+                rr, _ = resolve_metrics_aliases([requested_metric], role_fit_pool.columns.tolist())
+                if not rr:
+                    continue
+                m = rr[0]
+                raw = pd.to_numeric(pd.Series([rf_player_row.get(m, np.nan)]), errors="coerce").iloc[0]
+                zval = detail.get("Player Z", pd.Series(dtype=float)).get(m, np.nan)
+                bench_raw = detail.get("Benchmark Raw", pd.DataFrame())
+                pctval = (
+                    percentile_rank_against_population(
+                        bench_raw[m], raw, lower_is_better=(m in LOWER_IS_BETTER)
+                    )
+                    if isinstance(bench_raw, pd.DataFrame) and m in bench_raw.columns else np.nan
+                )
+                metric_rows.append({
+                    "KPI": kpi,
+                    "Metric": single_metric_display_label(m),
+                    "Raw Value": raw,
+                    "Z-score": zval,
+                    "Percentile": pctval,
+                    "Weight %": DEFAULT_WEIGHTS[detail_role].get(requested_metric, 0),
+                })
+            metric_df = pd.DataFrame(metric_rows)
+            if not metric_df.empty:
+                metric_df["Raw Value"] = pd.to_numeric(metric_df["Raw Value"], errors="coerce").round(2)
+                metric_df["Z-score"] = pd.to_numeric(metric_df["Z-score"], errors="coerce").round(2)
+                metric_df["Percentile"] = pd.to_numeric(metric_df["Percentile"], errors="coerce").round(0)
+                st.dataframe(metric_df, width="stretch", hide_index=True)
+
+            st.caption(
+                "Role Fit does not assign qualitative labels such as Excellent/Good/Poor. "
+                "Role Percentile, Role Score, coverage, KPI decomposition and the metric wheel are shown separately."
+            )
+    else:
+        st.info("Upload/filter player data to use Role Fit.")
+
+elif app_page == "League Projection":
+    st.header("🌍 League Projection")
+    st.caption(
+        "Estimate how a player's role performance may translate to another competition. "
+        "V1 uses the Opta league season-average rating and the empirically calibrated β = 0.020. "
+        "The player's underlying Wyscout metrics are not multiplied or altered."
+    )
+
+    league_strength = build_league_strength_lookup(
+        tuple(sorted(df_all["League"].dropna().astype(str).unique().tolist())),
+        str(OPTA_LEAGUE_META_PATH),
+    )
+    if league_strength.empty:
+        st.error("Opta league ratings are unavailable for the uploaded leagues.")
+    else:
+        # Player pool follows the scouting filters, while projection benchmarks
+        # deliberately ignore team and age filters.
+        projection_pool = filtered_base.copy()
+        projection_pool = projection_pool.loc[projection_pool["League"].isin(set(league_strength["League"]))]
+        if projection_pool.empty:
+            st.info("No players in the current filters have a matched Opta league rating.")
+        else:
+            player_options = []
+            player_index = {}
+            for idx, row in projection_pool.iterrows():
+                label = f"{row.get('Player', '')} — {row.get('Team', '')} | {row.get('League', '')}"
+                # Keep duplicate labels selectable without relying on Player name as an ID.
+                if label in player_index:
+                    label = f"{label} [{idx}]"
+                player_options.append(label)
+                player_index[label] = idx
+
+            c1, c2 = st.columns([1.35, 1])
+            with c1:
+                selected_player_label = st.selectbox("Player", player_options, key="projection_player")
+            selected_idx = player_index[selected_player_label]
+            player_row = projection_pool.loc[selected_idx]
+            current_league = str(player_row["League"])
+            current_match = league_strength.loc[league_strength["League"].eq(current_league)].iloc[0]
+
+            compatible_roles = [
+                r for r, eligible in PROFILE_POSITION_ELIGIBILITY.items()
+                if str(player_row.get("Main Position", "")) in eligible
+            ]
+            if not compatible_roles:
+                st.warning(f"No built-in projection role is mapped to Main Position {player_row.get('Main Position', '')}.")
+            else:
+                preferred = st.session_state.get("active_profile", {}) or {}
+                preferred_role = preferred.get("profile_name")
+                default_role_idx = compatible_roles.index(preferred_role) if preferred_role in compatible_roles else 0
+                with c2:
+                    projection_role = st.selectbox("Role", compatible_roles, index=default_role_idx, key="projection_role")
+
+                # Target competitions are taken from the same season group(s) selected
+                # in the sidebar, but do not need to be among the current league filters.
+                target_labels = sorted(df_season["League"].dropna().astype(str).unique().tolist())
+                target_strength = league_strength.loc[league_strength["League"].isin(target_labels)].copy()
+                target_strength = target_strength.loc[~target_strength["League"].eq(current_league)]
+                if target_strength.empty:
+                    st.info("No other matched target competitions are available in the selected season group.")
+                else:
+                    target_display = {
+                        f"{r.League}  ·  Opta {r.rating:.2f}": r.League
+                        for r in target_strength.itertuples()
+                    }
+                    target_label = st.selectbox(
+                        "Target league",
+                        list(target_display.keys()),
+                        key="projection_target_league",
+                    )
+                    target_league = target_display[target_label]
+                    target_match = target_strength.loc[target_strength["League"].eq(target_league)].iloc[0]
+
+                    eligible_positions = PROFILE_POSITION_ELIGIBILITY[projection_role]
+                    current_benchmark = df_all.loc[
+                        df_all["League"].eq(current_league)
+                        & df_all["Main Position"].isin(eligible_positions)
+                    ]
+                    target_benchmark = df_all.loc[
+                        df_all["League"].eq(target_league)
+                        & df_all["Main Position"].isin(eligible_positions)
+                    ]
+                    if "Minutes played" in df_all.columns:
+                        current_benchmark = current_benchmark.loc[current_benchmark["Minutes played"] >= min_minutes]
+                        target_benchmark = target_benchmark.loc[target_benchmark["Minutes played"] >= min_minutes]
+
+                    one_player = pd.DataFrame([player_row])
+                    scored_player, current_distribution = role_score_for_population(
+                        one_player, current_benchmark, projection_role, float(coverage_threshold_pct) / 100.0
+                    )
+                    _, target_distribution = role_score_for_population(
+                        target_benchmark, target_benchmark, projection_role, float(coverage_threshold_pct) / 100.0
+                    )
+                    current_score = pd.to_numeric(scored_player["_projection_role_score"], errors="coerce").iloc[0]
+
+                    current_rating = float(current_match["rating"])
+                    target_rating = float(target_match["rating"])
+                    rating_delta = target_rating - current_rating
+                    projected_score = current_score - LEAGUE_TRANSLATION_BETA * rating_delta if pd.notna(current_score) else np.nan
+                    current_pct = percentile_rank_against_population(current_distribution, current_score) if pd.notna(current_score) else np.nan
+                    projected_pct = percentile_rank_against_population(target_distribution, projected_score) if pd.notna(projected_score) else np.nan
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Current Role Score", f"{current_score:+.2f}" if pd.notna(current_score) else "—")
+                    m2.metric("Current Role Percentile", f"{current_pct:.0f}" if pd.notna(current_pct) else "—")
+                    m3.metric("Projected Role Score", f"{projected_score:+.2f}" if pd.notna(projected_score) else "—", delta=f"{(projected_score-current_score):+.2f}" if pd.notna(projected_score) and pd.notna(current_score) else None)
+                    m4.metric("Projected Target Percentile", f"{projected_pct:.0f}" if pd.notna(projected_pct) else "—")
+
+                    left, right = st.columns(2)
+                    with left:
+                        st.subheader("Competition translation")
+                        summary = pd.DataFrame([
+                            {"Competition": "Current", "League": current_league, "Opta League": current_match["opta_name"], "Opta Rating": current_rating, "Global Rank": current_match["rank"]},
+                            {"Competition": "Target", "League": target_league, "Opta League": target_match["opta_name"], "Opta Rating": target_rating, "Global Rank": target_match["rank"]},
+                        ])
+                        st.dataframe(summary, width="stretch", hide_index=True)
+                    with right:
+                        st.subheader("Projection")
+                        direction = "stronger" if rating_delta > 0 else "weaker" if rating_delta < 0 else "equivalent"
+                        st.write(f"**League-strength change:** {rating_delta:+.2f} Opta points ({direction} target).")
+                        st.write(f"**Translation adjustment:** {-LEAGUE_TRANSLATION_BETA * rating_delta:+.2f} Role Score.")
+                        st.write(f"**Target benchmark N:** {len(target_distribution):,} usable {projection_role} observations.")
+
+                    # Current vs projected role-metric radar. The current shape is benchmarked
+                    # against the player's present competition; the projected shape uses the actual
+                    # target-league compatible-position population plus the calibrated league penalty.
+                    current_profile, _ = build_single_player_profile(player_row, current_benchmark, projection_role)
+                    projected_profile, _ = build_projected_target_profile(
+                        player_row, target_benchmark, projection_role, rating_delta
+                    )
+                    if not current_profile.empty and not projected_profile.empty:
+                        st.subheader("Current vs projected performance profile")
+                        st.caption(
+                            f"Percentile profile for {projection_role}. Current values are relative to {current_league}; "
+                            f"projected values are relative to actual {target_league} players in compatible Main Positions, "
+                            f"with the β = {LEAGUE_TRANSLATION_BETA:.3f} competition-strength adjustment applied."
+                        )
+                        fig = league_projection_radar(
+                            current_profile, projected_profile, str(player_row.get("Player", "")),
+                            current_league, target_league,
+                        )
+                        st.plotly_chart(fig, width="stretch")
+
+                        radar_table = current_profile[["KPI Group", "Metric", "Percentile"]].rename(columns={"Percentile": "Current %ile"})
+                        radar_table = radar_table.merge(
+                            projected_profile[["Metric", "Percentile"]].rename(columns={"Percentile": "Projected %ile"}),
+                            on="Metric", how="inner"
+                        )
+                        radar_table["Change"] = radar_table["Projected %ile"] - radar_table["Current %ile"]
+                        for c in ["Current %ile", "Projected %ile", "Change"]:
+                            radar_table[c] = radar_table[c].round(0)
+                        with st.expander("Projected metric detail", expanded=False):
+                            st.dataframe(radar_table, width="stretch", hide_index=True)
+
+                    st.caption(
+                        "V1 projection: Projected Role Score = Current Role Score − 0.020 × "
+                        "(Target Opta rating − Current Opta rating). The coefficient was calibrated from "
+                        "cross-league movers; it is an estimate, not a guarantee of future performance. "
+                        "Projected percentile compares the translated score with the target league's actual role-score distribution."
+                    )
+
+
+elif app_page == "Team Projection":
+    render_team_projection(filtered_base, df_season, min_minutes, coverage_threshold_pct / 100.0, min_benchmark_n)
+
+elif app_page == "Similar Players":
+    st.header("🔎 Similar Players")
+    st.caption(
+        "Choose a reference player, then search for stylistically similar players in one or more target leagues. "
+        "Similarity measures style only; quality and league-adjusted quality remain separate."
+    )
+
+    # IMPORTANT: the reference-player universe is intentionally broader than the
+    # sidebar League filter. The sidebar still controls season group, age and minutes,
+    # but target competitions are selected independently inside this workspace.
+    reference_pool = df_all.copy()
+
+    if "Season group" in reference_pool.columns and selected_groups:
+        reference_pool = reference_pool.loc[
+            reference_pool["Season group"].isin(selected_groups)
+        ].copy()
+
+    if use_exact_label and selected_labels and "Season label" in reference_pool.columns:
+        reference_pool = reference_pool.loc[
+            reference_pool["Season label"].isin(selected_labels)
+        ].copy()
+
+    if "Age" in reference_pool.columns:
+        _ref_age = pd.to_numeric(reference_pool["Age"], errors="coerce")
+        reference_pool = reference_pool.loc[
+            _ref_age.between(float(age_range[0]), float(age_range[1]), inclusive="both")
+        ].copy()
+
+    if "Minutes played" in reference_pool.columns:
+        _ref_min = pd.to_numeric(reference_pool["Minutes played"], errors="coerce")
+        reference_pool = reference_pool.loc[_ref_min >= float(min_minutes)].copy()
+
+    if reference_pool.empty:
+        st.info("No reference players are available under the current season, age and minutes filters.")
+    else:
+        ref_labels, ref_index = [], {}
+        for idx, row in reference_pool.iterrows():
+            label = f"{row.get('Player', '')} — {row.get('Team', '')} | {row.get('League', '')}"
+            if label in ref_index:
+                label = f"{label} [{idx}]"
+            ref_labels.append(label)
+            ref_index[label] = idx
+
+        s1, s2 = st.columns([1.35, 1])
+        with s1:
+            ref_label = st.selectbox("Reference player", ref_labels, key="similar_reference_player")
+        ref_row = reference_pool.loc[ref_index[ref_label]]
+
+        compatible_roles = [
+            r for r, eligible in PROFILE_POSITION_ELIGIBILITY.items()
+            if str(ref_row.get("Main Position", "")) in eligible
+        ]
+        if not compatible_roles:
+            st.warning(f"No Similar Players role mapping is defined for Main Position {ref_row.get('Main Position', '')}.")
+        else:
+            # Preset Similar Players to the currently selected built-in profile.
+            # If that profile is not compatible with the reference player's Main
+            # Position, fall back to the first compatible role. Users can still
+            # manually change the role afterwards.
+            active_profile = st.session_state.get("active_profile", {}) or {}
+            preferred_role = active_profile.get("profile_name")
+
+            if preferred_role not in PROFILES:
+                # The sidebar's built-in profile selector is the authoritative
+                # fallback when active_profile has not yet been applied.
+                preferred_role = st.session_state.get("profile_select", preferred_role)
+
+            desired_similar_role = (
+                preferred_role if preferred_role in compatible_roles else compatible_roles[0]
+            )
+
+            # Synchronize only when the selected profile changes or the existing
+            # Similar Players role is no longer compatible. This preserves manual
+            # role changes during normal reruns.
+            sync_token = f"{preferred_role}|{ref_row.get('Main Position', '')}"
+            previous_sync_token = st.session_state.get("_similar_role_sync_token")
+            current_similar_role = st.session_state.get("similar_role")
+
+            if (
+                previous_sync_token != sync_token
+                or current_similar_role not in compatible_roles
+            ):
+                st.session_state["similar_role"] = desired_similar_role
+                st.session_state["_similar_role_sync_token"] = sync_token
+
+            with s2:
+                similar_role = st.selectbox(
+                    "Role / profile",
+                    compatible_roles,
+                    key="similar_role",
+                )
+
+            # Independent target-league selector. Default to the sidebar league(s)
+            # when those are explicitly selected; otherwise use the reference league.
+            available_target_leagues = sorted(
+                df_all["League"].dropna().astype(str).unique().tolist()
+            )
+            sidebar_target_defaults = [
+                str(x) for x in selected_leagues
+                if str(x) != ALL_TOKEN and str(x) in available_target_leagues
+            ]
+            if not sidebar_target_defaults:
+                _ref_league = str(ref_row.get("League", ""))
+                sidebar_target_defaults = [_ref_league] if _ref_league in available_target_leagues else []
+
+            target_leagues = st.multiselect(
+                "Search / target league(s)",
+                options=available_target_leagues,
+                default=sidebar_target_defaults,
+                key="similar_target_leagues",
+                help=(
+                    "These leagues define where Similar Players are searched. "
+                    "They are independent from the reference player's competition."
+                ),
+            )
+
+            if not target_leagues:
+                st.info("Select at least one Search / target league.")
+            else:
+                eligible_positions = PROFILE_POSITION_ELIGIBILITY[similar_role]
+
+                # Candidate universe: same season-group / exact-season / age / minutes
+                # framework, but target leagues are controlled here rather than by the
+                # sidebar League filter.
+                candidates = df_all.copy()
+                if "Season group" in candidates.columns and selected_groups:
+                    candidates = candidates.loc[
+                        candidates["Season group"].isin(selected_groups)
+                    ].copy()
+                if use_exact_label and selected_labels and "Season label" in candidates.columns:
+                    candidates = candidates.loc[
+                        candidates["Season label"].isin(selected_labels)
+                    ].copy()
+                candidates = candidates.loc[
+                    candidates["League"].astype(str).isin([str(x) for x in target_leagues])
+                    & candidates["Main Position"].astype(str).isin(eligible_positions)
+                ].copy()
+
+                if "Age" in candidates.columns:
+                    _cand_age = pd.to_numeric(candidates["Age"], errors="coerce")
+                    candidates = candidates.loc[
+                        _cand_age.between(float(age_range[0]), float(age_range[1]), inclusive="both")
+                    ].copy()
+                if "Minutes played" in candidates.columns:
+                    _cand_min = pd.to_numeric(candidates["Minutes played"], errors="coerce")
+                    candidates = candidates.loc[_cand_min >= float(min_minutes)].copy()
+
+                # Exclude the exact selected observation if its own league is also a target.
+                candidates = candidates.drop(index=ref_index[ref_label], errors="ignore")
+
+                if candidates.empty:
+                    st.info("No role-compatible players are available in the selected target league(s).")
+                else:
+                    # Similarity benchmark contains reference + target candidates so all
+                    # role metrics share one standardized comparison space.
+                    role_benchmark = pd.concat(
+                        [candidates, reference_pool.loc[[ref_index[ref_label]]]],
+                        axis=0,
+                    ).drop_duplicates().copy()
+                    role_benchmark = role_benchmark.loc[
+                        role_benchmark["Main Position"].astype(str).isin(eligible_positions)
+                    ].copy()
+
+                    similarity_df = build_role_similarity_table(
+                        ref_row,
+                        candidates,
+                        role_benchmark,
+                        similar_role,
+                        float(coverage_threshold_pct) / 100.0,
+                    )
+
+                    if similarity_df.empty:
+                        st.info("No candidates have enough comparable role metrics for a reliable similarity score.")
+                    else:
+                        result = similarity_df.merge(
+                            candidates.reset_index().rename(columns={"index": "_row_index"}),
+                            on="_row_index",
+                            how="left",
+                        )
+
+                        scored_candidates, _ = role_score_for_population(
+                            candidates,
+                            role_benchmark,
+                            similar_role,
+                            float(coverage_threshold_pct) / 100.0,
+                        )
+                        score_map = pd.to_numeric(
+                            scored_candidates["_projection_role_score"], errors="coerce"
+                        )
+                        result["Profile Score"] = result["_row_index"].map(score_map)
+
+                        # League-adjusted quality remains separate from similarity.
+                        relevant_strength_leagues = sorted(set(
+                            [str(ref_row.get("League", ""))]
+                            + [str(x) for x in target_leagues]
+                        ))
+                        league_strength_sim = build_league_strength_lookup(
+                            tuple(relevant_strength_leagues),
+                            str(OPTA_LEAGUE_META_PATH),
+                        )
+
+                        mapped_refs = (
+                            league_strength_sim["League"].dropna().astype(str).tolist()
+                            if not league_strength_sim.empty else []
+                        )
+                        reference_league = None
+                        reference_rating = None
+
+                        if mapped_refs:
+                            ref_current_league = str(ref_row.get("League", ""))
+                            default_ref_idx = mapped_refs.index(ref_current_league) if ref_current_league in mapped_refs else 0
+                            reference_league = st.selectbox(
+                                "Reference league for adjusted quality",
+                                mapped_refs,
+                                index=default_ref_idx,
+                                key="similar_reference_league",
+                                help="Affects League-Adjusted Score only. Similarity % never changes.",
+                            )
+                            ref_strength_row = league_strength_sim.loc[
+                                league_strength_sim["League"].eq(reference_league)
+                            ].iloc[0]
+                            reference_rating = float(ref_strength_row["rating"])
+                            rating_map = league_strength_sim.set_index("League")["rating"]
+                            result["_league_rating"] = result["League"].map(rating_map)
+                            result["League-Adjusted Score"] = (
+                                pd.to_numeric(result["Profile Score"], errors="coerce")
+                                + LEAGUE_TRANSLATION_BETA
+                                * (pd.to_numeric(result["_league_rating"], errors="coerce") - reference_rating)
+                            )
+                            st.caption(
+                                f"Adjusted quality reference: {reference_league} (Opta {reference_rating:.2f}) · "
+                                f"β={LEAGUE_TRANSLATION_BETA:.3f}. Similarity itself remains league-independent."
+                            )
+                        else:
+                            result["League-Adjusted Score"] = np.nan
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            top_n_sim = st.slider("Number of similar players", 5, 30, 15, key="similar_top_n")
+                        with c2:
+                            max_age_gap = st.slider(
+                                "Maximum age difference",
+                                0, 10, 5,
+                                key="similar_age_gap",
+                                help="Applied after the main age filter.",
+                            )
+
+                        ref_age = pd.to_numeric(pd.Series([ref_row.get("Age", np.nan)]), errors="coerce").iloc[0]
+                        if pd.notna(ref_age):
+                            cand_age = pd.to_numeric(result["Age"], errors="coerce")
+                            result = result.loc[(cand_age - float(ref_age)).abs() <= max_age_gap]
+
+                        # Hard output guard: table and scatter can only contain target leagues.
+                        result = result.loc[
+                            result["League"].astype(str).isin([str(x) for x in target_leagues])
+                        ].copy()
+
+                        # Similar Players is ranked primarily by stylistic similarity.
+                        # Adjusted quality is only the tiebreaker; raw Profile Score is
+                        # the final fallback. Stable mergesort preserves deterministic
+                        # ordering for exact ties.
+                        result = result.sort_values(
+                            by=["Similarity %", "League-Adjusted Score", "Profile Score"],
+                            ascending=[False, False, False],
+                            na_position="last",
+                            kind="mergesort",
+                        ).head(top_n_sim).copy()
+
+                        result = result.reset_index(drop=True)
+
+                        if result.empty:
+                            st.info("No candidates remain after the Similar Players filters.")
+                        else:
+                            r1, r2, r3, r4 = st.columns(4)
+                            r1.metric("Reference", str(ref_row.get("Player", "—")))
+                            r2.metric("Role", similar_role)
+                            r3.metric("Reference league", str(ref_row.get("League", "—")))
+                            r4.metric("Candidates shown", f"{len(result):,}")
+
+                            st.caption(
+                                "Searching in: " + " · ".join([str(x) for x in target_leagues])
+                            )
+
+                            table_cols = [
+                                "Player", "Team", "League", "Main Position", "Age", "Minutes played",
+                                "Similarity %", "Profile Score", "League-Adjusted Score",
+                                "Similarity Coverage %",
+                            ]
+                            table_cols = [c for c in table_cols if c in result.columns]
+                            table = result[table_cols].copy()
+                            for c in ["Similarity %", "Similarity Coverage %"]:
+                                if c in table:
+                                    table[c] = pd.to_numeric(table[c], errors="coerce").round(0)
+                            for c in ["Profile Score", "League-Adjusted Score"]:
+                                if c in table:
+                                    table[c] = pd.to_numeric(table[c], errors="coerce").round(2)
+
+                            st.subheader("Closest role-profile matches")
+                            st.dataframe(
+                                table,
+                                width="stretch",
+                                hide_index=True,
+                                column_config={
+                                    "Main Position": st.column_config.TextColumn("Pos", width=55),
+                                    "Minutes played": st.column_config.NumberColumn("Min", format="%d", width=70),
+                                    "Similarity %": st.column_config.NumberColumn("Similarity %", format="%.0f", width=95),
+                                    "Profile Score": st.column_config.NumberColumn("Profile Score", format="%.2f", width=95),
+                                    "League-Adjusted Score": st.column_config.NumberColumn("League-Adjusted Score", format="%.2f", width=125),
+                                    "Similarity Coverage %": st.column_config.NumberColumn("Coverage %", format="%.0f", width=85),
+                                },
+                            )
+
+                            quality_options = ["Profile Score"]
+                            if pd.to_numeric(result.get("League-Adjusted Score"), errors="coerce").notna().any():
+                                quality_options.insert(0, "League-Adjusted Score")
+
+                            quality_axis = st.selectbox(
+                                "Recruitment map quality axis",
+                                quality_options,
+                                key="similar_quality_axis",
+                                help=(
+                                    "League-Adjusted Score translates quality to the selected reference competition. "
+                                    "Profile Score shows the raw role score without the league-strength adjustment."
+                                ),
+                            )
+
+                            chart_df = result.dropna(subset=["Similarity %", quality_axis]).copy()
+                            if not chart_df.empty:
+                                st.subheader("Recruitment map")
+                                if quality_axis == "League-Adjusted Score":
+                                    quality_caption = (
+                                        "Up = stronger performance after translating competition strength to "
+                                        f"{reference_league or 'the selected reference competition'}."
+                                    )
+                                else:
+                                    quality_caption = "Up = stronger raw performance in the selected role profile."
+                                st.caption(
+                                    "Right = more stylistically similar. " + quality_caption +
+                                    " Dashed lines are candidate medians; the upper-right quadrant is the priority recruitment zone."
+                                )
+
+                                # Label only the five strongest similarity matches to keep the map readable.
+                                # Show every candidate name on the recruitment map.
+                                chart_df["_map_label"] = chart_df["Player"].fillna("").astype(str)
+
+                                fig_sim = px.scatter(
+                                    chart_df,
+                                    x="Similarity %",
+                                    y=quality_axis,
+                                    color="Team",
+                                    hover_name="Player",
+                                    hover_data={
+                                        "Team": True,
+                                        "Main Position": True,
+                                        "Age": True,
+                                        "Minutes played": ":.0f",
+                                        "Similarity %": ":.1f",
+                                        "Profile Score": ":.2f",
+                                        "League-Adjusted Score": ":.2f",
+                                        "League": False,
+                                        "_map_label": False,
+                                    },
+                                    text="_map_label",
+                                    title=f"{similar_role}: similarity vs {quality_axis.lower()}",
+                                )
+                                fig_sim.update_traces(
+                                    textposition="top center",
+                                    marker=dict(size=16, line=dict(width=1.5, color="DarkSlateGrey")),
+                                    textfont=dict(size=13),
+                                    cliponaxis=False,
+                                )
+
+                                x_med = float(pd.to_numeric(chart_df["Similarity %"], errors="coerce").median())
+                                y_med = float(pd.to_numeric(chart_df[quality_axis], errors="coerce").median())
+                                fig_sim.add_vline(x=x_med, line_dash="dash", line_width=1)
+                                fig_sim.add_hline(y=y_med, line_dash="dash", line_width=1)
+
+                                x_vals = pd.to_numeric(chart_df["Similarity %"], errors="coerce").dropna()
+                                y_vals = pd.to_numeric(chart_df[quality_axis], errors="coerce").dropna()
+                                x_span = max(float(x_vals.max() - x_vals.min()), 4.0)
+                                y_span = max(float(y_vals.max() - y_vals.min()), 0.5)
+                                x_lo = max(0.0, float(x_vals.min()) - 0.12 * x_span)
+                                x_hi = min(100.0, max(float(x_vals.max()) + 0.12 * x_span, x_lo + 5.0))
+                                y_lo = float(y_vals.min()) - 0.15 * y_span
+                                y_hi = float(y_vals.max()) + 0.18 * y_span
+
+                                # Quadrant labels are intentionally descriptive rather than evaluative grades.
+                                fig_sim.add_annotation(x=x_hi, y=y_hi, text="Priority Targets", showarrow=False, xanchor="right", yanchor="top")
+                                fig_sim.add_annotation(x=x_lo, y=y_hi, text="High Quality / Different Profile", showarrow=False, xanchor="left", yanchor="top")
+                                fig_sim.add_annotation(x=x_hi, y=y_lo, text="Style Match / Lower Level", showarrow=False, xanchor="right", yanchor="bottom")
+                                fig_sim.add_annotation(x=x_lo, y=y_lo, text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom")
+
+                                fig_sim.update_xaxes(range=[x_lo, x_hi], title="Similarity %")
+                                fig_sim.update_yaxes(range=[y_lo, y_hi], title=quality_axis)
+                                fig_sim.update_layout(
+                                    height=650,
+                                    legend_title_text="Team",
+                                    margin=dict(t=70, r=35, b=55, l=55),
+                                )
+                                st.plotly_chart(fig_sim, width="stretch")
+
+                            csv_sim = StringIO()
+                            table.to_csv(csv_sim, index=False)
+                            st.download_button(
+                                "⬇️ Download similar players (CSV)",
+                                data=csv_sim.getvalue(),
+                                file_name=f"{safe_widget_key(str(ref_row.get('Player', 'player')), similar_role)}_similar_players.csv",
+                                mime="text/csv",
+                            )
+
+                            st.caption(
+                                "Similarity V1 uses weighted standardized distance across the selected role's canonical metrics. "
+                                "Target league selection controls only where candidates are found. League strength does not alter "
+                                "Similarity %; it is used only for League-Adjusted Score."
+                            )
+
+
+elif app_page == "Player Report":
+    from player_report_step46 import render_workspace
+    _report_role = (active or {}).get("profile_name") or st.session_state.get("sidebar_selected_profile")
+    _report_benchmark = benchmark_population_for_role(benchmark_source_global, _report_role, benchmark_mode, selected_positions)
+    render_workspace(filtered, _report_benchmark, active, calc_col_name, LOWER_IS_BETTER, PROFILES, profile_definition, ROLE_KPI_GROUPS)
+
+elif app_page == "Shadow Team":
+    st.header("🧩 Shadow Team")
+    st.caption(
+        "Build a role-specific recruitment depth chart from the current season, league, team, age and minutes filters. "
+        "The sidebar Main Position filter is intentionally ignored here so the full XI can be populated."
+    )
+
+    FORMATIONS = {
+        "4-2-3-1": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LDM", "DM", 0.38, 0.45), ("RDM", "DM", 0.62, 0.45),
+            ("LAM", "W", 0.18, 0.66), ("CAM", "AM", 0.50, 0.62), ("RAM", "W", 0.82, 0.66), ("ST", "ST", 0.50, 0.86),
+        ],
+        "4-3-3": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LCM", "CM", 0.28, 0.50), ("DM", "DM", 0.50, 0.43), ("RCM", "CM", 0.72, 0.50),
+            ("LW", "W", 0.18, 0.76), ("ST", "ST", 0.50, 0.84), ("RW", "W", 0.82, 0.76),
+        ],
+        "4-4-2": [
+            ("GK", "GK", 0.50, 0.07), ("LB", "FB", 0.12, 0.27), ("LCB", "CB", 0.36, 0.23), ("RCB", "CB", 0.64, 0.23), ("RB", "FB", 0.88, 0.27),
+            ("LM", "W", 0.14, 0.55), ("LCM", "CM", 0.39, 0.50), ("RCM", "CM", 0.61, 0.50), ("RM", "W", 0.86, 0.55),
+            ("LST", "ST", 0.40, 0.82), ("RST", "ST", 0.60, 0.82),
+        ],
+        "3-4-2-1": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.10, 0.49), ("LCM", "CM", 0.38, 0.47), ("RCM", "CM", 0.62, 0.47), ("RWB", "WB", 0.90, 0.49),
+            ("LAM", "AM", 0.33, 0.68), ("RAM", "AM", 0.67, 0.68), ("ST", "ST", 0.50, 0.86),
+        ],
+        "3-4-3": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.10, 0.49), ("LCM", "CM", 0.38, 0.47), ("RCM", "CM", 0.62, 0.47), ("RWB", "WB", 0.90, 0.49),
+            ("LW", "W", 0.20, 0.76), ("ST", "ST", 0.50, 0.84), ("RW", "W", 0.80, 0.76),
+        ],
+        "3-5-2": [
+            ("GK", "GK", 0.50, 0.07), ("LCB", "WCB", 0.25, 0.25), ("CB", "CB", 0.50, 0.21), ("RCB", "WCB", 0.75, 0.25),
+            ("LWB", "WB", 0.09, 0.50), ("LCM", "CM", 0.32, 0.49), ("DM", "DM", 0.50, 0.42), ("RCM", "CM", 0.68, 0.49), ("RWB", "WB", 0.91, 0.50),
+            ("LST", "ST", 0.40, 0.82), ("RST", "ST", 0.60, 0.82),
+        ],
+    }
+    ROLE_OPTIONS = {
+        "GK": ["Classic Goalkeeper", "Sweeper Keeper", "Build-Up Keeper"],
+        "CB": ["Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB", "Wide CB (in 3)"],
+        "WCB": ["Wide CB (in 3)", "Ball-Playing CB", "Combative CB / Stopper", "Libero / Middle Pin CB"],
+        "FB": ["Full-Back", "Inverted Full-Back", "Wing-Back"],
+        "WB": ["Wing-Back", "Full-Back", "Inverted Full-Back"],
+        "DM": ["Defensive Midfielder #6", "Deep-Lying Playmaker", "Box-to-Box Midfielder"],
+        "CM": ["Box-to-Box Midfielder", "Deep-Lying Playmaker", "Defensive Midfielder #6", "Playmaker #10"],
+        "AM": ["Playmaker #10", "Creative Forward / False 9", "Inverted Winger", "Classic Winger"],
+        "W": ["Classic Winger", "Inverted Winger", "Wide Forward / Inside 9"],
+        "ST": ["Pressing Forward", "Target Man #9", "Poacher", "Creative Forward / False 9", "Wide Forward / Inside 9"],
+    }
+
+    c1, c2, c3, c4, c5 = st.columns([1.0, 1.0, 0.9, 1.1, 1.2])
+    with c1:
+        shadow_formation = st.selectbox("Formation", list(FORMATIONS), index=0, key="shadow_formation")
+    with c2:
+        shadow_depth = st.segmented_control(
+            "Profile Depth", ["Core 5", "Balanced 10", "Complete 15"], default="Balanced 10", key="shadow_depth"
+        ) or "Balanced 10"
+    with c3:
+        shadow_top_n = st.selectbox("Candidates per slot", [3, 5], index=0, key="shadow_top_n")
+    with c4:
+        shadow_unique = st.toggle(
+            "Unique starting XI", value=True, key="shadow_unique",
+            help="The #1 player can occupy only one starting slot. Alternatives remain visible in other role shortlists."
+        )
+    with c5:
+        shadow_allow_opposite = st.toggle(
+            "Allow opposite-side players", value=False, key="shadow_allow_opposite",
+            help="Off by default. Left/right Main Position is the primary side signal; Foot is used as a secondary compatibility signal."
+        )
+
+    # Shadow Team uses the current season/league/team/age/minutes universe but must
+    # ignore the sidebar Main Position selection so every tactical line can populate.
+    shadow_pool = df_league.loc[
+        df_league["Team"].isin(selected_teams)
+        & df_league["Age"].between(age_range[0], age_range[1])
+    ].copy()
+    if "Minutes played" in shadow_pool.columns:
+        shadow_pool = shadow_pool.loc[shadow_pool["Minutes played"] >= min_minutes].copy()
+
+    shadow_adjust = st.toggle("Apply league adjustment", value=False, key="shadow_league_adjustment")
+    shadow_reference = None
+    shadow_ref_rating = None
+    shadow_strength = build_league_strength_lookup(
+        tuple(sorted(shadow_pool["League"].dropna().astype(str).unique().tolist())), str(OPTA_LEAGUE_META_PATH)
+    ) if "League" in shadow_pool.columns else pd.DataFrame()
+    if shadow_adjust:
+        if shadow_strength.empty:
+            st.warning("Opta league ratings are unavailable for the selected leagues.")
+            shadow_adjust = False
+        else:
+            opts = shadow_strength.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+            shadow_reference = st.selectbox("Reference league", opts, key="shadow_reference_league")
+            shadow_ref_rating = float(shadow_strength.loc[shadow_strength["League"].eq(shadow_reference), "rating"].iloc[0])
+
+    st.subheader("Role assignments")
+    slots = FORMATIONS[shadow_formation]
+    role_by_slot = {}
+    role_cols = st.columns(4)
+    for i, (slot, family, _, _) in enumerate(slots):
+        options = ROLE_OPTIONS[family]
+        with role_cols[i % 4]:
+            role_by_slot[slot] = st.selectbox(slot, options, index=0, key=f"shadow_role_{shadow_formation}_{slot}")
+
+    @st.cache_data(show_spinner=False, max_entries=64)
+    def _shadow_score_cached(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, depth: str, coverage: float):
+        return role_score_for_population_depth(score_df, benchmark_df, role, depth, coverage)[0]
+
+    role_results = {}
+    coverage = float(coverage_threshold_pct) / 100.0
+    rating_map = shadow_strength.set_index("League")["rating"] if not shadow_strength.empty else pd.Series(dtype=float)
+
+    # Side/orientation model for Shadow Team.
+    # Main Position is deliberately the primary signal. Foot only refines compatibility.
+    LEFT_POSITIONS = {"LB", "LWB", "LCB", "LCMF", "LDMF", "LAMF", "LW", "LWF"}
+    RIGHT_POSITIONS = {"RB", "RWB", "RCB", "RCMF", "RDMF", "RAMF", "RW", "RWF"}
+
+    def _slot_side(slot: str):
+        # LST/RST are tactical spacing labels, not strict left/right position requirements.
+        if slot in {"LST", "RST"}:
+            return None
+        if slot.startswith("L"):
+            return "L"
+        if slot.startswith("R"):
+            return "R"
+        return None
+
+    def _foot_side(value):
+        txt = str(value).strip().lower()
+        if txt in {"left", "left foot", "l"}:
+            return "L"
+        if txt in {"right", "right foot", "r"}:
+            return "R"
+        if txt in {"both", "both feet", "either", "two-footed", "two footed"}:
+            return "B"
+        return None
+
+    def _side_fit(main_position, foot, slot: str, role: str):
+        side = _slot_side(slot)
+        if side is None:
+            return "Central / neutral", 2
+
+        pos = str(main_position).strip().upper()
+        pos_side = "L" if pos in LEFT_POSITIONS else ("R" if pos in RIGHT_POSITIONS else None)
+        fside = _foot_side(foot)
+
+        # Exact positional side always wins. Foot can then strengthen the tactical fit.
+        if pos_side == side:
+            if role == "Inverted Winger":
+                preferred = "R" if side == "L" else "L"
+                return ("Natural · inverted foot", 3) if fside in {preferred, "B"} else ("Natural side", 3)
+            if role == "Classic Winger":
+                return ("Natural · same-side foot", 3) if fside in {side, "B"} else ("Natural side", 3)
+            return "Natural side", 3
+
+        # Explicit opposite-side Main Position remains out-of-side by default even if foot is favourable.
+        if pos_side is not None and pos_side != side:
+            return "Opposite side", 0
+
+        # Neutral/central Main Position: foot becomes the secondary compatibility signal.
+        if role == "Inverted Winger":
+            preferred = "R" if side == "L" else "L"
+            if fside in {preferred, "B"}:
+                return "Compatible · inverted foot", 2
+        elif role == "Classic Winger":
+            if fside in {side, "B"}:
+                return "Compatible · same-side foot", 2
+        elif fside in {side, "B"}:
+            return "Compatible · foot", 2
+
+        return "Compatible · neutral", 1
+
+    with st.spinner("Building Shadow Team…"):
+        for role in sorted(set(role_by_slot.values())):
+            eligible = PROFILE_POSITION_ELIGIBILITY.get(role, [])
+            candidates = shadow_pool.loc[shadow_pool["Main Position"].astype(str).isin(eligible)].copy()
+            benchmark = benchmark_source_global.loc[
+                benchmark_source_global["Main Position"].astype(str).isin(eligible)
+            ].copy()
+            if candidates.empty or benchmark.empty:
+                role_results[role] = pd.DataFrame()
+                continue
+            scored = _shadow_score_cached(candidates, benchmark, role, shadow_depth, coverage).copy()
+            scored["Profile Score"] = pd.to_numeric(scored["_shadow_role_score"], errors="coerce")
+            scored["Selection Score"] = scored["Profile Score"]
+            if shadow_adjust and shadow_ref_rating is not None:
+                scored["Opta League Rating"] = scored["League"].map(rating_map)
+                scored["League-Adjusted Score"] = scored["Profile Score"] + LEAGUE_TRANSLATION_BETA * (
+                    pd.to_numeric(scored["Opta League Rating"], errors="coerce") - shadow_ref_rating
+                )
+                scored["Selection Score"] = scored["League-Adjusted Score"]
+            scored = scored.dropna(subset=["Selection Score"]).sort_values(
+                ["Selection Score", "Minutes played" if "Minutes played" in scored.columns else "Age"],
+                ascending=[False, False], kind="mergesort"
+            )
+            role_results[role] = scored
+
+    # Build a side-aware candidate list for each tactical slot. This must happen after role
+    # scoring because the same role can have different left/right candidate orders.
+    slot_rankings = {}
+    for slot, _, _, _ in slots:
+        role = role_by_slot[slot]
+        rdf = role_results.get(role, pd.DataFrame()).copy()
+        if rdf.empty:
+            slot_rankings[slot] = rdf
+            continue
+        fits = rdf.apply(
+            lambda r: _side_fit(r.get("Main Position"), r.get("Foot"), slot, role), axis=1
+        )
+        rdf["Side Fit"] = [x[0] for x in fits]
+        rdf["Side Fit Rank"] = [x[1] for x in fits]
+        if not shadow_allow_opposite:
+            rdf = rdf.loc[rdf["Side Fit Rank"] > 0].copy()
+        rdf = rdf.sort_values(
+            ["Side Fit Rank", "Selection Score", "Minutes played" if "Minutes played" in rdf.columns else "Age"],
+            ascending=[False, False, False], kind="mergesort"
+        )
+        slot_rankings[slot] = rdf
+
+    # Unique XI allocation is now slot-aware: role eligibility -> side compatibility -> quality.
+    # Alternatives remain true slot-specific shortlists, but no starter can occupy two slots.
+    used_players = set()
+    slot_candidates = {}
+    pending = list(slots)
+    if shadow_unique:
+        while pending:
+            choices = []
+            for slot_info in pending:
+                slot = slot_info[0]
+                rdf = slot_rankings.get(slot, pd.DataFrame())
+                avail = rdf.loc[~rdf["Player"].astype(str).isin(used_players)] if not rdf.empty else rdf
+                if avail.empty:
+                    best_fit, best_score = -1, -np.inf
+                else:
+                    best_fit = float(avail["Side Fit Rank"].iloc[0])
+                    best_score = float(avail["Selection Score"].iloc[0])
+                choices.append((best_fit, best_score, slot_info, avail))
+            _, _, chosen_info, avail = max(choices, key=lambda x: (x[0], x[1]))
+            slot = chosen_info[0]
+            full = slot_rankings.get(slot, pd.DataFrame())
+            if not avail.empty:
+                starter = avail.iloc[[0]]
+                pname = str(starter.iloc[0]["Player"])
+                used_players.add(pname)
+                alternatives = full.loc[full["Player"].astype(str).ne(pname)].head(max(0, int(shadow_top_n)-1))
+                slot_candidates[slot] = pd.concat([starter, alternatives], ignore_index=True).head(int(shadow_top_n))
+            else:
+                slot_candidates[slot] = pd.DataFrame()
+            pending.remove(chosen_info)
+    else:
+        for slot, _, _, _ in slots:
+            slot_candidates[slot] = slot_rankings.get(slot, pd.DataFrame()).head(int(shadow_top_n)).copy()
+
+    # Recruitment-board pitch. Keep the board deliberately constrained and centred:
+    # a full-width Plotly figure made the actual pitch/cards too small on wide monitors.
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=0, x1=1, y0=0, y1=1, line=dict(color="#5f8a73", width=2), fillcolor="#0b2f20", layer="below")
+    fig.add_shape(type="line", x0=0, x1=1, y0=.5, y1=.5, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="circle", x0=.42, x1=.58, y0=.42, y1=.58, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.20, x1=.80, y0=.82, y1=1, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.36, x1=.64, y0=.92, y1=1, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.20, x1=.80, y0=0, y1=.18, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="rect", x0=.36, x1=.64, y0=0, y1=.08, line=dict(color="#5f8a73", width=1), layer="below")
+    fig.add_shape(type="circle", x0=.494, x1=.506, y0=.494, y1=.506, line=dict(color="#9ab3a4"), fillcolor="#9ab3a4", layer="below")
+
+    for slot, _, x, y in slots:
+        role = role_by_slot[slot]
+        cand = slot_candidates.get(slot, pd.DataFrame())
+
+        # Compact recruitment card: slot + role + clearly readable candidate rows.
+        role_label = role
+        if len(role_label) > 24:
+            role_label = role_label[:23] + "…"
+        lines = [
+            f"<b><span style='font-size:15px'>{slot}</span></b>",
+            f"<span style='font-size:11px;color:#8fd3ad'>{role_label}</span>",
+        ]
+        if cand.empty:
+            lines += ["", "<span style='font-size:11px'>No eligible players</span>"]
+        else:
+            for j, (_, r) in enumerate(cand.head(int(shadow_top_n)).iterrows(), start=1):
+                score = pd.to_numeric(pd.Series([r.get("Selection Score", np.nan)]), errors="coerce").iloc[0]
+                player = str(r.get("Player", ""))
+                team = str(r.get("Team", ""))
+                age = pd.to_numeric(pd.Series([r.get("Age", np.nan)]), errors="coerce").iloc[0]
+                if len(player) > 20:
+                    player = player[:19] + "…"
+                if len(team) > 18:
+                    team = team[:17] + "…"
+                prefix = "★" if j == 1 else f"{j}."
+                score_txt = f"{score:.2f}" if pd.notna(score) else "—"
+                age_txt = f" · {age:g}" if pd.notna(age) else ""
+                foot_code = _foot_side(r.get("Foot"))
+                foot_txt = f" · {foot_code}" if foot_code else ""
+                if j == 1:
+                    lines.append(
+                        f"<span style='font-size:12px;color:#ffffff'><b>{prefix} {player}</b> · {score_txt}</span>"
+                        f"<br><span style='font-size:10px;color:#a9c9b8'>{team}{age_txt}{foot_txt}</span>"
+                    )
+                else:
+                    lines.append(
+                        f"<span style='font-size:11px'>{prefix} <b>{player}</b> · {score_txt}</span>"
+                        f"<br><span style='font-size:9px;color:#a9c9b8'>{team}{age_txt}{foot_txt}</span>"
+                    )
+
+        fig.add_annotation(
+            x=x, y=y, text="<br>".join(lines), showarrow=False, align="left",
+            bgcolor="rgba(3,35,23,0.97)", bordercolor="#168455", borderwidth=1.5, borderpad=10,
+            font=dict(color="#e7f5ec", size=12), xanchor="center", yanchor="middle",
+        )
+
+    fig.update_xaxes(range=[0, 1], visible=False, fixedrange=True)
+    fig.update_yaxes(range=[0, 1], visible=False, fixedrange=True)
+    fig.update_layout(
+        height=1080,
+        paper_bgcolor="#071d14",
+        plot_bgcolor="#071d14",
+        margin=dict(l=14, r=14, t=54, b=14),
+        showlegend=False,
+        title=dict(
+            text=f"{shadow_formation} · {shadow_depth}" + (f" · adjusted to {shadow_reference}" if shadow_adjust else ""),
+            x=.5,
+            y=.985,
+            font=dict(color="#e7f5ec", size=18),
+        ),
+    )
+
+    # Centre the tactical board in a controlled desktop width. This prevents the
+    # enormous empty green canvas seen when the chart stretches across an ultrawide page.
+    pitch_left, pitch_col, pitch_right = st.columns([0.45, 1.55, 0.45])
+    with pitch_col:
+        st.plotly_chart(
+            fig,
+            width="stretch",
+            config={"displayModeBar": False, "responsive": True},
+        )
+
+    st.subheader("Shadow Team shortlists")
+    shortlist_rows = []
+    for slot, _, _, _ in slots:
+        role = role_by_slot[slot]
+        cand = slot_candidates.get(slot, pd.DataFrame())
+        with st.expander(f"{slot} · {role}", expanded=False):
+            if cand.empty:
+                st.info("No eligible players for this slot under the current filters.")
+            else:
+                show_cols = [c for c in ["Player", "Team", "League", "Main Position", "Foot", "Side Fit", "Age", "Minutes played", "Profile Score", "League-Adjusted Score"] if c in cand.columns]
+                view = cand[show_cols].copy()
+                view = view.rename(columns={"Profile Score": shadow_depth})
+                st.dataframe(view, hide_index=True, width="stretch")
+                for rank, (_, r) in enumerate(cand.iterrows(), start=1):
+                    shortlist_rows.append({
+                        "Slot": slot, "Role": role, "Rank": rank, "Player": r.get("Player"), "Team": r.get("Team"),
+                        "League": r.get("League"), "Main Position": r.get("Main Position"), "Foot": r.get("Foot"),
+                        "Side Fit": r.get("Side Fit"), "Age": r.get("Age"),
+                        "Minutes played": r.get("Minutes played"), shadow_depth: r.get("Profile Score"),
+                        "League-Adjusted Score": r.get("League-Adjusted Score", np.nan),
+                    })
+    if shortlist_rows:
+        shadow_export = pd.DataFrame(shortlist_rows)
+        st.download_button(
+            "⬇️ Download Shadow Team shortlist (CSV)", shadow_export.to_csv(index=False),
+            file_name=f"shadow_team_{shadow_formation.replace('-', '')}_{shadow_depth.replace(' ', '_').lower()}.csv",
+            mime="text/csv",
+        )
+
+
+st.markdown("---")
+with st.expander("Methodology & score reliability", expanded=False):
+    st.markdown(
+        """
+**Canonical roles.** Each built-in role is defined once as KPI group → metric → default weight.
+The Profile Score, single-player wheel and multi-player wheel are derived from that same definition.
+
+**Benchmarking.** Search filters determine which players you see. Benchmark controls determine who
+those players are compared against. Team and age filters do not narrow the benchmark. The selected
+league/season universe and minimum-minutes threshold still apply.
+
+**Profile Score.** Metrics are standardized as z-scores against the selected benchmark. Metrics where
+lower is better are direction-reversed. Default/custom weights must total exactly 100%.
+
+**Missing data and coverage.** Missing player values are not treated as average. The score is calculated
+from the available weighted metrics and the available weights are renormalized for that player. The
+Coverage % column shows how much of the intended profile weight was actually observed. Scores below the
+selected coverage threshold are suppressed.
+
+**Profile depth comparison.** For an active built-in role, the app also calculates Core 5, Balanced 10 and Complete 15 simultaneously against the same benchmark. **Specialist Delta = Core 5 Score − Complete 15 Score**. A positive delta means the player scores better on the role-defining core than on the complete model; it is a diagnostic of specialization, not a quality ranking by itself.
+
+**KPI sub-scores.** Built-in profiles also expose weighted direction-aware z-score sub-scores for each
+KPI family. They use the same benchmark and the same metric weights as the overall Profile Score.
+
+**Percentiles.** Percentile (0–100) is the default presentation scale because it is faster to interpret.
+Higher always means better after direction reversal. Z-score remains available as an advanced analytical
+view. Both use the same benchmark population; the weighted Profile Score remains z-score based.
+
+**Visual colour.** KPI colours are categorical only. They identify KPI families and deliberately avoid a
+traffic-light red/green/orange performance meaning. Performance is communicated by radial length and the
+numeric percentile, not by colour.
+
+**League Projection.** The V1 translation model keeps raw Wyscout metrics unchanged. It adjusts the
+player's role score by the difference between the current and target Opta `seasonAverageRating`, using
+β = 0.020 role-score units per Opta rating point. Projected percentile is then evaluated against the
+target league's actual role-score distribution for the selected role. This is a translation estimate,
+not a deterministic forecast.
+
+**Similar Players.** V1 similarity is a weighted standardized-distance comparison across the canonical
+metrics of the selected role. League strength does not alter Similarity %. Quality is displayed separately as
+Profile Score and League-Adjusted Score, preventing stylistic resemblance from being confused with competitive level.
+
+**Shadow Team.** Formation slots are assigned a canonical role and ranked with the selected Core 5, Balanced 10 or Complete 15 definition. The current season, league, team, age and minutes filters define the recruitment pool; the sidebar Main Position filter is ignored so a complete XI can be built. Left/right slot assignment uses Wyscout Main Position as the primary side signal and Foot as a secondary compatibility signal. Opposite-side Main Positions are excluded by default. Optional league adjustment changes selection quality only, using the same β = 0.020 translation model.
+
+**Sample size.** Small benchmark populations make both z-scores and percentiles less stable. The app
+warns when the benchmark falls below the configured minimum sample size.
+        """
+    )
+
+st.markdown("Developed with ❤️ using Streamlit & Plotly | Season-aware ✨")
