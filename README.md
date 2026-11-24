@@ -1,24 +1,13 @@
-Wyscout Scouting app — Team Projection
+STEP 46 DEPLOYMENT FIX — ModuleNotFoundError
 
-Put the files from this ZIP in the app directory together. The Streamlit
-entry point is football_scout_app.py. If your existing deployment uses app.py,
-copy the updated football_scout_app.py over app.py and keep that entry point.
-For a local run, install requirements.txt and run:
+Upload ALL THREE Python files to the SAME repository folder:
+  football_scout_app.py
+  player_report_step46.py
+  poster_step46.py
 
-    streamlit run football_scout_app.py
+The traceback shows Streamlit launches football_scout_app.py and cannot locate player_report_step46.py.
+Copy requirements.txt to repository root (merge if your existing requirements has other dependencies).
+KEEP existing profiles_config.py in the same folder: this package does not contain it.
 
-Upload your usual Wyscout CSV, choose Team Projection in the workspace menu,
-and select a player, role, target league and club. The sidebar filters define
-the player search. The target club list uses the selected season, and the
-comparison uses the selected role's compatible Main Positions and minutes.
-
-The projected role score uses the existing league coefficient. The radar
-compares the projected player with the target club median for metrics that
-have at least three scored club players with data. The squad table shows
-individual options when the club sample is small.
-
-The bundled audit and club ratings are dated 20 November 2026. The strength
-table uses the club's competition at the snapshot date to calculate its
-relative strength. Those figures are context for recruitment and do not enter
-the projected score. Club ratings remain blank when a season-team identity
-cannot be verified.
+If your Streamlit app is configured to launch app.py instead, rename football_scout_app.py to app.py.
+Ensure GitHub commits include all files, with exact lowercase filenames. Reboot/redeploy Streamlit.
