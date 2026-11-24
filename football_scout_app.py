@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import json
 import math
-import unicodedata
+from difflib import SequenceMatcher
 from pathlib import Path
 from io import BytesIO, StringIO
 from typing import Dict, List, Tuple
@@ -76,7 +76,7 @@ LOWER_IS_BETTER = {
     "Red cards per 90",
 }
 
-SEASON_RX = re.compile(r"(?<!\S)(\d{4})(?:\s*[-/\u2010-\u2015\u2212]\s*(\d{2}|\d{4}))?$")
+SEASON_RX = re.compile(r"(\d{4})(?:\s*-\s*(\d{2,4}))?$")
 
 
 # =========================
@@ -617,10 +617,11 @@ def preprocess(df_raw: pd.DataFrame) -> pd.DataFrame:
     def extract_season_label(league_value: object) -> str | None:
         if not isinstance(league_value, str):
             return None
-        match = SEASON_RX.search(league_value.strip())
-        if match:
-            return "-".join(part for part in match.groups() if part is not None)
-        return None
+        parts = league_value.strip().split()
+        if not parts:
+            return None
+        tail = parts[-1]
+        return tail if SEASON_RX.fullmatch(tail) else None
 
     def season_start_end(season_label: str) -> Tuple[int | None, int | None]:
         m = SEASON_RX.fullmatch(season_label)
@@ -2049,696 +2050,119 @@ def build_benchmark_scoring_package(
 LEAGUE_TRANSLATION_BETA = 0.020
 OPTA_LEAGUE_META_PATH = Path(__file__).with_name("league-meta.json")
 
-# Country prefixes used by older and newer Wyscout exports and Opta snapshots.
-OPTA_COUNTRY_ALIASES = {
-    "bosnia": "bosnia and herzegovina",
-    "china": "china pr",
-    "czech": "czechia",
-    "czech republic": "czechia",
-    "ireland": "republic of ireland",
-    "korea": "korea republic",
-    "south korea": "korea republic",
-    "turkey": "turkiye",
-    "united states": "usa",
-    "united states of america": "usa",
-    "us": "usa",
-    "u s a": "usa",
-}
-
-# Exact Wyscout competition keys (after country normalization) to Opta names.
-# Within each tuple, older Opta names serve as fallbacks when the first is absent.
+# Wyscout -> Opta naming exceptions. The matcher still validates these against
+# the bundled Opta league metadata and falls back to conservative fuzzy matching.
 OPTA_LEAGUE_ALIASES = {
-    "albania abissnet superiore": ("Albanian Kategoria Superiore",),
-    "albania superiore league": ("Albanian Kategoria Superiore",),
-    "argentina liga profesional de futbol": ("Liga Profesional Argentina",),
-    "argentina primera division": ("Liga Profesional Argentina",),
-    "australia a league": ("Australian A-League Men",),
-    "austria bundesliga": ("Austrian Bundesliga",),
-    "belgium challenger pro league": ("Belgian Challenger Pro League", "Belgian First Division B"),
-    "belgium first division a": ("Belgian Jupiler Pro League", "Belgian First Division A"),
-    "belgium first division b": ("Belgian Challenger Pro League", "Belgian First Division B"),
-    "belgium pro league": ("Belgian Jupiler Pro League", "Belgian First Division A"),
-    "bolivia lfpb": ("Bolivia Primera División",),
-    "brazil serie a": ("Brazilian Serie A",),
-    "brazil serie b": ("Brazilian Serie B",),
-    "canada premier league": ("Canadian Premier League",),
-    "chile primera division": ("Chile Primera",),
-    "china pr csl": ("Chinese Super League",),
-    "china pr super league": ("Chinese Super League",),
-    "colombia liga betplay": ("Colombia Primera A",),
-    "croatia 1 hnl": ("Croatia Prva HNL",),
-    "croatia superleague": ("Croatia Prva HNL",),
-    "cyprus 1 division": ("Cypriot Division 1",),
-    "cyprus first division": ("Cypriot Division 1",),
-    "czechia chance liga": ("Czech First League",),
-    "czechia chance national liga": ("FNL",),
-    "czechia fortuna liga": ("Czech First League",),
-    "denmark 1st division": ("Danish 1. Division", "Danish 1st Division"),
-    "denmark superliga": ("Danish Superligaen",),
-    "ecuador serie a": ("Ecuador Liga Pro",),
-    "egypt premier league": ("Egyptian Premier League",),
-    "england championship": ("English Football League - Championship", "English Championship"),
-    "england league one": ("English Football League - League One", "English League One"),
-    "england league two": ("English Football League - League Two", "English League Two"),
-    "england national league": ("English National League",),
-    "england national league north south": ("National League N / S",),
-    "england premier league": ("English Premier League",),
-    "estonia a lecoq premium liiga": ("Estonian Premium liiga",),
-    "estonia meistriliiga": ("Estonian Premium liiga",),
-    "finland veikkausliiga": ("Finnish Veikkausliiga",),
-    "france championnat national": ("French Ligue 3", "French National"),
-    "france ligue 1": ("French Ligue 1",),
-    "france ligue 2": ("French Ligue 2",),
-    "france ligue 3": ("French Ligue 3", "French National"),
-    "georgia erovnuli liga": ("Georgian Premier League",),
-    "germany 2 bundesliga": ("German Bundesliga Zwei", "German 2. Bundesliga"),
-    "germany 3 liga": ("German 3rd Liga", "German 3. Liga"),
-    "germany bundesliga": ("German Bundesliga",),
-    "greece stoiximan super league": ("Greek Super League",),
-    "greece super league": ("Greek Super League",),
-    "hungary nb i": ("Hungarian Liga NB I",),
-    "hungary nb1": ("Hungarian Liga NB I",),
-    "indonesia liga 1": ("Indonesia Super League",),
-    "israel ligat ha al": ("Israeli Ligat Ha'al",),
-    "italy serie a": ("Italian Serie A",),
-    "italy serie b": ("Italian Serie B",),
-    "japan j1 league": ("Japanese J1 League",),
-    "japan j2 league": ("Japanese J2 League",),
-    "japan j3 league": ("Japanese J3 League",),
-    "korea republic k league 1": ("Korean K-League 1",),
-    "korea republic k league 2": ("Korean K-League 2",),
-    "latvia virsliga": ("Latvian Virsliga",),
-    "malaysia super league": ("Malaysian Super League",),
-    "mexico liga de expansion": ("Liga de Expansión MX",),
-    "mexico liga mx": ("Mexican Primera",),
-    "netherlands eerste divisie": ("Dutch Eerste Divisie",),
-    "netherlands eredivisie": ("Dutch Eredivisie",),
-    "norway eliteserien": ("Norwegian Eliteserien",),
-    "norway first division": ("Norwegian 1. divisjon",),
-    "norway obos ligaen": ("Norwegian 1. divisjon",),
-    "paraguay division profesional": ("Paraguay Primera División",),
-    "peru primera division": ("Peru Liga 1",),
-    "poland 1 liga": ("I Liga",),
-    "poland ekstraklasa": ("Polish Ekstraklasa",),
-    "portugal primeira liga": ("Portuguese Primeira Liga",),
-    "portugal segunda liga": ("Portuguese Segunda Liga",),
-    "republic of ireland first division": ("Irish First Division",),
-    "republic of ireland premier division": ("Irish Premier League",),
-    "romania superliga": ("Romania Liga I",),
-    "russia premier league": ("Russian Premier League",),
-    "scotland championship": ("Scottish Championship",),
-    "scotland league one": ("Scottish League One",),
-    "scotland league two": ("Scottish League Two",),
-    "scotland premiership": ("Scottish Premiership",),
-    "serbia super liga": ("Serbian Super Liga",),
-    "slovakia nike liga": ("Slovakia 1. liga",),
-    "slovakia super liga": ("Slovakia 1. liga",),
-    "slovenia 1 snl": ("Slovenia PrvaLiga",),
-    "slovenia prva liga": ("Slovenia PrvaLiga",),
-    "spain la liga": ("Spanish La Liga",),
-    "spain primera division rfef": ("Spanish Primera Division RFEF",),
-    "spain segunda": ("Spanish Segunda Division",),
-    "spain segunda division": ("Spanish Segunda Division",),
-    "sweden allsvenskan": ("Swedish Allsvenskan",),
-    "sweden superettan": ("Swedish Superettan",),
-    "switzerland challenge league": ("dieci Challenge League", "Swiss Challenge League"),
-    "switzerland super league": ("Brack Super League", "Swiss Super League"),
-    "turkiye super lig": ("Turkish Super Lig",),
-    "ukraine ukrainian premier league": ("Ukraine Premier League",),
-    "uruguay primera division": ("Uruguay Liga AUF",),
-    "usa major league soccer": ("US Major League Soccer",),
-    "usa mls": ("US Major League Soccer",),
-    "usa mls next pro": ("MLS Next Pro",),
-    "usa usl league 1": ("USL League One",),
+    "england premier league": "English Premier League",
+    "england championship": "English Championship",
+    "england league one": "English League One",
+    "england league two": "English League Two",
+    "england national league": "English National League",
+    "germany bundesliga": "German Bundesliga",
+    "germany 2 bundesliga": "German 2. Bundesliga",
+    "germany 3 liga": "German 3. Liga",
+    "france ligue 1": "French Ligue 1",
+    "france ligue 2": "French Ligue 2",
+    "france championnat national": "French National",
+    "italy serie a": "Italian Serie A",
+    "italy serie b": "Italian Serie B",
+    "spain la liga": "Spanish La Liga",
+    "spain segunda": "Spanish Segunda División",
+    "spain primera division rfef": "Spanish Primera Division RFEF",
+    "netherlands eredivisie": "Dutch Eredivisie",
+    "netherlands eerste divisie": "Dutch Eerste Divisie",
+    "portugal primeira liga": "Portuguese Primeira Liga",
+    "portugal segunda liga": "Portuguese Segunda Liga",
+    "belgium first division a": "Belgian First Division A",
+    "belgium first division b": "Belgian First Division B",
+    "czech fortuna liga": "Czech First League",
+    "czech chance national liga": "FNL",
+    "denmark superliga": "Danish Superligaen",
+    "denmark 1st division": "Danish 1st Division",
+    "norway eliteserien": "Norwegian Eliteserien",
+    "norway first division": "Norwegian 1. divisjon",
+    "sweden allsvenskan": "Swedish Allsvenskan",
+    "sweden superettan": "Swedish Superettan",
+    "finland veikkausliiga": "Finnish Veikkausliiga",
+    "latvia virsliga": "Latvian Virsliga",
+    "usa mls": "US Major League Soccer",
+    "usa mls next pro": "MLS Next Pro",
+    "usa usl championship": "USL Championship",
+    "usa usl league 1": "USL League One",
+    "canada premier league": "Canadian Premier League",
 }
-
-# Opta files the binational A-League Men under New Zealand in this snapshot.
-OPTA_LEAGUE_ADDITIONAL_COUNTRIES = {"australia a league": ("new zealand",)}
-
-
-# Opta league season-average ratings from the league-meta.json bundled with the app.
-OPTA_BUNDLED_LEAGUE_COLUMNS = ("leagueName", "countryName", "seasonAverageRating", "globalRank", "leagueId")
-OPTA_BUNDLED_LEAGUE_RECORDS = (
-    ('English Premier League', 'England', 92.6158763708, 1, '2kwbbcootiqqgmrzs6o5inle5'),
-    ('German Bundesliga', 'Germany', 86.9293428957, 3, '6by3h89i2eykc341oz7lv1ddd'),
-    ('Spanish La Liga', 'Spain', 87.1674743591, 2, '34pl8szyvrbwcmfkuocjm3r6t'),
-    ('French Ligue 1', 'France', 85.81283, 5, 'dm5ka0os1e3dxcp3vh05kmp33'),
-    ('Italian Serie A', 'Italy', 85.9661705904, 4, '1r097lpxe0xn03ihb7wi98kao'),
-    ('Portuguese Primeira Liga', 'Portugal', 81.7697643991, 9, '8yi6ejjd1zudcqtbn07haahg6'),
-    ('Belgian Jupiler Pro League', 'Belgium', 82.7981652659, 7, '4zwgbb66rif2spcoeeol2motx'),
-    ('Brazilian Serie A', 'Brazil', 84.3268946324, 6, 'scf9p4y91yjvqvg5jndxzhxj'),
-    ('Norwegian Eliteserien', 'Norway', 80.3465168978, 13, '9ynnnx1qmkizq1o3qr3v0nsuk'),
-    ('Dutch Eredivisie', 'Netherlands', 79.9631227548, 15, 'akmkihra9ruad09ljapsm84b3'),
-    ('Turkish Super Lig', 'Türkiye', 80.1496423786, 14, '482ofyysbdbeoxauk19yg7tdt'),
-    ('Czech First League', 'Czechia', 79.098503474, 22, 'bu1l7ckihyr0errxw61p0m05'),
-    ('Ecuador Liga Pro', 'Ecuador', 79.5697872039, 19, '6lwpjhktjhl9g7x2w7njmzva6'),
-    ('Greek Super League', 'Greece', 78.7443242763, 24, 'c0r21rtokgnbtc0o2rldjmkxu'),
-    ('Liga Profesional Argentina', 'Argentina', 82.3087786661, 8, '581t4mywybx21wcpmpykhyzr3'),
-    ('Cypriot Division 1', 'Cyprus', 77.467999444, 32, 'btouq8t23agr62ij7e0ju5p6n'),
-    ('English Football League - Championship', 'England', 81.2428338469, 10, '7ntvbsyq31jnzoqoa8850b9b8'),
-    ('Saudi Arabian League', 'Saudi Arabia', 75.5636770648, 39, 'ea0h6cf3bhl698hkxhpulh2zz'),
-    ('Croatia Prva HNL', 'Croatia', 79.1786973803, 21, '1b70m6qtxrp75b4vtk8hxh8c3'),
-    ('Mexican Primera', 'Mexico', 79.9103642815, 16, '2hsidwomhjsaaytdy9u5niyi4'),
-    ('Danish Superligaen', 'Denmark', 80.4584538647, 11, '29actv1ohj8r10kd9hu0jnb0n'),
-    ('Hungarian Liga NB I', 'Hungary', 77.5422134918, 31, '47s2kt0e8m444ftqvsrqa3bvq'),
-    ('Colombia Primera A', 'Colombia', 79.5927785584, 18, '2ty8ihceabty8yddmu31iuuej'),
-    ('Polish Ekstraklasa', 'Poland', 80.347565132, 12, '7hl0svs2hg225i2zud0g3xzp2'),
-    ('Russian Premier League', 'Russia', 78.3414456799, 26, '3ab1uwtoyjopdj1y1fynyy9jg'),
-    ('Ukraine Premier League', 'Ukraine', 73.2252872539, 57, '6wubmo7di3kdpflluf6s8c7vs'),
-    ('Azerbaijan Premier League', 'Azerbaijan', 74.2626869438, 51, '3428tckxcirwwh3o3jgc1m8ji'),
-    ('Brack Super League', 'Switzerland', 78.9972799564, 23, 'e0lck99w8meo9qoalfrxgo33o'),
-    ('US Major League Soccer', 'USA', 79.8720030632, 17, '287tckirbfj9nb8ar2k9r60vn'),
-    ('Austrian Bundesliga', 'Austria', 78.514907496, 25, '5c96g1zm7vo5ons9c42uy2w3r'),
-    ('Japanese J1 League', 'Japan', 77.9136182541, 29, '8o5tv5viv4hy1qg9jp94k7ayb'),
-    ('Serbian Super Liga', 'Serbia', 73.0906047913, 58, '3ww12jab49q8q8mk9avdwjqgk'),
-    ('Scottish Premiership', 'Scotland', 75.6205157866, 38, 'e21cf135btr8t3upw0vl6n6x0'),
-    ('Spanish Segunda Division', 'Spain', 79.2245806649, 20, '3is4bkgf3loxv9qfg3hm8zfqb'),
-    ('Egyptian Premier League', 'Egypt', 75.1310267419, 43, '8k1xcsyvxapl4jlsluh3eomre'),
-    ('Bolivia Primera División', 'Bolivia', 74.7355197021, 46, 'alpfd99yd3lfv7bhjo0biuq7b'),
-    ("Israeli Ligat Ha'al", 'Israel', 75.2309391515, 41, '2xg0qvif1rh7du6wmk2eleku3'),
-    ('Uruguay Liga AUF', 'Uruguay', 77.152443835, 34, '2wolc27r8z03itcvwp43e38c5'),
-    ('Paraguay Primera División', 'Paraguay', 78.0791396219, 28, '5y0z0l2epprzbscvzsgldw8vu'),
-    ('Bulgaria First League', 'Bulgaria', 73.400289989, 55, 'c0yqkbilbbg70ij2473xymmqv'),
-    ('Chile Primera', 'Chile', 78.2461494832, 27, '2y8bntiif3a9y6gtmauv30gt'),
-    ('Swedish Allsvenskan', 'Sweden', 77.4019333149, 33, 'b60nisd3qn427jm0hrg9kvmab'),
-    ('Ligi kuu Bara', 'Tanzania', 67.0120570042, 115, '9z5643nd06afqu01ea2wt8y4g'),
-    ('Honduras Liga Nacional', 'Honduras', 72.5693731227, 63, '1wwro3z1eb3fl601dju6inlc6'),
-    ('Slovakia 1. liga', 'Slovakia', 74.7070122525, 47, '1mpjd0vbxbtu9zw89yj09xk3z'),
-    ('German Bundesliga Zwei', 'Germany', 77.7678246349, 30, '722fdbecxzcq9788l6jqclzlw'),
-    ('Italian Serie B', 'Italy', 75.6399748893, 37, '8ey0ww2zsosdmwr8ehsorh6t7'),
-    ('Romania Liga I', 'Romania', 74.852061764, 45, '89ovpy1rarewwzqvi30bfdr8b'),
-    ('South Africa PSL', 'South Africa', 72.399537092, 64, 'yv73ms6v1995b5wny16jcfi3'),
-    ('Peru Liga 1', 'Peru', 75.7847102906, 36, 'a9vrdkelbgif0gtu3wxsr75xo'),
-    ('UAE Pro League', 'United Arab Emirates', 72.8242994298, 60, 'f39uq10c8xhg5e6rwwcf6lhgc'),
-    ('Malaysian Super League', 'Malaysia', 61.7988979258, 184, 'eg6s9f1jj7jr6stmbosn0g6c8'),
-    ('Botola Pro', 'Morocco', 75.134293956, 42, '1eruend45vd20g9hbrpiggs5u'),
-    ('Bosnia and Herzegovina Premijer Liga', 'Bosnia and Herzegovina', 71.3331941505, 69, '4yngyfinzd6bb1k7anqtqs0wt'),
-    ('French Ligue 2', 'France', 75.4515535927, 40, '4w7x0s5gfs5abasphlha5de8k'),
-    ('Armenian Premier League', 'Armenia', 68.8509372818, 92, 'dn9kmfdbz74lzt3m8e9g0vwjq'),
-    ('Argentina Primera Nacional', 'Argentina', 75.989787502, 35, 'byu00jvt1j6csyv4y1lkt2fm2'),
-    ('Algerian Ligue 1', 'Algeria', 74.4737900976, 50, '57nu0wygurzkp6fuy5hhrtaa2'),
-    ('Venezuela Primera División', 'Venezuela', 74.6860068737, 48, '46b141eaqq9q7o4gz5gtdpikk'),
-    ('Costa Rica Primera Division', 'Costa Rica', 74.6757628177, 49, 'civf31q1inxohs4a03y8reetf'),
-    ('English Football League - League One', 'England', 74.9641061551, 44, '3frp1zxrqulrlrnk503n6l4l'),
-    ('Latvian Virsliga', 'Latvia', 67.3382374825, 112, '3w1hkk9k9gr8fwssyn4icvdfo'),
-    ('Guatemala Liga Nacional', 'Guatemala', 72.8634748856, 59, 'ae1wva3zrzcp2zd15gpvsntg6'),
-    ('Spanish Primera Division RFEF', 'Spain', 74.1763057746, 53, 'degxm4y6gmvp011ccyrev6z5p'),
-    ('Ligue 1', 'Tunisia', 69.234735923, 88, 'f4jc2cc5nq7flaoptpi5ua4k4'),
-    ('Icelandic Besta deild', 'Iceland', 69.124018397, 89, 'zilopfej2h0n3vpan5tcynpo'),
-    ('Slovenia PrvaLiga', 'Slovenia', 72.3115308523, 66, '7nmz249q89qg5ezcvzlheljji'),
-    ('Albanian Kategoria Superiore', 'Albania', 72.5858598402, 62, '1zcp6rnjil25rnsv1ttcz3dhx'),
-    ('Kazakhstan Premier League', 'Kazakhstan', 69.9221076373, 80, '9ikchyu9fb8bvx0s673jofj6s'),
-    ('Persian Gulf Pro League', 'Iran', 71.8063764526, 68, '3btdfgw79qiz3jmyfudovtbu2'),
-    ('Premier League', 'Kuwait', 65.9192512605, 134, '3j81qr7yc4gdnakfwnxf95ovh'),
-    ('Finnish Veikkausliiga', 'Finland', 71.1673846009, 70, 'dvstmwnvw0mt5p38twn9yttyb'),
-    ('Ligue 1', 'Congo DR', 63.4610390808, 161, '7pl8j3qzfufcquaf8kvduau2r'),
-    ('Premier League', 'Libya', 64.2392680275, 156, '83ib9ygyuj24tov28t0ihv2le'),
-    ('Korean K-League 1', 'Korea Republic', 74.1816264756, 52, 'avs3xposm3t9x1x2vzsoxzcbu'),
-    ('Norwegian 1. divisjon', 'Norway', 70.3154103766, 76, '7r1f93t6ddrsa5n8v1nq6qlzm'),
-    ('Brazilian Serie B', 'Brazil', 72.380639034, 65, '5zr0b05eyx25km7z1k03ca9jx'),
-    ('Angolan Girabola', 'Angola', 66.765311755, 118, '6c76ua2pykvzepkmpprq4i8kf'),
-    ('German 3rd Liga', 'Germany', 71.9316838045, 67, 'dkarmrybx9vx10rg7cywumth0'),
-    ('Belarus Premier League', 'Belarus', 69.4698418835, 86, '8y29fg2s85ppcb8uugm5ee8s4'),
-    ('Chile Primera B', 'Chile', 72.7529327155, 61, 'bly7ema5au6j40i0grhl0pnub'),
-    ('Belgian Challenger Pro League', 'Belgium', 70.1686735183, 77, 'af79lqrc0ntom74zq13ccjslo'),
-    ('Super League', 'Uzbekistan', 68.1427037822, 97, '1snn4i06dn6n11mrfc894snzm'),
-    ('Macedonian First League', 'North Macedonia', 68.6835184189, 93, 'dl5v19e4466jn4fuufhlae7jm'),
-    ('Iraqi League', 'Iraq', 68.5920777031, 95, 'duuc1qczfnawwncru1ly6o66'),
-    ('League', 'Jordan', 68.0917730265, 98, '145hkd59i6foieuwr4mwi6wlq'),
-    ('Kosovan Superliga', 'Kosovo', 70.8427909889, 74, 'dwiqifdd70ytjytcs09vzosb3'),
-    ('Colombia Primera B', 'Colombia', 71.1042311883, 71, 'by5nibd18nkt40t0j8a0j5yzx'),
-    ('Qatar Stars League', 'Qatar', 70.0032634265, 79, 'xaouuwuk8qyhv1libkeexwjh'),
-    ('Première Division', 'Mali', 67.8862485622, 103, '9rh1w6v2524luqs6gdkasyxso'),
-    ('Portuguese Segunda Liga', 'Portugal', 73.6677624468, 54, '8sdpk4aerruf515yh76ezo7vi'),
-    ('Premier League', 'Sudan', 62.9581177229, 169, 'ppzvnquzq1gmez5snxzfxkbt'),
-    ('Professional League', 'Oman', 65.0444079799, 145, '1txej2dzohnydl21zc9pgx6hy'),
-    ('Lithuanian Toplyga', 'Lithuania', 67.9565746544, 102, '5cwsxtx37les6m10xj71htkgf'),
-    ('El Salvador Primera Division', 'El Salvador', 67.9565834057, 101, 'ein4fkggto3pdh5msp8huafiq'),
-    ('Spanish Segunda Division RFEF', 'Spain', 69.6844096137, 82, 'cegl2ivkc25blcatxp4jmk1ec'),
-    ('Zambia Super League', 'Zambia', 68.0249000614, 100, 'dexr6wlw3e339z88f1qr74wt6'),
-    ('Ýokary Liga', 'Turkmenistan', 57.5727341452, 238, '85d7d2jwmo1xx2pen4hkoclyn'),
-    ('LPF', 'Panama', 67.7753578468, 104, '2ni5x4ta0fv1zxee9l10rp1bz'),
-    ('Australian A-League Men', 'New Zealand', 71.0954257256, 72, 'xwnjb1az11zffwty3m6vn8y6'),
-    ('Torneo Federal A', 'Argentina', 69.2564023192, 87, 'a08z7wsz0uqx90wsj33g65fcd'),
-    ('Thai League 1', 'Thailand', 66.4163587577, 125, 'iu1vi94p4p28oozl1h9bvplr'),
-    ('Zimbabwe Premier Soccer League', 'Zimbabwe', 67.3526690546, 111, '4azsryi40zahspm5h6d0f0pgl'),
-    ('Liga Pro Serie B', 'Ecuador', 70.893430079, 73, 'bq89wbdvedtov6auzuh6rsv7s'),
-    ('Nigerian Premier League', 'Nigeria', 69.6478036043, 83, 'ac42gi3penartj88fe9l6plpk'),
-    ('Premier League', 'Bahrain', 66.3693502673, 126, '82wo38rqeizxlfjjhfjy4rx7u'),
-    ('Premier League', 'Lebanon', 61.862670618, 183, '3e40pestup9xzagsu2o6c0i8u'),
-    ('Primera Division', 'Nicaragua', 66.2666628191, 128, '8usjlmziv3p2re0r2wwzezki9'),
-    ('Estonian Premium liiga', 'Estonia', 62.7110006252, 171, '4d5d3sf6805n5u6jdoa0hdlog'),
-    ('Liga 3', 'Portugal', 67.2844659102, 113, '4yzidekywejmxxp77gqmdgopg'),
-    ('Indonesia Super League', 'Indonesia', 65.0297968358, 146, '117yqo02rs8dykkxpm274w3bd'),
-    ('Premier League', 'Syria', 65.0657915833, 143, '6g4vcneo8yvvf0f9cy38o3hy2'),
-    ('Premier Division', 'Grenada', 62.9581233712, 168, '9xyp02u8pj4bl962r9jspbedd'),
-    ('Suriname Major League', 'Suriname', 60.6539617017, 204, 'cbl4teapo1c4l1oy6gaqj4sv6'),
-    ('Ligue 1', "Côte d'Ivoire", 67.6936157535, 106, 'a55ij9w4hi8dmp55fi3dp0xzz'),
-    ('Swedish Superettan', 'Sweden', 67.5151062642, 108, '9chuiarcjofld1dkj9kysehmb'),
-    ('dieci Challenge League', 'Switzerland', 69.5723196628, 84, '8v97rcbthsxmzqk4ufxws9mug'),
-    ('English Football League - League Two', 'England', 69.072205521, 90, 'bgen5kjer2ytfp7lo9949t72g'),
-    ('Turkish 1. Lig', 'Türkiye', 68.6278716864, 94, '2o9svokc5s7diish3ycrzk7jm'),
-    ('Uganda Premier League', 'Uganda', 64.5419360734, 152, '1klyfth8tl6lu6ra7k8zmy2n2'),
-    ('Irish Premier League', 'Republic of Ireland', 70.1354546792, 78, '4mbfidy8zum5u0aqjqo0vuqs2'),
-    ('Moldovan Super Liga', 'Moldova', 65.4640619499, 138, '1j4ehtrbry9depwt6oghaq3lu'),
-    ('V.League 1', 'Vietnam', 65.1148683581, 142, 'aho73e5udydy96iun3tkzdzsi'),
-    ('First League', 'Russia', 67.7339225244, 105, 'bpo885893xeevnzypvifeaqru'),
-    ('Liga Puerto Rico', 'Puerto Rico', 60.5086703181, 205, '8lm9iu12f854rhiovkfxkb5vm'),
-    ('Premier League', 'Jamaica', 66.6999811124, 120, '6lrwyoy74oz0t5udrnmuyql6a'),
-    ('Faroe Islands Premier League', 'Faroe Islands', 63.6329705699, 160, 'dr2xk7muj8aqcjdz2b3li1c0k'),
-    ('French Ligue 3', 'France', 69.8326606595, 81, '1qd0wvt30rlswa4g6nu4na660'),
-    ('Ligue 1', 'Burkina Faso', 66.2328491993, 130, 'a3agf15089yvptkvldhuiel86'),
-    ('Brazilian Paulista', 'Brazil', 73.340009227, 56, 'eo8sb5ohs5xw2s96ihfhbvgvy'),
-    ("Division d'Honneur", 'Martinique', 61.357643666, 192, 'dnpfi8c4hzwgtzwqvd9784x9n'),
-    ('Luxembourg Division Nationale', 'Luxembourg', 64.3039022797, 155, '48pg4xminsjxun5x4yp5ng8v'),
-    ('Liga de Expansión MX', 'Mexico', 70.6235040459, 75, 'e1kxdivp5g4cpldgpwvnzl1vv'),
-    ('Chinese Super League', 'China PR', 67.6280472654, 107, '82jkgccg7phfjpd0mltdl3pat'),
-    ('Dutch Eerste Divisie', 'Netherlands', 66.9129817526, 116, '1gwajyt0pk2jm5fx5mu36v114'),
-    ('Liga Mayor', 'Dominican Republic', 65.205108589, 140, '2wfvjdhzl6v3s1pf2s96qvdjx'),
-    ('Ghana Premier League', 'Ghana', 69.4855843383, 85, '4jg7he1n3rb5dniq6hf49xorq'),
-    ('Ligue 1', 'Guinea', 65.5503500188, 136, '34txpgicm59r0bd60berrxhed'),
-    ('Andorran First Division', 'Andorra', 60.42359985, 206, 'ejunkmfhjz9weugd2bqrkgobb'),
-    ('Premier Division', 'Antigua and Barbuda', 62.5428903345, 174, '4ldempy7w5mi1yhxxhexquzkl'),
-    ('Ligue 2', 'Algeria', 65.2324364989, 139, '9hh6n2f84k31zmlcxyvmc1w2y'),
-    ('Gibraltar Premier Division', 'Gibraltar', 53.8101333328, 272, 'dzu6b07r25e3pk2uahxi5mzsz'),
-    ('Division Intermedia', 'Paraguay', 68.4509270713, 96, '6qitd9h242qkvjenaytfdnsf2'),
-    ('Moçambola', 'Mozambique', 64.8594996581, 150, 'zk2f8f4dzjpxb47gdwsvpga8'),
-    ('Liga Leumit', 'Israel', 65.9606964319, 133, 'eu6kl6j2w2qg7dg1dlpzo20fc'),
-    ('Georgian Premier League', 'Georgia', 68.075071678, 99, '477yyajzheg2z8u7uick0e13e'),
-    ('Championnat National', 'Togo', 65.5899023476, 135, '8t1t0tyumnnz6q87rvqqnnaw6'),
-    ('Canadian Premier League', 'Canada', 66.2425203051, 129, '6lkj3o21cr4g7bql6tb3fk222'),
-    ('Maltese League', 'Malta', 66.3538003576, 127, '5taraea6mqjjldg9zxswo825y'),
-    ('Japanese J2 League', 'Japan', 67.4947833456, 109, '5z8v4mj6cjs9ex6hdrpourjzh'),
-    ('Welsh Premier League', 'Wales', 58.7866108977, 225, 'c76z5d6j7dpi1e79tm8fpm39z'),
-    ('Ligue Haïtienne', 'Haiti', 65.0095740347, 147, '33k2hl0zpk6lkn9hgxrolp8ds'),
-    ('Championnat D1', 'Gabon', 62.5269867832, 175, 'cv1kehfzw58bg2vlj3c3ch26x'),
-    ('Division di Honor', 'Aruba', 60.994223732, 201, 'ai1avxe03fp35cep030gkcwjs'),
-    ('I Liga', 'Poland', 68.9977452795, 91, '8dn0w8zh7nbn2i904603eigwf'),
-    ('Korean K-League 2', 'Korea Republic', 65.4909972567, 137, 'b73zounsynk9d3u1p9nvpu7i2'),
-    ('Premier League', 'Botswana', 60.1581638332, 209, '3faz4auaxirmsh26ztmidb001'),
-    ('Premier League', 'Mauritania', 62.2619514373, 179, 'bd105ypde78dpxxxmsyc8ggaf'),
-    ('USL Championship', 'USA', 66.6611911466, 122, 'c1d9p6b2e9zr5tqlzx3ktjplg'),
-    ('Austrian 2. Liga', 'Austria', 66.1190338166, 131, 'a7247po5qs29o3zsfmt222ydu'),
-    ('FNL', 'Czechia', 67.3948811079, 110, 'ddyrh5latwfhesgfh4w401n92'),
-    ('German Regionalliga', 'Germany', 64.5131419918, 153, '3iwftmprsznl6yribr11a8l9m'),
-    ('Liga 2', 'Peru', 66.9019887168, 117, 'dwnygzozltaf27fec17gxayvr'),
-    ('Régional 1', 'French Guiana', 60.7300915655, 203, '4bf3hqyk1elw3f32kvib7c3dp'),
-    ('Italian Serie C', 'Italy', 64.8945964441, 149, '1zp1du9n4rj36p1ss9zbxtqfb'),
-    ('Second Division A', 'Egypt', 66.5106789526, 123, 'dy8zaksw5e9nwrs1p5ss4o1nu'),
-    ('Saudi Arabian First Division League', 'Saudi Arabia', 63.3382953498, 163, 'bfqezwfhot1l3p1cpk4oonh25'),
-    ('Primera Division', 'Guatemala', 65.0639149541, 144, 'aj9gichxp8i0muh2e22600h7a'),
-    ('Elite One', 'Cameroon', 62.260073798, 180, '18izk5zx4t85y7sbpjk3rlr4n'),
-    ('Danish 1. Division', 'Denmark', 66.6707582118, 121, '6ifaeunfdelecgticvxanikzu'),
-    ('Ligue 1', 'Senegal', 67.0625462279, 114, '9u9j3f1oplv8p7wevlko5r8by'),
-    ('Segunda División', 'Chile', 64.7712299334, 151, 'aqyb0y2nlcd33ryq6k5eulr01'),
-    ('Singapore Premier League', 'Singapore', 59.4352677789, 220, '1q4ab2bpg5e8jl1g2udnakrju'),
-    ('Northern Ireland Premiership', 'Northern Ireland', 61.2438771193, 195, '75i269i1ak43magshljadydrh'),
-    ('Spanish Tercera Division RFEF', 'Spain', 61.7714757041, 185, '54c65mhi143utomzvvv3q2avh'),
-    ('Liga de Ascenso', 'Costa Rica', 62.0266950457, 181, '2yyjcbbryf1r10apyzl7c7jvp'),
-    ('NB II', 'Hungary', 66.0987763056, 132, 'beqqnubkv05mamuwvimeum015'),
-    ('National 1', 'France', 63.6442535687, 159, '9rpro4x6j1xhkyijm18gkhmy4'),
-    ('Segunda División', 'Venezuela', 65.0062832295, 148, 'b3khsmo41ntvf4fwzbsuvc1hm'),
-    ('Segunda División', 'Uruguay', 66.4601151602, 124, '6jgwiu2gq3dllmrwt45pfdn2z'),
-    ('Scottish Championship', 'Scotland', 63.9340233459, 158, '8t2o4huu2e48ij23dxnl9w5qx'),
-    ('Kenya Premier League', 'Kenya', 62.818953845, 170, '7wssxdqi4xihseeam8grqa2b8'),
-    ('First NL', 'Croatia', 66.721225892, 119, 'esrunz7rjb0td98mx9e5cedoy'),
-    ('PFL', 'Philippines', 57.5589423374, 239, '8ifnkq96dckjtn9ab9wplpl9l'),
-    ('Segunda Categoria', 'Ecuador', 64.1886081768, 157, 'ddyci52f0zxfwi9qozf2k1fu2'),
-    ('Ettan', 'Sweden', 59.9478027299, 214, 'ac112osli9fvox1epcg4ld3t6'),
-    ('Super League', 'Malawi', 59.9918715211, 213, '3gp6ls97f1m51ohtkua36lj81'),
-    ('TT Premier League', 'Trinidad and Tobago', 56.3087301017, 252, 'b542gms4cavvp8zbkjs35ed76'),
-    ('Campeonato Nacional', 'Cabo Verde', 61.1035205915, 197, 'aok0scytttwue9bybamyj4s51'),
-    ('Dutch Tweede Divisie', 'Netherlands', 61.0715141314, 199, '913mb508il6jzwtlj28fl892h'),
-    ('English National League', 'England', 60.2489726066, 208, 'b5udgm9vakjqz8dcmy5b2g0xt'),
-    ('Azadegan League', 'Iran', 63.2420562861, 165, 'abs7n2ae3oydilk0tgmpnsj89'),
-    ('Pro League', 'Madagascar', 61.6275512574, 188, '5ec1w4iscr1r482ty8t3lhp9m'),
-    ('II Liga', 'Poland', 63.0279356115, 167, '663a54fmymndjeev47qm7d3nf'),
-    ('Liga II', 'Romania', 62.6840446071, 173, 'awvkxs5trlg5e5e5kg4hq8f1'),
-    ('Montenegro First League', 'Montenegro', 64.3883471086, 154, '77yifp2y2tvn80ndo3f0laav8'),
-    ('Premier League', 'Lesotho', 59.4034234046, 221, '7mkusa7mxyp5i41d8ntmojwl0'),
-    ('2. Division', 'Norway', 61.86385778, 182, '3p81ltz6845appgkbgkzxueii'),
-    ('Ligue A', 'Burundi', 60.2694577815, 207, '9akr1h05hescbbtybhii9hgrl'),
-    ('Botola 2', 'Morocco', 65.174312542, 141, '8najqkluatpaxvqws78b9s17c'),
-    ('1. Deild', 'Iceland', 62.2953880542, 178, '3l29w00m506ex93t5bbh9cg2a'),
-    ('Japanese J3 League', 'Japan', 62.6881532207, 172, 'b1rveez5u792gess9w3e7v5le'),
-    ('Turkish 2. Liga', 'Türkiye', 59.7627489172, 218, '2nttcoriwf5co73vmz1vr8frm'),
-    ('Prva Liga', 'Serbia', 62.3364363746, 177, 'd3gexg17t0wn9hpw12ww4poh5'),
-    ('Liga 3', 'Peru', 61.7533530019, 186, '580d5o01l5lqawc8hsdxxnz10'),
-    ('Premier League', 'Hong Kong, China', 57.647966996, 236, '4rls982p5uzil6x30mhyhv9f3'),
-    ('Premier League', 'Eswatini', 59.8671460191, 216, '2tknn83yj1ls73ykdxgcekpiz'),
-    ('Vysshaya Liga', 'Tajikistan', 55.4530308261, 258, '4gv4fxg1q7qxdubycjhbiqsl7'),
-    ('South Africa 1st Division', 'South Africa', 62.4773207119, 176, 'ajxs0e0g6ryg5ol8qvw3evrcz'),
-    ('Sudani Premier League', 'Sudan', 61.1044507763, 196, '2c01jrik7ggtta321pstz8tm4'),
-    ('Belgian Division 1', 'Belgium', 61.2817800858, 194, '4qjmo9aphtgpboin0pldiwzc9'),
-    ('Qatar Stars League 2', 'Qatar', 61.6793966436, 187, '3akazj2cmherl0b0hot94ezb8'),
-    ('Super League 2', 'Greece', 61.5475005491, 189, '4k8p8nmee0yjb7j7177474sx6'),
-    ('Championnat National', 'Benin', 63.2778424092, 164, 'ddbbqccied7l21mo4lr44sbcr'),
-    ('2. SNL', 'Slovenia', 59.1800041756, 222, '5aw6uyw4pz2bpj24t5z8aacim'),
-    ('Serie D', 'Italy', 57.5261713055, 240, '2g6lybov5xk8rlb79ek8imri7'),
-    ('LFA First Division', 'Liberia', 59.660768717, 219, '9568nq9sgf16yx6phx48srr12'),
-    ('1. Liga Promotion', 'Switzerland', 59.8634381474, 217, 'b8rae0ib0frjmwlca429bq19q'),
-    ('Oberliga', 'Germany', 53.4322445657, 276, '2sla6rn7prvvm7miswg39fwqz'),
-    ('Liga Prom', 'Panama', 58.362501993, 228, 'cypecaqr5kw33zumn2tyo4vuq'),
-    ('Brazilian Serie C', 'Brazil', 63.2381183698, 166, 'cfesxhzb83yl8b779uv3revz1'),
-    ('2. liga', 'Slovakia', 60.8885164614, 202, '4qehj8hfxmy6o2ohp4fxinnzo'),
-    ('Nacional B', 'Bolivia', 60.0866034146, 210, '2kottw7mwy3q6jsxj423z87yp'),
-    ('Premier League', 'St. Kitts and Nevis', 57.1437701676, 244, '651b0xvst5pj9piqt9sj49ks7'),
-    ('Indian Super League', 'India', 61.066850519, 200, '3oa9e03e7w9nr8kqwqc3tlqz9'),
-    ('Premier League', 'Ethiopia', 63.3412976785, 162, '6ybvtzejh91761lqe7y1csrqo'),
-    ('BVIFA National League', 'British Virgin Islands', 57.1885858045, 243, '7y5gvvqykm41h8t4traz87yxq'),
-    ('Campeonato de Portugal Prio', 'Portugal', 59.9169548672, 215, 'd88wxnb1q9o8jhw9enklfy5ww'),
-    ('Argentina Primera B (Metropolitana)', 'Argentina', 61.3013832702, 193, '66nxwll8fur0rtp9q7wqaki1l'),
-    ('NB III', 'Hungary', 53.3131292244, 279, '6w05j3xxw76an1jwkzr6a6m03'),
-    ('National 2', 'France', 58.5281458189, 227, 'etl8yxjt7x3cyzduc6x5eg7ti'),
-    ('Ykkösliiga', 'Finland', 60.0206832326, 211, '6ihotpaocgiovlxw18e9r9prx'),
-    ('GFA League', 'Gambia', 61.4081108944, 191, 'alfi8igkewru9ot3mah71mjc1'),
-    ('Torneo Regional Federal Amateur', 'Argentina', 53.0887346601, 281, '5zfudxcld0kr6bspk1jauq3t9'),
-    ('Second League A', 'Russia', 61.0760698759, 198, '8fjt8o9z8pf6wwkng5exwbrx0'),
-    ('3. liga', 'Czechia', 58.1611298711, 232, 'z3w7v4hqa7ssk5p6qkbpg9au'),
-    ('2. Division', 'Cyprus', 61.5007369882, 190, '3za3jptdvgw580jjr9nhhhn6i'),
-    ('Premier League', 'Turks and Caicos Islands', 53.1131623179, 280, '65dvfflsc4olwbhg8is69zrxa'),
-    ('1st Division', 'Albania', 58.9794730623, 223, '5laava24i9c121nm1hooqrubl'),
-    ('Regionalliga', 'Austria', 55.8763422435, 255, 'ekyhmsfi4utkxvmak9pq8se0s'),
-    ('Liga Alef', 'Israel', 58.9771569573, 224, '47ab9wtg48ksd11exck2122js'),
-    ('National League', 'New Zealand', 51.9278449257, 297, '1vyghvhuy6abu4htoemdi79bd'),
-    ('USL League One', 'USA', 60.0150815396, 212, 'jznihqxle06xych9ygwiwnsa'),
-    ('Campeonato Nacional', 'São Tomé e Príncipe', 56.9644741007, 245, '3vw4oev0x9kt3lxsq5ej068ey'),
-    ('K3 League', 'Korea Republic', 57.7586664476, 235, '5dycj9wdhxh3n33qubw18ohlk'),
-    ("Division d'Honneur", 'Guadeloupe', 55.525056943, 257, '3kkj5ejehz23411flej4ilvl9'),
-    ('Premier League', 'Barbados', 52.1384181671, 295, 'bjxqgib2ebgol60tlg5ob43tq'),
-    ('1st League', 'Bosnia and Herzegovina', 56.2191108405, 253, 'bq56xi6kc1626y8hxflp32ir3'),
-    ('Mauritian League', 'Mauritius', 57.8140350583, 234, '4vvwpf5yr8d48w59mkgu7iudv'),
-    ('Division One', 'Ghana', 58.2049011477, 230, '1m4sxndpm5lnnc09qn84cu2vo'),
-    ('Birinci Dasta', 'Azerbaijan', 57.945163704, 233, '1pz0ch210cun5hthsvq0lb7x3'),
-    ('USL League Two', 'USA', 47.8152583934, 339, 'enzlj1as2raqm4ids1zyb07y1'),
-    ('Premier League', 'Cambodia', 50.0240779247, 317, '6s4p9pfxu7j31isquv8o9h4dd'),
-    ('First League', 'Armenia', 51.9308429265, 296, '1be64lgp0chekkyu0iuyta8kc'),
-    ('1. Division', 'Kazakhstan', 52.3413437836, 289, '9xhmptx8yr16klvhfsss6drrw'),
-    ('Yemeni League', 'Yemen', 58.1631099191, 231, 'csf32ulgvgdcs0jytvtsb23ky'),
-    ('Premier League', 'Belize', 50.7422661269, 307, '6gnffmfauvm3mohkusjt96fj4'),
-    ('CIFA Premier League', 'Cayman Islands', 51.2368541851, 303, '7et0m0uh6m3q6taxgxqm88mpo'),
-    ('Ligue 2', 'Tunisia', 57.3214844485, 241, '8jh0jejuxfhrpawnoztz2jlv4'),
-    ('Scottish League One', 'Scotland', 55.4022789422, 260, '6sxm2iln2w45ux498pty9miw8'),
-    ('Ligue 1', 'Tahiti', 44.8987033104, 376, '7k4t5z7iiueq1l5pu1bymud71'),
-    ('National League', 'Myanmar', 50.2646544998, 315, 't2th5fajt23vbdfzhnd6gbbe'),
-    ('NISA', 'USA', 55.2219803685, 261, 'buw76i9cpiorzr92q963n26wa'),
-    ('GFF Elite League', 'Guyana', 51.7347170478, 299, '88t6g9pn0n3z1imkd03gwz37j'),
-    ('Division 1', 'United Arab Emirates', 55.8509693399, 256, 'cv3tuitw3ho3v0opjjxpn83b9'),
-    ('III Liga', 'Poland', 54.7906888549, 264, '4jieyfpyom8d011dgeqj77ojm'),
-    ('NPSL', 'USA', 47.9105476305, 338, 'aw2pkmmbu8d4lggcw85yzrcdm'),
-    ('Serie D', 'Brazil', 54.3253723685, 268, '9nbpdi9q3ywcm4q0j5u0ekwcq'),
-    ('MLS Next Pro', 'USA', 56.6863460088, 246, '5qmjkpvi92vrzdcb2knassjkk'),
-    ('Second League', 'North Macedonia', 53.3228230351, 278, '8te12r7tgvztvid6k5o2n6l9r'),
-    ('Liga Primera Premier', 'Mexico', 57.2178927506, 242, '3z0yko9k4j4bg838giak9lbf8'),
-    ('Pro League', 'Uzbekistan', 54.1550307578, 269, '53bqtby283rqeils2kjnjy3g6'),
-    ('Second League B', 'Ukraine', 52.1950941733, 293, '1q6us4dsfxfecn66m2riyzh78'),
-    ('Irish First Division', 'Republic of Ireland', 56.4910997906, 249, '7cwemnr3vi40znjq451zxkus6'),
-    ('Second League', 'Bulgaria', 57.634223181, 237, '9sr54lwtg5hdlgmj2spz61cli'),
-    ('Curaçao Promé Divishon', 'Curaçao', 55.1039922145, 262, '959v2qa82bknmcc6epvb6dgpu'),
-    ('Persha Liga', 'Ukraine', 58.2654242462, 229, 'c5551zb2twbvyv8sh55bnht09'),
-    ('1 Lyga', 'Lithuania', 52.3773907673, 288, '7qf0jaayyxy3ruamsexv5p1kl'),
-    ('Division 1', 'Djibouti', 54.0118229926, 271, '26gq2z96ehrmb82q3sq9cf0fp'),
-    ('Liga III', 'Romania', 48.3244666732, 331, '4qtsau8rkg0g5wt58wjw19rn1'),
-    ('Autonómicas', 'Spain', 50.0128213648, 318, '4ad9sdnscsipc990sp5l5n1wq'),
-    ('Premier League', 'Sierra Leone', 55.91398468, 254, '3umprqta6ipyann6qjjh07biz'),
-    ('Division 1', 'Kuwait', 55.4245730986, 259, 'ckop4ca4kxencvl9o279p4vdh'),
-    ('2. Division', 'Denmark', 56.6581416765, 247, '8vbck9a4mxjms783lf72779uu'),
-    ('Primera Divisional C', 'Uruguay', 50.627335618, 312, '6utr6bfbh7m3wjcy99s5ic9rr'),
-    ('Srpska Liga', 'Serbia', 53.7097605883, 273, 'ecput4u5i67t8xuzfveulvy8k'),
-    ('3. Division', 'Norway', 51.2523868198, 302, 'a4fgj2rfbpf4ejo1qi624fefo'),
-    ('QSL 3 League', 'Qatar', 58.7387490834, 226, 'ahfwgk5dhik1yxbb6xr1uwro4'),
-    ('1. Division', 'Belarus', 53.3642590901, 277, 'zs18qaehvhg3w1208874zvfa'),
-    ('Championship', 'Australia', 56.3653093484, 251, '41hbf8hlc2hfpw0n9hnn1ow7o'),
-    ('3. liga', 'Slovakia', 52.7143217378, 287, 'cc9zntdbef14p20gt4ekvnjvs'),
-    ('Premier League', 'Kyrgyz Republic', 50.6691289554, 309, 'eve4cbr6ybatmp2qdh0nu7lx9'),
-    ('1st Division', 'Jordan', 54.8866629054, 263, 'capnw9242hzut00ei9rgfco8n'),
-    ('Primeira Divisão', 'Macao', 44.116040371, 387, '8dpljd2ae9a8739ledhj91fl8'),
-    ('Third League', 'Russia', 40.7200795996, 408, '1naivg39wk4egyb3xogzy8jx1'),
-    ('Chinese Football League 1', 'China PR', 53.0727979448, 282, '8r98daokeuzsamu5fmjtblqx5'),
-    ('Division 2', 'Saudi Arabia', 54.7486481219, 265, '2o2cd36zr8xa5rbxikn2v3cju'),
-    ('Division 2', 'Sweden', 50.6075672634, 313, '1owhvvge4wlx7e0e431b4vhqx'),
-    ('Turkish 3. Liga', 'Türkiye', 51.1719145346, 305, '907l7wtxdvugdo9i2249wcmr0'),
-    ('Division 2', 'Belgium', 54.1239590714, 270, '58frfwi1ggvc2y45ux6a0t71b'),
-    ('Erovnuli Liga 2', 'Georgia', 56.4778175371, 250, '9yoqgm185326gn01tql2b1gvf'),
-    ('1. Liga Classic', 'Switzerland', 52.859401532, 286, 'cm3vqed635t5cxc113gkwm5vo'),
-    ('Higher League', 'Ethiopia', 52.9781268695, 284, 'd2xx0aq6s4jxls7nycyp32gb8'),
-    ('Bangladesh Premier League', 'Bangladesh', 46.9395911508, 352, '3c8633feplm71zs185iyado3t'),
-    ('Liga Premier Serie A', 'Mexico', 49.8321869513, 319, '87h32eza4zpxytxwtezfvzeji'),
-    ('Liga Bet', 'Israel', 49.3491917339, 321, '255lni1lapp38q1ce7pdkvkdl'),
-    ('Eccellenza', 'Italy', 50.6552363083, 311, 'eu6p2aeg01japjsy3vxl2czro'),
-    ('Elite Two', 'Cameroon', 53.6507563454, 275, 'c8ynqmmwxpo7jh568jxg3syui'),
-    ('Japan Football League', 'Japan', 52.9274673887, 285, 'dugi7e4nkmsbhtaacqr27fd8z'),
-    ('V.League 2', 'Vietnam', 54.5800082776, 266, '4mpgaqkdfgp3npm30m817krt7'),
-    ('Derde Divisie', 'Netherlands', 51.0646438636, 306, 'cniic1ov3puzi4ij6qdin42zf'),
-    ('1. Liga', 'Latvia', 47.4943369267, 343, '3ri6juw2w6ma0jezszdlv1uqm'),
-    ('Regionale 1', 'Réunion', 48.4211097957, 329, 'ec21s5dmmw0zsmhmzn1wuso9x'),
-    ('Primera Division', 'Cuba', 53.6967320869, 274, '85228ky4ttbvhidcnfzeh417v'),
-    ('Second Division', 'Bahrain', 50.695790947, 308, '2z9rz5s0wn8de1nnrvxzddf2w'),
-    ('Premier League', 'Bermuda', 51.262312842, 301, 'cxjve7cb7vo52bn49j7l4vlil'),
-    ('IV Liga', 'Poland', 44.9851221515, 374, '8b6pm41x365md8ojlb2y47v9w'),
-    ('Somali Premier League', 'Somalia', 49.3376568682, 322, '6ngm2hkpw6o9fuf9vgipde3dn'),
-    ('Thai League 2', 'Thailand', 54.4738462797, 267, 'bt24epydr1s8zc2x5xb0n9noc'),
-    ('Second NL', 'Croatia', 53.0400673018, 283, '4nconewk3ipq2ql9a41h40ff8'),
-    ('National League N / S', 'England', 52.3009354148, 291, 'bockl24qpr7ryjl8b6obukga'),
-    ('Tercera A', 'Chile', 52.3265126838, 290, 'eeyp68fd9iwrv2hr69lode4zz'),
-    ('Brazilian Carioca', 'Brazil', 56.6116772265, 248, 'b0dgf9ig6lyl992efpblsg3o5'),
-    ('4. liga', 'Czechia', 46.8128123105, 354, '9w8ydnoft05zow8l4wu9sxfq1'),
-    ('3. SNL', 'Slovenia', 48.1908758843, 335, 'domsjww1z4ouovaj6qogatnrf'),
-    ('Championship', 'Indonesia', 51.668211479, 300, '4ean4fk01vvwgq1cywi6d3t4s'),
-    ('San Marino Campionato', 'San Marino', 42.9464488817, 395, '2c63lkabcjzoiqavj24madt2d'),
-    ('1. Deild', 'Faroe Islands', 48.4068863634, 330, '341lj4ffzct6jdi87spbg8wr4'),
-    ('Taiwan Football Premier League', 'Chinese Taipei', 49.234177465, 324, 'bcpgmjs508joni6hpme87qz2b'),
-    ('Challenge League', 'Malta', 51.2012777551, 304, '87ztkb9xhjatuvee3i4nmpkym'),
-    ('Dhivehi Premier League', 'Maldives', 44.7606227803, 380, '9bbedsqm0xttwhpayj85otgen'),
-    ('Regional Leagues', 'Japan', 41.2606702579, 406, '5hwvpu5kcvehmftkhf8m6bvje'),
-    ('First Division League', 'Oman', 52.2397168527, 292, 'dh2w1tsp79haiyet9ovq0wk5w'),
-    ('Third League', 'Bulgaria', 44.1386879446, 386, 'cxd19epii9ytygdn9f8ihzhze'),
-    ('Kakkonen', 'Finland', 45.5853823015, 368, 'du6jsenbjql5e8f3yk880ox4g'),
-    ('Ykkönen', 'Finland', 52.1834367144, 294, '7qdv1xae7ikfe8dft3oj29yqc'),
-    ('Third NL', 'Croatia', 45.1089700708, 372, '2cxbyioo1wh4qeq09kjdp3g10'),
-    ('Division 3', 'Belgium', 47.6280025928, 341, 'esxl38qxi3mp7hdznyxw1fx7v'),
-    ('Thai League 3', 'Thailand', 46.4082823966, 361, 'bmmm8kjsbbl7izu0bsl2spyw9'),
-    ('Second League', 'Montenegro', 51.8096568473, 298, 'biac7kvkjh90b0iclv433am4a'),
-    ('Super League', 'Kenya', 49.8209610695, 320, 'cize73kxls2n25jjwb5csecfe'),
-    ('K4 League', 'Korea Republic', 48.8961051239, 327, '2bn7fv6qaeqnlnbztnwyazk9s'),
-    ('Landesliga', 'Austria', 46.3870262561, 362, '3e79p4eyu2prq96x39nt7djro'),
-    ('Ligue 1 Québec', 'Canada', 47.2850484316, 345, '2d4nlocc9asxxco093qt2y7vu'),
-    ('Premier League', 'Mongolia', 42.7917954263, 397, '8s9m5mnys5sljfcss6seb6dca'),
-    ('3. Division', 'Denmark', 48.2720434034, 334, '4vt0ldrcl6thpxpcs8zmpdq1g'),
-    ('2. Liga Interregional', 'Switzerland', 44.7639342607, 379, 'bwbb16bizglu0aqhv3uv7vdil'),
-    ('Super League', 'Brunei Darussalam', 37.8534289698, 418, 'b3uaeojrwdz549l6u6x1epwvy'),
-    ('State Leagues', 'Germany', 41.6892562614, 404, '1beh38q848j7v2pdt68sbkydw'),
-    ('Ontario Premier League', 'Canada', 46.2162841154, 364, '5ntkz5lqu047zxq6kds0q8qju'),
-    ('Gamma Ethniki', 'Greece', 46.5107618348, 356, 'eejymql2i8u0rurwx7a60knkk'),
-    ('2. Deild', 'Iceland', 49.2943418442, 323, '67uya58idol2eq18ljecsru5o'),
-    ('Liga 1', 'Moldova', 48.9126364999, 326, '90129kfnovrjd7v1lkzq7b144'),
-    ('Alberta Premier League', 'Canada', 47.2579596433, 346, '3gb0ae74ikiz9vv6hg4q0rwno'),
-    ('G League', 'Guam', 38.6965493947, 415, '5ejd6eyz6h60nznehnlu5qedi'),
-    ('Super Ligue', 'New Caledonia', 46.9655853615, 351, '6aitj7wkkunkhpa8f1sf6klrh'),
-    ('HKFA 1st Division', 'Hong Kong, China', 44.8304629104, 378, '32vph7vcjqgo1ksj1548di90n'),
-    ('British Columbia Premier League', 'Canada', 47.2490640666, 347, 'dsjp66d8c97bclbw357cex53o'),
-    ('3. Division', 'Cyprus', 47.552742357, 342, '9ywgewtyew2xdha6ihra8wr39'),
-    ("Promotion d'Honneur", 'Luxembourg', 49.0598715134, 325, '4nb99fz6gr6kh4swz9290rx2n'),
-    ('Munster Senior League', 'Republic of Ireland', 44.7466022663, 381, 'cuymsivavx4s1glq58beqjc44'),
-    ('Liga A1', 'Malaysia', 45.3336517834, 370, '3hlqtarrurifmxcu3wqebw1tf'),
-    ('Argentina Primera C (Metropolitana)', 'Argentina', 46.9275436212, 353, '2tyo5z2kcb5eiv8u53ne72yn4'),
-    ('Leinster Senior League', 'Republic of Ireland', 45.6742353327, 367, '3alyl4h2ug42jl1j67yj0owes'),
-    ('National League', 'Nepal', 48.2867561196, 333, '17p94td96tdrcvpxoqfmcaz85'),
-    ('TT Premier League 2', 'Trinidad and Tobago', 44.3208274444, 385, '2ahvmrdzsmds84ppbtmegtdnu'),
-    ('Profesyonelliğe Geçiş Ligi', 'Türkiye', 42.3448975858, 401, 'eg9t4hey3lmbfhcsj5m4qnxbe'),
-    ('4. liga', 'Slovakia', 43.6852973742, 391, '9fwlwux9c3l4ih8wx2qbawqvo'),
-    ('DFA Premier League', 'Dominica', 42.7585799828, 398, '9u982fk6ks1xu5kyje466d7o4'),
-    ('Non League Premier', 'England', 44.9191323139, 375, '78wml3z5wrfxe5iky50tiotgu'),
-    ('Scottish League Two', 'Scotland', 48.5792761287, 328, '6321dlqv4ziuwqte4xpohijtw'),
-    ('Brazilian Gaúcho', 'Brazil', 50.1566158718, 316, 'bv2uk1yawdco66ife2wxrzazm'),
-    ('Northern Ireland Championship', 'Northern Ireland', 46.4174145172, 359, '53tknno09wqihmwxrqcuwq9sa'),
-    ('Liga Nusantara', 'Indonesia', 46.4546232518, 358, '3rgsage2x9nj6c7220m08ll3o'),
-    ('Brazilian Mineiro', 'Brazil', 50.3071036375, 314, 'craznzmzk01hn9gjbj3g3mjah'),
-    ('Goiano 1', 'Brazil', 50.6592789663, 310, '960sty6j8g82423zpmtu7eaee'),
-    ('FAI National League', 'Republic of Ireland', 47.4632050469, 344, 'chif2fue1mqhkyb4zmbiz4fyt'),
-    ('National Football League', 'Fiji', 43.8457439429, 389, 'eho9l3wi70zmnymt4twce7ehz'),
-    ('Esiliiga A', 'Estonia', 45.0137655069, 373, '1jsiuepngd3pdeepzob61b02n'),
-    ('Amazonense 1', 'Brazil', 46.4562961922, 357, 'dlcz2yedcz5h74e96opmb8awx'),
-    ('Vierde Divisie', 'Netherlands', 44.4991760012, 383, 'wss36goxzn5vk5ezvpk4z7wl'),
-    ('Super League', 'Sri Lanka', 45.1514327908, 371, 'f28ryh79dq9xf1n8wj6wo8x6j'),
-    ('Sergipano 1', 'Brazil', 47.7066240133, 340, '4j8uz20iox42s82zs2d6zlswf'),
-    ('Capixaba A', 'Brazil', 45.9340627802, 365, '3rbuh3w1ahh5wbr0b1vjzdwru'),
-    ('S-League', 'Solomon Islands', 35.9030966957, 425, 'ebt3vhoz98paeu1k4cjqi1ul5'),
-    ('Liga 3', 'Georgia', 42.1194159106, 403, '7akyohnbu1mlbn3gt5oovcaly'),
-    ('Amapaense', 'Brazil', 44.8382390397, 377, '996mhhz95lye3ciuvchb06cv9'),
-    ('Piauiense', 'Brazil', 46.2586064377, 363, '8cb4lvjv76e5sd9o2fn2q2nnd'),
-    ('2nd Division', 'Albania', 43.5604104089, 392, '59d9gyqzygoewbix247fnbvpn'),
-    ('Pernambucano 1', 'Brazil', 48.0782030771, 336, '515zp8193llecturbp2mgpv81'),
-    ('Paraibano 1', 'Brazil', 47.1211428693, 350, '47e4kf7on49r1j8tbl4lasp9p'),
-    ('Indian Football League', 'India', 46.5293616915, 355, '4pohvulrkgzx38eoqse6b5cdg'),
-    ('Paraense A1', 'Brazil', 47.172979499, 348, '56kbffapmubfiq7unbzc1re4n'),
-    ('Brasiliense A', 'Brazil', 47.1438675005, 349, '823yw2xbtippuaqmli2fovpgs'),
-    ('Druha Liga', 'Ukraine', 43.1752525059, 394, '24sqrnfysjbuzxsyz3pqbhc96'),
-    ('FAW Championship', 'Wales', 43.7685241932, 390, '5vq1bl8h8dxdr34w0jaanokto'),
-    ('Paranaense 1', 'Brazil', 48.3019356092, 332, '3gjh0wh5rfu4yrnu6gilln9wl'),
-    ('Baiano 1', 'Brazil', 48.0410888758, 337, '4sdxtqddcbnckfbb59m1xdalj'),
-    ('Maranhense 1', 'Brazil', 44.3962182484, 384, '73w1cmn2hulv1zybihv7mua26'),
-    ('Provincial', 'Belgium', 39.5499934316, 410, '3a63db1h3skgftkxqy7ev4f4m'),
-    ('3. Deild', 'Iceland', 42.6036571375, 400, 'djlez26qpwpmgcptlhbxf8tzt'),
-    ('2a Divisió', 'Andorra', 40.93938505, 407, '3srzp139thd2ppo8ediqcasuq'),
-    ('Matogrossense 1', 'Brazil', 45.9143074574, 366, '2udulamnbhyjqv4p4owbghmo8'),
-    ('Liga Premier Serie B', 'Mexico', 44.039807342, 388, 'bhz5sqbkzsfq3eghlq8764nl6'),
-    ('National Soccer League', 'Papua New Guinea', 34.2638962677, 429, '1kmct9gg4dtk0lc59honmosu7'),
-    ('Catarinense 1', 'Brazil', 46.416137533, 360, '4fujcptop9waua3f96go6c93a'),
-    ('Denmark Series', 'Denmark', 39.5246620019, 411, '942hrw15c92ml9o2j88434z49'),
-    ('Chinese Football League 2', 'China PR', 42.6501949199, 399, '3ymqchdzk8tt6lfphf26xfvh0'),
-    ('Liga TDP', 'Mexico', 31.8838941125, 433, 'vu7xa99q5fiywp8wpvyn4owk'),
-    ('Torneo Promocional Amateur', 'Argentina', 40.0598451634, 409, '57cs3ewfi1ql2l6lrm29kf6dw'),
-    ('Capital Territory NPL', 'Australia', 35.0106914193, 427, 'eqz64pn0qsp2y7aq4m9id3fn6'),
-    ('Kolmonen', 'Finland', 36.1595080334, 422, 'uh2efgnjh0yxnyzte8f1da09'),
-    ('Alagoano 1', 'Brazil', 44.6335309363, 382, 'u7lq7crm0r53b0xfmzz5rw5d'),
-    ('Non League Div One', 'England', 36.1455750405, 423, '2o6aygqek4rqvuzbj8nf2rk1u'),
-    ('New South Wales NPL', 'Australia', 41.26070941, 405, '6g8hw3acenrw828la7gwx4mvs'),
-    ('1. Division', 'Luxembourg', 38.0058208903, 417, '41qm8wjhfr4ur2nc0hfiaysuj'),
-    ('Premier League', 'Bhutan', 28.8440431788, 441, '3tvqr9pmxgq7ftlg34m85icmh'),
-    ('Second Division', 'Vietnam', 42.835482542, 396, '6ioduwqo2523fsyczahnv48g0'),
-    ('Acreano', 'Brazil', 43.3607335415, 393, '9bhbv5iu5o9u3dt1h1xvqhbpw'),
-    ('Brazilian Cearense', 'Brazil', 45.4411542239, 369, 'dwteofckcdxa41bxw5rzalt23'),
-    ('Queensland NPL', 'Australia', 37.7438393644, 419, '61fzfjogstjuukzcehighq7mu'),
-    ('Victoria NPL', 'Australia', 39.2780294686, 412, '2mdmx668tyhy4u4z9zszwjv5v'),
-    ('Prairies Premier League', 'Canada', 42.2651230293, 402, '7he6eno2ekbln0v4nz43tsydw'),
-    ('Northern NSW NPL', 'Australia', 37.6806509092, 420, '9u4pm8x0lfmfq3r0pypmrls71'),
-    ('National Amateur League', 'Malta', 38.1283215444, 416, '4ukiv0glt1ezmfisz34szht6v'),
-    ('Highland / Lowland', 'Scotland', 31.769623, 434, '6nm3h3xebzyrle00a2o87iopn'),
-    ('PCSL', 'Canada', 35.1315746651, 426, 'bemm6tvgg2i1ahekeensrjlnm'),
-    ('Eerste Klasse', 'Netherlands', 35.9962207325, 424, '5nc1z8rz3f8uiip1qhdkgdf1x'),
-    ('Chinese Jiangsu Football City League', 'China PR', 39.0974883674, 414, 'ddgh2wsnvnoboc4gu73zjahhw'),
-    ('Western Australia NPL', 'Australia', 37.2721796693, 421, 'ajm86skyzse4ym8g6fpgzncxa'),
-    ('I-League 2', 'India', 39.1524571824, 413, '9h59sfgq97e19r6ldve5xrrrg'),
-    ('Liga 2', 'Moldova', 32.513497498, 431, '7yu5v7m4l2hs3h352lohttyk0'),
-    ('4. Deild', 'Iceland', 33.5268807259, 430, '1cetls6ootnyudl191dsbtrcz'),
-    ('Calcutta Premier Division', 'India', 31.3518139424, 435, '9q1lv8j58bsnrnmj6wf2inf4w'),
-    ('2. Deild', 'Faroe Islands', 32.2429963892, 432, '41u3ad31n4wngqv20yumidgsf'),
-    ('Northern Ireland Premier Intermediate League', 'Northern Ireland', 34.5321523962, 428, '6yhkvr1api401m5pkazxv4v4o'),
-    ('Counties Leagues', 'England', 27.9905029855, 442, '3hxb75f3g7662yjtyf0x1im8k'),
-    ('NSW League One', 'Australia', 29.9949146798, 437, '5f4vmg8dv2d0y8fuw60f0kbca'),
-    ('Esiliiga B', 'Estonia', 30.8876835099, 436, 'dv7yrlxxgsfl7wl2sno3adndq'),
-    ('Lao League', 'Laos', 24.3330775746, 444, 'cup8yhuyraqjany9hynm06cvl'),
-    ('Western Australia State League 1', 'Australia', 29.6659315169, 440, '2xkxwl03668hb7d7y63naupgq'),
-    ('Regional Leagues', 'Scotland', 16.8846515487, 451, '9edf0eouow31wxuyt4wzr4max'),
-    ('Queensland Premier League', 'Australia', 27.1255424056, 443, '9zvu736m8f9jzeyukisgey356'),
-    ('Victoria PL 1', 'Australia', 29.8626180072, 439, '1n9l0ex47bu0762qg574hzjtd'),
-    ('Premier League', 'Seychelles', 29.966896109, 438, '6i2wzu9kuszyysv8lpfpb3q50'),
-    ('NSW League Two', 'Australia', 22.6850914612, 445, 'aed8nciihgj74iq4tv6mrq39w'),
-    ('II Liiga', 'Estonia', 18.2047490395, 450, '7aj9v3zko7lw5cq2cxzwngyyo'),
-    ('Victoria PL 2', 'Australia', 22.4849068924, 446, 'demi2fsrdwddt2314p6j11lyi'),
-    ('Queensland Premier League 2', 'Australia', 21.1079868857, 448, '3a1kagik7bnoofrhr6qqp0dn8'),
-    ('Western Australia State League 1 Reserves', 'Australia', 20.9782201532, 449, 'dxgcsf3azheuf3shs09myyqs4'),
-    ('Gozo First Division', 'Malta', 22.4144106574, 447, 'd9fa6z8gr5geqojrggyxln3ys'),
-    ('FQPL 3 Metro', 'Australia', 14.3024353268, 452, '3jlffacre45qv9p155t1yr7je'),
-    ('Round Cup', 'Cook Islands', 11.3911208559, 453, 'bzlcw1r7cdm47j42dc28qf9wl'),
-    ('Super League', 'Bhutan', 7.346520528, 454, '4own04thi0njdg9n4gzl7foht'),
-)
-
 
 def _league_identity(label: object) -> str:
-    return SEASON_RX.sub("", label.strip()).strip() if isinstance(label, str) else ""
-
+    s = str(label or "").strip()
+    s = re.sub(r"\s+(?:20\d{2}-\d{2}|20\d{2})$", "", s)
+    return s.strip()
 
 def _league_key(label: object) -> str:
-    text = unicodedata.normalize("NFKD", _league_identity(label).casefold())
-    text = "".join(char for char in text if not unicodedata.combining(char))
-    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+    s = _league_identity(label).lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
-
-def normalize_opta_league_meta(out: pd.DataFrame) -> pd.DataFrame:
-    required = {"leagueName", "countryName", "seasonAverageRating"}
-    if not required.issubset(out.columns):
-        return pd.DataFrame()
-    out["seasonAverageRating"] = pd.to_numeric(out["seasonAverageRating"], errors="coerce")
-    out["globalRank"] = pd.to_numeric(out.get("globalRank"), errors="coerce")
-    out = out.loc[np.isfinite(out["seasonAverageRating"])].copy()
-    out["_name_key"] = out["leagueName"].map(_league_key)
-    out["_country_key"] = out["countryName"].map(_league_key).replace(OPTA_COUNTRY_ALIASES)
-    out = out.loc[out["_name_key"].ne("") & out["_country_key"].ne("")]
-    if "leagueId" in out.columns:
-        repeated = out["leagueId"].notna() & out["leagueId"].duplicated()
-        out = out.loc[~repeated]
-    return out
-
-
+@st.cache_data(show_spinner=False, max_entries=2)
 def load_opta_league_meta(path_str: str) -> pd.DataFrame:
+    path = Path(path_str)
+    if not path.exists():
+        return pd.DataFrame()
     try:
-        records = json.loads(Path(path_str).read_text(encoding="utf-8-sig"))
-        if isinstance(records, list) and all(isinstance(record, dict) for record in records):
-            external = normalize_opta_league_meta(pd.DataFrame(records))
-            if not external.empty:
-                return external
-    except (OSError, ValueError, TypeError):
-        pass
-
-    bundled = normalize_opta_league_meta(pd.DataFrame(
-        OPTA_BUNDLED_LEAGUE_RECORDS, columns=OPTA_BUNDLED_LEAGUE_COLUMNS,
-    ))
-    bundled.attrs["bundled_ratings"] = True
-    return bundled
-
+        records = json.loads(path.read_text(encoding="utf-8"))
+        out = pd.DataFrame(records)
+        keep = [c for c in ["leagueId", "leagueName", "countryName", "globalRank", "seasonAverageRating", "lastWeekSeasonAverageRating"] if c in out.columns]
+        out = out[keep].copy()
+        out["seasonAverageRating"] = pd.to_numeric(out.get("seasonAverageRating"), errors="coerce")
+        out["globalRank"] = pd.to_numeric(out.get("globalRank"), errors="coerce")
+        out = out.dropna(subset=["leagueName", "seasonAverageRating"]).drop_duplicates("leagueId")
+        out["_name_key"] = out["leagueName"].map(_league_key)
+        out["_country_key"] = out.get("countryName", pd.Series(index=out.index, dtype=object)).map(_league_key)
+        return out
+    except Exception:
+        return pd.DataFrame()
 
 def match_wyscout_league_to_opta(wyscout_league: object, opta: pd.DataFrame) -> dict | None:
     if opta.empty:
         return None
+    comp = _league_identity(wyscout_league)
+    key = _league_key(comp)
+    alias_name = OPTA_LEAGUE_ALIASES.get(key)
+    if alias_name:
+        exact = opta.loc[opta["leagueName"].str.casefold().eq(alias_name.casefold())]
+        if not exact.empty:
+            r = exact.iloc[0]
+            return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": 1.0}
 
-    key = _league_key(wyscout_league)
-    prefixes = set(opta["_country_key"]) | OPTA_COUNTRY_ALIASES.keys()
-    prefix = max((p for p in prefixes if key.startswith(p + " ")), key=len, default="")
-    if not prefix:
+    # Conservative fuzzy fallback. Country tokens are rewarded and a low score
+    # is left unmatched rather than forcing a potentially wrong competition.
+    first = key.split(" ")[0] if key else ""
+    best = None
+    for _, r in opta.iterrows():
+        name_key = str(r.get("_name_key", ""))
+        country_key = str(r.get("_country_key", ""))
+        score = SequenceMatcher(None, key, name_key).ratio()
+        if first and (first in name_key.split() or first in country_key.split()):
+            score += 0.08
+        # Also compare after removing the leading Wyscout country token.
+        rest = " ".join(key.split(" ")[1:])
+        if rest:
+            score = max(score, SequenceMatcher(None, rest, name_key).ratio() + (0.05 if first in country_key.split() else 0.0))
+        if best is None or score > best[0]:
+            best = (score, r)
+    if best is None or best[0] < 0.78:
         return None
-
-    country = OPTA_COUNTRY_ALIASES.get(prefix, prefix)
-    competition = key[len(prefix) + 1:]
-    canonical_key = f"{country} {competition}"
-    countries = (country, *OPTA_LEAGUE_ADDITIONAL_COUNTRIES.get(canonical_key, ()))
-    candidates = opta.loc[opta["_country_key"].isin(countries)]
-
-    aliases = OPTA_LEAGUE_ALIASES.get(canonical_key)
-    name_keys = [_league_key(name) for name in aliases] if aliases else [canonical_key, competition]
-    for name_key in name_keys:
-        matches = candidates.loc[candidates["_name_key"].eq(name_key)]
-        if len(matches) > 1:
-            return None
-        if len(matches) == 1:
-            match = matches.iloc[0]
-            return {
-                "opta_name": match["leagueName"],
-                "rating": float(match["seasonAverageRating"]),
-                "rank": match["globalRank"],
-                "confidence": 1.0,
-            }
-    return None
-
-
-def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) -> pd.DataFrame:
-    try:
-        file_stat = Path(path_str).stat()
-        file_version = (file_stat.st_mtime_ns, file_stat.st_size)
-    except OSError:
-        file_version = None
-    return _cached_league_strength_lookup(league_labels, path_str, file_version)
-
+    r = best[1]
+    return {"opta_name": r["leagueName"], "rating": float(r["seasonAverageRating"]), "rank": r.get("globalRank"), "confidence": float(min(best[0], 0.99))}
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def _cached_league_strength_lookup(
-    league_labels: Tuple[str, ...], path_str: str, file_version: tuple[int, int] | None,
-) -> pd.DataFrame:
+def build_league_strength_lookup(league_labels: Tuple[str, ...], path_str: str) -> pd.DataFrame:
     opta = load_opta_league_meta(path_str)
     rows = []
-    matches_by_key = {}
     for league in league_labels:
-        key = _league_key(league)
-        if key not in matches_by_key:
-            matches_by_key[key] = match_wyscout_league_to_opta(league, opta)
-        match = matches_by_key[key]
-        if match is not None:
-            rows.append({"League": league, **match})
-    lookup = pd.DataFrame(rows)
-    lookup.attrs.update(opta.attrs)
-    return lookup
-
+        m = match_wyscout_league_to_opta(league, opta)
+        if m:
+            rows.append({"League": league, **m})
+    return pd.DataFrame(rows)
 
 def role_score_for_population(score_df: pd.DataFrame, benchmark_df: pd.DataFrame, role: str, coverage_threshold: float) -> tuple[pd.DataFrame, pd.Series]:
     requested = requested_profile_metrics(role)
@@ -2838,8 +2262,6 @@ def league_projection_radar(
     player_name: str,
     current_label: str,
     target_label: str,
-    *,
-    club_comparison: str | None = None,
 ) -> go.Figure:
     """Single-Player-style scouting wheel overlaying current and projected percentiles."""
     if current_profile.empty or projected_profile.empty:
@@ -2849,7 +2271,6 @@ def league_projection_radar(
     pro = projected_profile[["Metric", "Percentile", "Z-score"]].rename(
         columns={"Percentile": "Projected Percentile", "Z-score": "Projected Z-score"}
     )
-    pro["Player Raw Value"] = projected_profile["Raw Value"]
     p = cur.merge(pro, on="Metric", how="inner").reset_index(drop=True)
     if p.empty:
         return go.Figure()
@@ -2940,19 +2361,16 @@ def league_projection_radar(
     current_color = "#303A44"
     projected_color = "#E56B3F"
     cur_custom = np.column_stack([p["Raw Value"], p["Percentile"], p["Z-score"], p["Display Metric"], p["KPI Group"]])
-    pro_custom = np.column_stack([p["Player Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
+    pro_custom = np.column_stack([p["Raw Value"], p["Projected Percentile"], p["Projected Z-score"], p["Display Metric"], p["KPI Group"]])
     cur_custom_closed = np.vstack([cur_custom, cur_custom[0]])
     pro_custom_closed = np.vstack([pro_custom, pro_custom[0]])
 
-    has_comparison = np.isfinite(cur_pct).any()
-    if has_comparison:
-        comparison_hover = club_comparison.capitalize() if club_comparison else "Current"
-        fig.add_trace(go.Scatterpolar(
-            r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
-            line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
-            name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
-            hovertemplate=f"<b>%{{customdata[3]}}</b><br>{comparison_hover}: %{{customdata[1]:.0f}}th percentile<br>Raw value: %{{customdata[0]:.2f}}<extra></extra>",
-        ))
+    fig.add_trace(go.Scatterpolar(
+        r=list(cur_r)+[cur_r[0]], theta=closed_theta, mode="lines+markers",
+        line=dict(color=current_color,width=3.8), marker=dict(size=10,color=current_color,line=dict(color="white",width=1.7)),
+        name=current_label, legendgroup="profiles", showlegend=False, customdata=cur_custom_closed,
+        hovertemplate="<b>%{customdata[3]}</b><br>Current: %{customdata[1]:.0f}th percentile<br>Raw value: %{customdata[0]:.2f}<extra></extra>",
+    ))
     fig.add_trace(go.Scatterpolar(
         r=list(pro_r)+[pro_r[0]], theta=closed_theta, mode="lines+markers",
         line=dict(color=projected_color,width=3.8,dash="dot"), marker=dict(size=10,color=projected_color,line=dict(color="white",width=1.7)),
@@ -2960,37 +2378,28 @@ def league_projection_radar(
         hovertemplate="<b>%{customdata[3]}</b><br>Projected: %{customdata[1]:.0f}th percentile<br>Current raw value: %{customdata[0]:.2f}<extra></extra>",
     ))
 
-    # Outer tiles show the comparison and projected percentiles.
-    tile_text = []
-    for comparison_pct, projected_pct in zip(cur_pct, pro_pct):
-        projected_text = f"{projected_pct:.0f}"
-        if has_comparison:
-            comparison_text = f"{comparison_pct:.0f}" if np.isfinite(comparison_pct) else "–"
-            projected_text = f"{comparison_text}→{projected_text}"
-        tile_text.append(f"<b>{projected_text}</b>")
+    # Outer tiles show current → projected percentile, making the translation readable without hover.
+    tile_text = [f"<b>{int(round(c))}→{int(round(q))}</b>" for c,q in zip(cur_pct,pro_pct)]
     fig.add_trace(go.Scatterpolar(r=[84.0]*n, theta=theta, mode="text", text=tile_text,
                                   textfont=dict(size=11,color="white"), hoverinfo="skip", showlegend=False))
 
     # Compact profile legend below the subtitle, separate from the KPI-category legend.
-    if has_comparison:
-        fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
-                           text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
-                           showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
+    fig.add_annotation(x=0.39, y=1.045, xref="paper", yref="paper",
+                       text=f"<span style='color:{current_color}'>━━●</span> {current_label}",
+                       showarrow=False, xanchor="right", font=dict(size=11, color="#303A44"))
     fig.add_annotation(x=0.61, y=1.045, xref="paper", yref="paper",
                        text=f"<span style='color:{projected_color}'>┈┈●</span> {target_label} (Projected)",
                        showarrow=False, xanchor="left", font=dict(size=11, color="#303A44"))
 
-    tile_caption = f"{club_comparison or 'current'} → projected" if has_comparison else "projected"
     fig.add_annotation(x=0.5,y=0.5,xref="paper",yref="paper",
-                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>{tile_caption.capitalize()}</span>",
+                       text=f"<b>{player_name}</b><br><span style='font-size:11px'>Current → Projected</span>",
                        showarrow=False,align="center",font=dict(size=16,color="#17202A"),
                        bgcolor="rgba(255,255,255,0.94)",bordercolor="rgba(120,130,140,0.22)",borderwidth=1,borderpad=11)
-    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text=f"Percentile: 0–100 · outer tiles = {tile_caption}",
+    fig.add_annotation(x=0.01,y=0.01,xref="paper",yref="paper",text="Percentile: 0–100 · outer tiles = current → projected",
                        showarrow=False,xanchor="left",yanchor="bottom",font=dict(size=10,color="#6B7785"))
 
-    subtitle = target_label if club_comparison else f"{current_label} → {target_label}"
     fig.update_layout(
-        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{subtitle}</sup>",
+        title=dict(text=f"<b>Projected performance of {player_name}</b><br><sup>{current_label} → {target_label}</sup>",
                    x=0.5,xanchor="center",y=0.985,font=dict(size=20,color="#17202A")),
         template="plotly_white",height=920,margin=dict(l=180,r=180,t=150,b=125),paper_bgcolor="white",plot_bgcolor="white",
         legend=dict(orientation="v", yanchor="top", y=1.015, xanchor="left", x=0.08, title_text="KPI groups", font=dict(size=10), bgcolor="rgba(255,255,255,0.72)"),
@@ -3000,355 +2409,6 @@ def league_projection_radar(
         barmode="overlay",
     )
     return fig
-
-# =========================
-# Team Projection
-# =========================
-SEASON_TEAM = "Team within selected timeframe"
-AUDIT_PATH = Path(__file__).with_name("wyscout_opta_club_audit.csv")
-SNAPSHOT_PATH = Path(__file__).with_name("opta_mens_club_rankings_2026-11-20.csv")
-MIN_CLUB_MEDIAN_PLAYERS = 3
-# Initial club adjustment uses the same per-point weight as league adjustment.
-CLUB_TRANSLATION_BETA = 0.020
-
-AUDIT_COLUMNS = [
-    "wyscout_league", "wyscout_team", "match_status", "opta_team_id",
-    "opta_competition_at_snapshot", "opta_competition_country",
-    "opta_snapshot_date", "opta_rating_at_snapshot", "competition_relationship",
-]
-SNAPSHOT_COLUMNS = [
-    "snapshot_date", "opta_team_id", "competition_country", "competition", "opta_rating",
-]
-
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def read_club_audit(path: Path, modified_ns: int) -> pd.DataFrame:
-    audit = pd.read_csv(path, usecols=AUDIT_COLUMNS, dtype={"opta_team_id": "string"})
-    return audit.set_index(["wyscout_league", "wyscout_team"], verify_integrity=True)
-
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def read_competition_means(path: Path, modified_ns: int) -> pd.Series:
-    snapshot = pd.read_csv(path, usecols=SNAPSHOT_COLUMNS)
-    snapshot = snapshot.drop_duplicates(["snapshot_date", "opta_team_id"])
-    snapshot["opta_rating"] = pd.to_numeric(snapshot["opta_rating"], errors="coerce")
-    return snapshot.groupby(["snapshot_date", "competition_country", "competition"])["opta_rating"].mean()
-
-
-@st.cache_data(show_spinner=False, max_entries=2)
-def read_club_league_deltas(
-    audit_path: Path, audit_version: int, snapshot_path: Path, snapshot_version: int,
-) -> pd.Series:
-    audit = read_club_audit(audit_path, audit_version)
-    averages = read_competition_means(snapshot_path, snapshot_version)
-    season_start = audit.index.get_level_values("wyscout_league").str.extract(SEASON_RX, expand=True)[0]
-    snapshot_year = audit["opta_snapshot_date"].astype("string").str[:4]
-    # Use the snapshot for the matching season group and competition only.
-    qualified = audit.loc[
-        audit["match_status"].eq("matched")
-        & audit["competition_relationship"].eq("same_competition")
-        & snapshot_year.eq(season_start.to_numpy())
-    ]
-    mean_keys = pd.MultiIndex.from_frame(qualified[[
-        "opta_snapshot_date", "opta_competition_country", "opta_competition_at_snapshot",
-    ]])
-    club_ratings = pd.to_numeric(qualified["opta_rating_at_snapshot"], errors="coerce")
-    return club_ratings - averages.reindex(mean_keys).to_numpy()
-
-
-def club_audit_record(audit: pd.DataFrame, league: str, team: str) -> pd.Series | None:
-    key = (league, team)
-    if key in audit.index:
-        return audit.loc[key]
-    return None
-
-
-def club_options(target_pool: pd.DataFrame, league: str, audit: pd.DataFrame) -> tuple[str, dict]:
-    """Group audited aliases by ID within a league-season, keeping unrated names selectable."""
-    team_column = SEASON_TEAM
-    if team_column not in target_pool or target_pool[team_column].dropna().empty:
-        team_column = "Team"
-    options = {}
-    for name in sorted(target_pool[team_column].dropna().unique(), key=str.casefold):
-        if not name.strip():
-            continue
-        row = club_audit_record(audit, league, name) if team_column == SEASON_TEAM else None
-        if row is not None and row["match_status"] == "matched" and pd.notna(row["opta_team_id"]):
-            key = ("id", row["opta_team_id"])
-        else:
-            key = ("name", name)
-        options.setdefault(key, []).append(name)
-    return team_column, options
-
-
-def club_strength_row(
-    side: str,
-    club_name: str,
-    audit_row: pd.Series | None,
-    averages: pd.Series,
-    has_season_team: bool,
-) -> dict:
-    row = {
-        "Side": side, "Club": club_name, "Opta club rating": np.nan,
-        "Snapshot competition": "", "Competition mean": np.nan,
-        "vs. competition mean": np.nan, "Snapshot date": "", "Rating status": "",
-    }
-    if not has_season_team:
-        row["Rating status"] = "Season team unavailable"
-    elif audit_row is None:
-        row["Rating status"] = "Outside verified audit"
-    else:
-        status = audit_row["match_status"]
-        row["Snapshot date"] = audit_row["opta_snapshot_date"]
-        row["Rating status"] = {
-            "matched": "Verified",
-            "youth_team_unrated_in_snapshot": "Youth team unrated in snapshot",
-            "club_unavailable_in_snapshot": "Club absent from snapshot",
-            "ambiguous_opta_id": "Opta ID unresolved",
-        }.get(status, "Rating unavailable")
-        if status == "matched":
-            rating = pd.to_numeric(audit_row["opta_rating_at_snapshot"], errors="coerce")
-            competition = audit_row["opta_competition_at_snapshot"]
-            snapshot_key = (row["Snapshot date"], audit_row["opta_competition_country"], competition)
-            mean = averages.get(snapshot_key, np.nan)
-            row.update({
-                "Opta club rating": rating,
-                "Snapshot competition": competition,
-                "Competition mean": mean,
-                "vs. competition mean": rating - mean,
-            })
-            relation = audit_row["competition_relationship"]
-            if relation == "different_competition_at_snapshot":
-                row["Rating status"] = "Verified in a different competition at snapshot date"
-            elif relation == "japan_transitional_competition":
-                row["Rating status"] = "Verified in regular J.League"
-    return row
-
-
-def target_club_comparison_profile(
-    projected_profile: pd.DataFrame,
-    club_players: pd.DataFrame,
-    target_benchmark: pd.DataFrame,
-) -> pd.DataFrame:
-    """Summarize eligible club players in raw units, then apply the league scale."""
-    profile = projected_profile[["KPI Group", "Metric"]].copy()
-    profile["Raw Value"] = np.nan
-    profile["Percentile"] = np.nan
-    profile["Z-score"] = np.nan
-    sample_size = len(club_players)
-    if sample_size == 0:
-        return profile
-
-    min_observations = min(sample_size, MIN_CLUB_MEDIAN_PLAYERS)
-    for index, metric in profile["Metric"].items():
-        values = pd.to_numeric(club_players[metric], errors="coerce")
-        values = values.loc[np.isfinite(values)]
-        if len(values) < min_observations:
-            continue
-        # For one or two players the median is exactly their individual value
-        # or the arithmetic mean of the pair, respectively.
-        reference_value = float(values.median())
-        z = directional_z_against_population(
-            target_benchmark[metric], reference_value, lower_is_better=metric in LOWER_IS_BETTER,
-        )
-        percentile = 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
-        profile.loc[index, ["Raw Value", "Percentile", "Z-score"]] = [reference_value, percentile, z]
-    return profile
-
-
-def render_team_projection(
-    candidates: pd.DataFrame,
-    season_pool: pd.DataFrame,
-    minutes: int,
-    coverage_threshold: float,
-    min_benchmark_n: int,
-) -> None:
-    st.header("Team Projection")
-    st.caption("Compare a player's projected role performance with the target club's players in compatible positions.")
-
-    try:
-        audit = read_club_audit(AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns)
-    except (OSError, ValueError) as error:
-        audit = pd.DataFrame()
-        st.warning(f"Verified club ratings could not be loaded ({type(error).__name__}). Squad comparison is available.")
-    try:
-        averages = read_competition_means(SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns)
-    except (OSError, ValueError):
-        averages = pd.Series(dtype=float)
-        st.warning("Opta competition averages could not be loaded.")
-
-    player_labels = candidates["Player"].astype(str).str.cat(
-        candidates.get(SEASON_TEAM, candidates["Team"]).fillna(candidates["Team"]).astype(str),
-        sep=" — ",
-    ).str.cat(candidates["League"].astype(str), sep=" | ")
-    player_labels = player_labels.mask(
-        player_labels.duplicated(keep=False), player_labels + " [" + player_labels.index.astype(str) + "]",
-    )
-    player_options = {label: index for index, label in player_labels.items()}
-    left, right = st.columns([1.4, 1])
-    with left:
-        player_label = st.selectbox("Player", list(player_options), key="team_proj_player")
-    player_index = player_options[player_label]
-    player = candidates.loc[player_index]
-    source_league = str(player["League"])
-    source_team = player.get(SEASON_TEAM)
-    source_has_team = isinstance(source_team, str) and bool(source_team.strip())
-    source_name = source_team if source_has_team else str(player["Team"])
-    position = str(player["Main Position"])
-    roles = [role for role, positions in PROFILE_POSITION_ELIGIBILITY.items() if position in positions]
-    if not roles:
-        st.info(f"No projection role is available for Main Position {position}.")
-        return
-    preferred_role = st.session_state.get("sidebar_selected_profile")
-    preferred_index = roles.index(preferred_role) if preferred_role in roles else 0
-    with right:
-        role = st.selectbox(
-            "Role", roles, index=preferred_index,
-            key=safe_widget_key("team_proj_role", position, preferred_role or ""),
-        )
-    st.caption(f"{role} · {active_depth_for_role(role)}")
-
-    target_leagues = sorted(season_pool["League"].dropna().unique())
-    league_col, club_col = st.columns(2)
-    with league_col:
-        target_league = st.selectbox(
-            "Target league", target_leagues, index=target_leagues.index(source_league), key="team_proj_league",
-        )
-    target_pool = season_pool.loc[season_pool["League"].eq(target_league)]
-    team_column, clubs = club_options(target_pool, target_league, audit)
-    if not clubs:
-        st.info("The selected competition has no club names in the upload.")
-        return
-    club_options_by_label = {" / ".join(names): names for names in clubs.values()}
-    with club_col:
-        club_name = st.selectbox(
-            "Target club", list(club_options_by_label), key=f"team_proj_club::{target_league}",
-        )
-    club_names = club_options_by_label[club_name]
-    has_audited_target_team = team_column == SEASON_TEAM
-    source_audit = club_audit_record(audit, source_league, source_name) if source_has_team else None
-    target_audit = club_audit_record(audit, target_league, club_names[0]) if has_audited_target_team else None
-
-    positions = PROFILE_POSITION_ELIGIBILITY[role]
-    benchmark = season_pool.loc[season_pool["Main Position"].isin(positions)]
-    if "Minutes played" in benchmark:
-        benchmark = benchmark.loc[benchmark["Minutes played"] >= minutes]
-    target_benchmark = benchmark.loc[benchmark["League"].eq(target_league)]
-    source_benchmark = target_benchmark if source_league == target_league else benchmark.loc[benchmark["League"].eq(source_league)]
-
-    scored_player, _ = role_score_for_population(
-        player.to_frame().T, source_benchmark, role, coverage_threshold,
-    )
-    scored_target, target_distribution = role_score_for_population(
-        target_benchmark, target_benchmark, role, coverage_threshold,
-    )
-    score_col = "_projection_role_score"
-    source_score = scored_player[score_col].iloc[0]
-    squad = scored_target.loc[scored_target[team_column].isin(club_names) & (scored_target.index != player_index)]
-    scored_squad = squad.loc[squad[score_col].notna()]
-
-    rating_delta = np.nan
-    if source_league == target_league:
-        rating_delta = 0.0
-    else:
-        strength = build_league_strength_lookup(
-            tuple(sorted((source_league, target_league))), str(OPTA_LEAGUE_META_PATH),
-        )
-        if not strength.empty:
-            ratings = strength.set_index("League")["rating"]
-            rating_delta = ratings.get(target_league, np.nan) - ratings.get(source_league, np.nan)
-        if pd.isna(rating_delta):
-            st.info("A league rating is unavailable. The target squad's observed scores are shown below.")
-
-    projected_score = source_score - LEAGUE_TRANSLATION_BETA * rating_delta
-    projected_pct = percentile_rank_against_population(target_distribution, projected_score)
-    source_metric, projection_metric, percentile_metric, sample_metric = st.columns(4)
-    source_metric.metric("Current role score", f"{source_score:+.2f}" if pd.notna(source_score) else "—")
-    projection_metric.metric(
-        "Projected role score", f"{projected_score:+.2f}" if pd.notna(projected_score) else "—",
-        delta=f"{projected_score - source_score:+.2f}" if pd.notna(projected_score) else None,
-        help="The change uses the same league translation as League Projection.",
-    )
-    percentile_metric.metric("Projected league percentile", f"{projected_pct:.0f}" if pd.notna(projected_pct) else "—")
-    sample_metric.metric("Target club players scored", f"{len(scored_squad):,}")
-    st.caption(f"Target league benchmark: {len(target_distribution):,} scored players in compatible positions with at least {minutes:,} minutes.")
-    if len(target_distribution) < min_benchmark_n:
-        st.warning("The target league benchmark is below the sidebar's minimum sample.")
-    if pd.isna(source_score):
-        st.info("A current role score is unavailable. Check the source league benchmark and profile coverage.")
-
-    if pd.notna(projected_score) and not target_distribution.empty:
-        projected_profile, _ = build_projected_target_profile(player, target_benchmark, role, rating_delta)
-        if not projected_profile.empty:
-            comparison_profile = target_club_comparison_profile(projected_profile, scored_squad, target_benchmark)
-            if len(scored_squad) >= MIN_CLUB_MEDIAN_PLAYERS:
-                comparison_kind = "club median"
-                comparison_label = f"{club_name} median"
-                radar_caption = "The club median uses at least three recorded values per metric."
-            elif len(scored_squad) == 2:
-                comparison_kind = "club average"
-                comparison_label = f"{club_name} average (2 players)"
-                radar_caption = "Small sample · Each average uses both club players' recorded values."
-            elif len(scored_squad) == 1:
-                comparison_kind = "target club player"
-                comparison_label = str(scored_squad["Player"].iloc[0])
-                radar_caption = f"One eligible club player · {comparison_label}'s observed profile."
-            else:
-                comparison_kind = "club reference"
-                comparison_label = club_name
-                radar_caption = "No eligible club players with a role score. Showing the projected player profile."
-            if not scored_squad.empty and comparison_profile["Percentile"].isna().all():
-                radar_caption = "The club sample lacks sufficient data on the plotted metrics. Showing the projected player profile."
-            fig = league_projection_radar(
-                comparison_profile, projected_profile, str(player["Player"]), comparison_label,
-                target_league, club_comparison=comparison_kind,
-            )
-            st.subheader("Projected player vs. target club")
-            st.plotly_chart(fig, width="stretch")
-            st.caption(f"{radar_caption} The radar uses target-league metric percentiles.")
-
-    st.subheader(f"{club_name} · players in compatible positions")
-    if not has_audited_target_team:
-        st.caption("This upload uses the Team field for the squad because season-team labels are unavailable.")
-    if squad.empty:
-        st.info("No target-club players meet the position and minutes filters.")
-    else:
-        table = squad.rename(columns={score_col: "Role score", f"{score_col} Coverage %": "Coverage (%)"})
-        table["League percentile"] = percentile_ranks_against_population_vectorized(target_distribution, table["Role score"])
-        display_columns = ["Player", "Main Position", "Minutes played", "Role score", "League percentile", "Coverage (%)"]
-        table = table.sort_values("Role score", ascending=False)
-        st.dataframe(
-            table[[column for column in display_columns if column in table]], width="stretch", hide_index=True,
-            column_config={
-                "Role score": st.column_config.NumberColumn(format="%+.2f"),
-                "League percentile": st.column_config.NumberColumn(format="%.0f"),
-                "Coverage (%)": st.column_config.NumberColumn(format="%.0f"),
-            },
-        )
-
-    st.subheader("Opta club strength")
-    club_context = pd.DataFrame([
-        club_strength_row("Source", source_name, source_audit, averages, source_has_team),
-        club_strength_row("Target", club_name, target_audit, averages, has_audited_target_team),
-    ])
-    relative_ratings = club_context["vs. competition mean"]
-    snapshot_dates = club_context["Snapshot date"]
-    if np.isfinite(relative_ratings).all() and snapshot_dates.nunique() == 1:
-        club_gap = relative_ratings.iloc[1] - relative_ratings.iloc[0]
-        st.metric(
-            "Relative club-strength gap", f"{club_gap:+.2f} Opta pts",
-            help="Target club's rating above or below its competition average minus the same measure for the source club. The gap is calculated before rounding.",
-        )
-    st.dataframe(
-        club_context, width="stretch", hide_index=True,
-        column_config={
-            "Opta club rating": st.column_config.NumberColumn(format="%.1f"),
-            "Competition mean": st.column_config.NumberColumn(format="%.2f"),
-            "vs. competition mean": st.column_config.NumberColumn(format="%+.2f"),
-        },
-    )
-    st.caption("Opta ratings and averages describe the listed snapshot date. The projected score uses league strength only.")
-
 
 # =========================
 # Role Fit v1
@@ -3659,7 +2719,7 @@ st.sidebar.header("Upload")
 # =========================
 # Workspace navigation
 # =========================
-APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Team Projection", "Similar Players", "Shadow Team", "Player Report"]
+APP_PAGES = ["Players", "Single Player", "Multi Player", "Role Fit", "League Projection", "Similar Players", "Shadow Team", "Player Report", "Recruitment Market Finder"]
 app_page = st.sidebar.radio("Workspace", APP_PAGES, index=0, key="app_workspace")
 st.sidebar.markdown("---")
 
@@ -4223,7 +3283,6 @@ with st.sidebar.expander("⚙️ Advanced profile settings", expanded=False):
 # Apply active profile on EVERY rerun (fixes disappearing score)
 # =========================
 active = st.session_state.get("active_profile")
-active_role = active.get("profile_name") if active else None
 calc_col_name: str | None = None
 profile_metrics_in_use: List[str] = []
 active_benchmark_df = benchmark_source_global
@@ -4233,6 +3292,7 @@ specialist_delta_col: str | None = None
 
 if active and active.get("metrics"):
     calc_col_name = str(active.get("calc_col", "Score"))
+    active_role = active.get("profile_name")
     profile_metrics_in_use = list(active.get("metrics", []))
     weights_pct_arr = np.array(active.get("weights_pct", []), dtype=float)
 
@@ -4448,115 +3508,65 @@ if app_page == "Players":
         missing_outputs = [c for c in CALCULATED_OUTPUT_COLUMNS if c not in filtered.columns]
         st.error("Calculated metric columns missing from the enriched dataframe: " + ", ".join(missing_outputs))
 
-    # Scores use independent league and within-league club terms.
+    # Optional competition-strength normalization for cross-league player ranking.
+    # The original Profile Score is never overwritten. The adjusted score expresses
+    # every player on the selected reference league's competition-strength scale.
+    league_adjustment_on = False
     adjusted_score_col = None
     reference_league = None
     reference_rating = None
-    league_rating_col = "Opta League Rating"
-    player_leagues = tuple(sorted(filtered["League"].dropna().astype(str).unique()))
-    league_strength_players = build_league_strength_lookup(player_leagues, str(OPTA_LEAGUE_META_PATH))
-    has_league_ratings = not league_strength_players.empty
-    if has_league_ratings and league_strength_players.attrs.get("bundled_ratings"):
-        st.caption("Using the Opta league ratings bundled with this app.")
+    league_strength_players = pd.DataFrame()
 
-    has_profile_score = calc_col_name in filtered.columns
-    club_deltas = pd.Series(np.nan, index=filtered.index, dtype=float)
-    if has_profile_score and SEASON_TEAM in filtered.columns:
-        try:
-            club_lookup = read_club_league_deltas(
-                AUDIT_PATH, AUDIT_PATH.stat().st_mtime_ns, SNAPSHOT_PATH, SNAPSHOT_PATH.stat().st_mtime_ns,
+    if calc_col_name and calc_col_name in filtered.columns and "League" in filtered.columns:
+        league_strength_players = build_league_strength_lookup(
+            tuple(sorted(filtered["League"].dropna().astype(str).unique().tolist())),
+            str(OPTA_LEAGUE_META_PATH),
+        )
+        if not league_strength_players.empty:
+            league_adjustment_on = st.toggle(
+                "Apply league adjustment",
+                value=False,
+                key="players_apply_league_adjustment",
+                help=(
+                    "Keeps the original Profile Score and adds a competition-adjusted score using "
+                    "β = 0.020 per Opta league-rating point. Choose the league whose strength should "
+                    "be the common comparison reference."
+                ),
             )
-            club_keys = pd.MultiIndex.from_frame(filtered[["League", SEASON_TEAM]])
-            club_deltas = pd.Series(club_lookup.reindex(club_keys).to_numpy(), index=filtered.index)
-        except (OSError, ValueError):
-            pass
-    has_club_ratings = club_deltas.notna().any()
+            if league_adjustment_on:
+                mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
+                reference_league = st.selectbox(
+                    "Reference league for adjusted scores",
+                    options=mapped_leagues,
+                    index=0,
+                    key="players_league_adjustment_reference",
+                    help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
+                )
+                ref_row = league_strength_players.loc[league_strength_players["League"].eq(reference_league)].iloc[0]
+                reference_rating = float(ref_row["rating"])
+                rating_map = league_strength_players.set_index("League")["rating"]
+                rank_map = league_strength_players.set_index("League")["rank"]
+                filtered["Opta League Rating"] = filtered["League"].map(rating_map)
+                filtered["Opta Global Rank"] = filtered["League"].map(rank_map)
+                adjusted_score_col = "League-Adjusted Score"
+                filtered[adjusted_score_col] = (
+                    pd.to_numeric(filtered[calc_col_name], errors="coerce")
+                    + LEAGUE_TRANSLATION_BETA
+                    * (pd.to_numeric(filtered["Opta League Rating"], errors="coerce") - reference_rating)
+                )
+                filtered["League Adjustment"] = filtered[adjusted_score_col] - pd.to_numeric(filtered[calc_col_name], errors="coerce")
+                for _c in ["Opta League Rating", "Opta Global Rank", adjusted_score_col, "League Adjustment"]:
+                    if _c not in numeric_cols:
+                        numeric_cols.append(_c)
+                st.caption(
+                    f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
+                    f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
+                )
+        else:
+            st.caption("League adjustment unavailable: none of the currently filtered leagues are mapped to Opta league strength.")
 
-    can_adjust_leagues = has_league_ratings and has_profile_score
-    league_control, club_control, rating_control = st.columns(3)
-    league_adjustment_on = league_control.toggle(
-        "Apply league adjustment",
-        value=False,
-        key="players_apply_league_adjustment",
-        disabled=not can_adjust_leagues,
-        help=(
-            "Adds a League-Adjusted Score based on each player's league rating and the reference league you choose. "
-            "The table sorts by this score by default."
-        ),
-    ) and can_adjust_leagues
-    club_adjustment_on = club_control.toggle(
-        "Apply club adjustment",
-        value=False,
-        key="players_apply_club_adjustment",
-        disabled=not has_club_ratings,
-        help="Adjusts for the club's Opta rating relative to its own league average, using a provisional weight of 0.020 per point.",
-    ) and has_club_ratings
-    if not has_profile_score:
-        league_control.caption("Apply a role profile in the sidebar to enable score adjustment.")
-    elif not has_club_ratings:
-        club_control.caption("No verified club ratings for these players and seasons.")
-    show_league_rating = rating_control.toggle(
-        "Show Opta league rating",
-        value=False,
-        key="players_show_opta_league_rating",
-        disabled=not has_league_ratings,
-        help="Adds the Opta league rating beside League in the table and includes it in the CSV download.",
-    ) and has_league_ratings
-    if not has_league_ratings:
-        st.caption("Opta league ratings are unavailable for the currently filtered leagues.")
-
-    if show_league_rating or league_adjustment_on:
-        strength_by_league = league_strength_players.set_index("League")
-        league_labels = filtered["League"].astype("string")
-        filtered[league_rating_col] = league_labels.map(strength_by_league["rating"])
-        unmapped_leagues = sorted(set(player_leagues) - set(strength_by_league.index))
-        if unmapped_leagues:
-            st.caption("Opta league ratings are unavailable for " + ", ".join(unmapped_leagues) + ".")
-
-    score_terms = {}
-    if league_adjustment_on:
-        mapped_leagues = league_strength_players.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
-        reference_league = st.selectbox(
-            "Reference league for adjusted scores",
-            options=mapped_leagues,
-            index=0,
-            key="players_league_adjustment_reference",
-            help="Adjusted Score = Profile Score + 0.020 × (player league rating − reference league rating).",
-        )
-        reference_rating = float(strength_by_league.loc[reference_league, "rating"])
-        filtered["Opta Global Rank"] = league_labels.map(strength_by_league["rank"])
-        score_terms["League Adjustment"] = LEAGUE_TRANSLATION_BETA * (filtered[league_rating_col] - reference_rating)
-        for _c in [league_rating_col, "Opta Global Rank"]:
-            if _c not in numeric_cols:
-                numeric_cols.append(_c)
-        st.caption(
-            f"League adjustment ON · reference: {reference_league} (Opta {reference_rating:.2f}) · "
-            f"β={LEAGUE_TRANSLATION_BETA:.3f}. Original Profile Score remains unchanged."
-        )
-
-    if club_adjustment_on:
-        score_terms["Club Adjustment"] = CLUB_TRANSLATION_BETA * club_deltas
-        st.caption(
-            "Club adjustment uses the November 20, 2026 Opta snapshot and a provisional "
-            "weight of 0.020 score points per Opta point above or below the club's league average."
-        )
-    if score_terms:
-        active_adjustments = [name.removesuffix(" Adjustment") for name in score_terms]
-        adjusted_score_col = f"{' + '.join(active_adjustments)}-Adjusted Score"
-        profile_score = pd.to_numeric(filtered[calc_col_name], errors="coerce")
-        adjustments = pd.DataFrame(score_terms, index=filtered.index)
-        filtered[adjusted_score_col] = profile_score + adjustments.sum(axis=1, min_count=len(score_terms))
-        for name, values in score_terms.items():
-            filtered[name] = values.where(profile_score.notna())
-        for name in [adjusted_score_col, *score_terms]:
-            if name not in numeric_cols:
-                numeric_cols.append(name)
-        if len(score_terms) == 2:
-            st.caption("Combined score = Profile Score + League Adjustment + Club Adjustment.")
-        if adjustments.isna().any(axis=1).any():
-            st.caption("Adjusted scores are blank where a rating required by the active adjustments is unavailable.")
-
-    # Position-aware default table columns.
+    # Position-aware default table columns. All source columns remain available
+    # in the selector; this only controls what is shown initially.
     _gk_only_selection = bool(current_families) and set(current_families) == {"Goalkeeper"}
 
     # Default order: identity/context -> Age -> Minutes -> active role Score ->
@@ -4572,10 +3582,9 @@ if app_page == "Players":
     ]
 
     exclude_cols = {"Market value"} if "Market value (M€)" in filtered.columns else set()
-    # Toggle-controlled columns stay visible without changing the column selection.
-    exclude_cols.update({league_rating_col, "Opta Global Rank", "League Adjustment", "Club Adjustment"})
-    if adjusted_score_col:
-        exclude_cols.add(adjusted_score_col)
+    # Opta league strength remains available internally for adjustment/hover logic,
+    # but is intentionally hidden from the Players table selector.
+    exclude_cols.update({"Opta League Rating", "Opta Global Rank", "League Adjustment"})
     display_options = [c for c in filtered.columns if c not in exclude_cols]
 
     default_cols = [c for c in ID_COLS if c in filtered.columns]
@@ -4584,6 +3593,9 @@ if app_page == "Players":
     # Coverage remains available in the selector but is not shown by default.
     if calc_col_name and calc_col_name in filtered.columns:
         default_cols.append(calc_col_name)
+        if league_adjustment_on and adjusted_score_col in filtered.columns:
+            # Keep Opta rating internal; only show the adjusted result by default.
+            default_cols.append(adjusted_score_col)
 
         # Keep only the currently selected profile-depth score in the default table.
         # Core 5, Balanced 10, Complete 15 and Specialist Delta are still calculated
@@ -4612,19 +3624,15 @@ if app_page == "Players":
     # Defensive dedupe while preserving the deliberate display order above.
     default_cols = list(dict.fromkeys(default_cols))
 
-    selected_display_cols = list(st.multiselect("Columns to display", options=display_options, default=default_cols))
-    if show_league_rating:
-        league_position = selected_display_cols.index("League") + 1 if "League" in selected_display_cols else len(selected_display_cols)
-        selected_display_cols.insert(league_position, league_rating_col)
-    if adjusted_score_col:
-        score_position = selected_display_cols.index(calc_col_name) + 1 if calc_col_name in selected_display_cols else len(selected_display_cols)
-        selected_display_cols.insert(score_position, adjusted_score_col)
+    selected_display_cols = st.multiselect("Columns to display", options=display_options, default=default_cols)
 
     # The active profile score is the primary scouting ranking. Calculated
     # indicators remain available but no longer override the role score default.
-    # When score adjustment is active, rank by the adjusted score automatically.
+    # When league adjustment is active, rank by the adjusted score automatically.
     # Otherwise preserve the existing raw profile-score default.
-    _primary_rank_col = adjusted_score_col or calc_col_name
+    _primary_rank_col = adjusted_score_col if (
+        league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns
+    ) else calc_col_name
     rank_candidates = [_primary_rank_col] + CALCULATED_OUTPUT_COLUMNS + ["Assists per 90", "Goals per 90", "xA per 90", "xG per 90", "xA", "xG", "Minutes played"]
     rank_candidates = [c for c in rank_candidates if c and c in numeric_cols]
     default_rank = rank_candidates[0] if rank_candidates else (numeric_cols[0] if numeric_cols else None)
@@ -4673,6 +3681,7 @@ if app_page == "Players":
             "Calc: Box Threat": "Box Threat",
             "Calc: Finishing": "Finishing",
             "Calc: Link Play": "Link Play",
+            "Opta League Rating": "League Rating",
             "Opta Global Rank": "Opta Rank",
             "League-Adjusted Score": "League-Adjusted Score",
             "League Adjustment": "Adjustment",
@@ -4714,10 +3723,8 @@ if app_page == "Players":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%.2f")
             elif c == "Specialist Delta":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=90, format="%+.2f")
-            elif c == league_rating_col:
-                table_column_config[c] = st.column_config.NumberColumn(display_label, width=112, format="%.2f")
-            elif c == adjusted_score_col:
-                table_column_config[c] = st.column_config.NumberColumn(display_label, width=165, format="%.2f")
+            elif c in {"League-Adjusted Score", "League Adjustment", "Opta League Rating"}:
+                table_column_config[c] = st.column_config.NumberColumn(display_label, width=92, format="%.2f")
             elif c == "Opta Global Rank":
                 table_column_config[c] = st.column_config.NumberColumn(display_label, width=72, format="%d")
             elif c == "Save rate, %":
@@ -4896,18 +3903,19 @@ if app_page == "Players":
         _size_options = [o for o in ["None", "Minutes played", "Market value (M€)", "Age", "Matches played"] if o == "None" or o in filtered.columns]
         size_by = st.selectbox("Size by", options=_size_options, index=_size_options.index("None"))
 
-        # Keep Y as the scatter default and offer the active adjusted ranking.
+        # Recruitment-oriented Top-N ranking. Y remains the default behavior,
+        # with league-adjusted quality available whenever adjustment is active.
         rank_options = ["Overall role fit", "X-axis characteristic"]
         if role_pct_col and role_pct_col in filtered.columns:
             rank_options.append("Role Percentile")
-        if adjusted_score_col:
-            rank_options.append(adjusted_score_col)
+        if league_adjustment_on and adjusted_score_col and adjusted_score_col in filtered.columns:
+            rank_options.append("League-Adjusted Score")
         rank_choice = st.radio("Rank Top-N players by", rank_options, index=0, horizontal=True)
         if rank_choice == "X-axis characteristic":
             sort_metric = x_axis
         elif rank_choice == "Role Percentile":
             sort_metric = role_pct_col
-        elif rank_choice == adjusted_score_col:
+        elif rank_choice == "League-Adjusted Score":
             sort_metric = adjusted_score_col
         else:
             sort_metric = y_axis
@@ -4936,7 +3944,7 @@ if app_page == "Players":
             hover_data[calc_col_name] = ":.2f"
         if role_pct_col and role_pct_col in plot_df.columns and role_pct_col != y_axis:
             hover_data[role_pct_col] = ":.1f"
-        if adjusted_score_col:
+        if league_adjustment_on and adjusted_score_col and adjusted_score_col in plot_df.columns:
             hover_data[adjusted_score_col] = ":.2f"
 
         fig = px.scatter(
@@ -4991,10 +3999,11 @@ if app_page == "Players":
                 fig.add_annotation(x=0.985, y=0.015, xref="paper", yref="paper", text="Specialist / Incomplete Profile", showarrow=False, xanchor="right", yanchor="bottom", font=dict(size=12))
                 fig.add_annotation(x=0.015, y=0.015, xref="paper", yref="paper", text="Lower Priority", showarrow=False, xanchor="left", yanchor="bottom", font=dict(size=12))
 
-        # Apply score adjustments to Y only.
+        # League adjustment remains contextual quality only. Never alter X.
         # Overlay is intentionally available only when raw Profile Score is Y.
         if (
-            adjusted_score_col
+            league_adjustment_on
+            and adjusted_score_col in plot_df.columns
             and y_axis == calc_col_name
             and plot_df[adjusted_score_col].notna().any()
         ):
@@ -5022,36 +4031,34 @@ if app_page == "Players":
                     continue
                 category_key = str(category) if original_color_by else ""
                 base_color = color_lookup.get(category_key, fallback_color)
-                custom_fields = [
+                custom = np.column_stack([
                     g["Player"].astype(str) if "Player" in g.columns else pd.Series([""] * len(g), index=g.index),
                     pd.to_numeric(g[y_axis], errors="coerce"),
                     pd.to_numeric(g[adjusted_score_col], errors="coerce"),
-                    g["League"].astype(str),
-                ]
-                hover_template = (
-                    "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
-                    "Original Profile Score: %{customdata[1]:.2f}<br>"
-                    f"{adjusted_score_col}: %{{customdata[2]:.2f}}<br>"
-                    "League: %{customdata[3]}<br>"
-                )
-                if league_adjustment_on:
-                    custom_fields.append(g[league_rating_col])
-                    hover_template += f"Opta League Rating: %{{customdata[{len(custom_fields) - 1}]:.2f}}<br>"
-                    hover_template += f"Reference: {reference_league} ({reference_rating:.2f})<br>"
-                for name in score_terms:
-                    custom_fields.append(g[name])
-                    hover_template += f"{name}: %{{customdata[{len(custom_fields) - 1}]:+.2f}}<br>"
+                    pd.to_numeric(g.get("Opta League Rating", np.nan), errors="coerce"),
+                    g["League"].astype(str) if "League" in g.columns else pd.Series([""] * len(g), index=g.index),
+                    pd.to_numeric(g.get("League Adjustment", np.nan), errors="coerce"),
+                ])
                 fig.add_trace(go.Scatter(
                     x=g[x_axis], y=g[adjusted_score_col], mode="markers",
                     name="Adjusted" if not original_color_by else f"{category} · adjusted",
                     legendgroup=f"adjusted_{category_key}", showlegend=False,
                     marker=dict(size=16, color=base_color, opacity=0.35, line=dict(width=1.5, color=base_color)),
-                    customdata=np.column_stack(custom_fields),
-                    hovertemplate=hover_template + "<extra></extra>",
+                    customdata=custom,
+                    hovertemplate=(
+                        "Player: %{customdata[0]}<br>" + x_axis + ": %{x:.2f}<br>"
+                        + "Original Profile Score: %{customdata[1]:.2f}<br>"
+                        + "Adjusted Score: %{customdata[2]:.2f}<br>"
+                        + "League: %{customdata[4]}<br>"
+                        + "Opta League Rating: %{customdata[3]:.2f}<br>"
+                        + "League Adjustment: %{customdata[5]:+.2f}<br>"
+                        + f"Reference: {reference_league} ({reference_rating:.2f})"
+                        + "<extra>League-adjusted</extra>"
+                    ),
                 ))
-            fig.update_layout(title=f"{active_role or 'Profile'} · original and adjusted role fit vs. {x_axis}")
-        elif adjusted_score_col and y_axis != calc_col_name:
-            st.caption("Select Profile Score on the Y-axis to see the score adjustment overlay.")
+            fig.update_layout(title=f"{active_role or 'Profile'} · original + league-adjusted role fit vs. {x_axis}")
+        elif league_adjustment_on and y_axis != calc_col_name:
+            st.caption("League-adjusted overlay appears when Profile Score is selected as the Y-axis. Raw performance / percentile axes are never league-adjusted.")
 
         st.caption("Scatter logic: → stronger defining characteristic · ↑ stronger overall role fit. Benchmark lines: calculated composite = 50th percentile; Profile Score = 0; Role Percentile = 50.")
         st.plotly_chart(fig, width="stretch")
@@ -5445,7 +4452,7 @@ elif app_page in ("Single Player", "Multi Player"):
                 sorted(benchmark_df["League"].dropna().astype(str).unique().tolist())
                 if "League" in benchmark_df.columns else []
             )
-            if len(_benchmark_leagues) >= 2:
+            if len(_benchmark_leagues) >= 2 and OPTA_LEAGUE_META_PATH.exists():
                 single_strength_lookup = build_league_strength_lookup(
                     tuple(_benchmark_leagues),
                     str(OPTA_LEAGUE_META_PATH),
@@ -5863,7 +4870,10 @@ elif app_page == "League Projection":
         str(OPTA_LEAGUE_META_PATH),
     )
     if league_strength.empty:
-        st.error("Opta league ratings are unavailable for the uploaded leagues.")
+        st.error(
+            "League Projection requires league-meta.json beside football_scout_app.py. "
+            "Add the supplied Opta league metadata file to the repository."
+        )
     else:
         # Player pool follows the scouting filters, while projection benchmarks
         # deliberately ignore team and age filters.
@@ -6011,9 +5021,6 @@ elif app_page == "League Projection":
                         "Projected percentile compares the translated score with the target league's actual role-score distribution."
                     )
 
-
-elif app_page == "Team Projection":
-    render_team_projection(filtered_base, df_season, min_minutes, coverage_threshold_pct / 100.0, min_benchmark_n)
 
 elif app_page == "Similar Players":
     st.header("🔎 Similar Players")
@@ -6214,7 +5221,7 @@ elif app_page == "Similar Players":
                         league_strength_sim = build_league_strength_lookup(
                             tuple(relevant_strength_leagues),
                             str(OPTA_LEAGUE_META_PATH),
-                        )
+                        ) if OPTA_LEAGUE_META_PATH.exists() else pd.DataFrame()
 
                         mapped_refs = (
                             league_strength_sim["League"].dropna().astype(str).tolist()
@@ -6432,6 +5439,12 @@ elif app_page == "Similar Players":
                             )
 
 
+elif app_page == "Recruitment Market Finder":
+    from recruitment_market_workspace import render_recruitment_market
+    # df_season preserves season selections while allowing all clubs/positions.
+    # Only pre-existing calculated scores are attached where indices overlap.
+    render_recruitment_market(df_season, filtered if isinstance(filtered, pd.DataFrame) else None)
+
 elif app_page == "Player Report":
     from player_report_step46 import render_workspace
     _report_role = (active or {}).get("profile_name") or st.session_state.get("sidebar_selected_profile")
@@ -6527,7 +5540,7 @@ elif app_page == "Shadow Team":
     ) if "League" in shadow_pool.columns else pd.DataFrame()
     if shadow_adjust:
         if shadow_strength.empty:
-            st.warning("Opta league ratings are unavailable for the selected leagues.")
+            st.warning("League adjustment is unavailable because the selected leagues could not be mapped to Opta strength.")
             shadow_adjust = False
         else:
             opts = shadow_strength.sort_values(["rating", "League"], ascending=[False, True])["League"].tolist()
